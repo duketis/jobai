@@ -1,0 +1,50 @@
+# Pre-commit configuration. Runs locally on `git commit` (after `pre-commit
+# install`) and is mirrored by the GitHub Actions CI pipeline.
+#
+# Hooks intentionally fail the commit on lint, format, type, or test errors.
+# To bypass in an emergency, use `git commit --no-verify` (and fix it before
+# pushing — CI will catch it).
+
+minimum_pre_commit_version: "3.6.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - "pydantic>=2.5"
+          - "pydantic-settings>=2.1"
+          - "types-pyyaml"
+        args: ["--config-file=pyproject.toml"]
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast unit tests)
+        entry: pytest -m "not slow and not integration" --no-cov -q
+        language: system
+        pass_filenames: false
+        types: [python]
+        stages: [pre-commit]
