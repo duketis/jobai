@@ -8,11 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jobai.db.migrations import (
-    apply_pending,
-    applied_migration_ids,
-    discover_migrations,
-)
+from jobai.db.migrations import apply_pending, applied_migration_ids, discover_migrations
 
 
 @pytest.fixture
