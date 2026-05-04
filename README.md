@@ -1,5 +1,11 @@
 # jobai
 
+[![CI](https://github.com/duketis/jobai/actions/workflows/ci.yml/badge.svg)](https://github.com/duketis/jobai/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![Type-checked: mypy](https://img.shields.io/badge/type--checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
+
 A local-first job-hunting agent. Continuously ingests listings from many sources, deduplicates them across providers, and exposes them through a search API and a conversational AI layer that helps you find, evaluate, and apply to roles.
 
 > **Status:** in active development. The data layer (sprint 1) is being built; the AI/agent layer follows.
