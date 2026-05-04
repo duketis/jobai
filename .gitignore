@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Type checking / linting caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# jobai runtime artifacts (never commit)
+*.db
+*.db-shm
+*.db-wal
+jobai.db*
+data/
+logs/
+*.log
+browser-profiles/
+~/.jobai/
+
+# Private workspace — interview/decision/architecture material.
+# This directory holds ADRs, build plans, and decision rationale that
+# is intentionally NOT public. Never tracked.
+_private/
+
+# Local-only docs scratch
+docs/RUN_LOG.md
+docs/_scratch/
+
+# Build / packaging
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
