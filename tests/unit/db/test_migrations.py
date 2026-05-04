@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jobai.db.migrations import apply_pending, applied_migration_ids, discover_migrations
+from jobai.db.migrations import applied_migration_ids, apply_pending, discover_migrations
 
 
 @pytest.fixture
@@ -24,12 +24,8 @@ def conn() -> Iterator[sqlite3.Connection]:
 @pytest.fixture
 def migrations_dir(tmp_path: Path) -> Path:
     """Two trivial migration files plus an unrelated file the runner ignores."""
-    (tmp_path / "0001_initial.sql").write_text(
-        "CREATE TABLE first (id INTEGER PRIMARY KEY);"
-    )
-    (tmp_path / "0002_add_second.sql").write_text(
-        "CREATE TABLE second (id INTEGER PRIMARY KEY);"
-    )
+    (tmp_path / "0001_initial.sql").write_text("CREATE TABLE first (id INTEGER PRIMARY KEY);")
+    (tmp_path / "0002_add_second.sql").write_text("CREATE TABLE second (id INTEGER PRIMARY KEY);")
     (tmp_path / "README.md").write_text("ignored, not a migration")
     return tmp_path
 
@@ -72,12 +68,7 @@ def test_apply_pending_runs_all_migrations_on_fresh_db(
 
     assert [m.id for m in applied] == [1, 2]
 
-    tables = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
-    }
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "first" in tables
     assert "second" in tables
 
@@ -98,9 +89,7 @@ def test_apply_pending_records_each_migration_in_order(
     migrations_dir: Path,
 ) -> None:
     apply_pending(conn, migrations_dir)
-    rows = conn.execute(
-        "SELECT id, name FROM _schema_migrations ORDER BY id"
-    ).fetchall()
+    rows = conn.execute("SELECT id, name FROM _schema_migrations ORDER BY id").fetchall()
     assert rows == [(1, "initial"), (2, "add_second")]
 
 
@@ -108,15 +97,11 @@ def test_apply_pending_skips_already_applied_migrations(
     conn: sqlite3.Connection,
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "0001_one.sql").write_text(
-        "CREATE TABLE one (id INTEGER PRIMARY KEY);"
-    )
+    (tmp_path / "0001_one.sql").write_text("CREATE TABLE one (id INTEGER PRIMARY KEY);")
 
     apply_pending(conn, tmp_path)
 
-    (tmp_path / "0002_two.sql").write_text(
-        "CREATE TABLE two (id INTEGER PRIMARY KEY);"
-    )
+    (tmp_path / "0002_two.sql").write_text("CREATE TABLE two (id INTEGER PRIMARY KEY);")
 
     second_pass = apply_pending(conn, tmp_path)
 
@@ -124,12 +109,8 @@ def test_apply_pending_skips_already_applied_migrations(
 
 
 def test_failing_migration_is_not_recorded_as_applied(tmp_path: Path) -> None:
-    (tmp_path / "0001_good.sql").write_text(
-        "CREATE TABLE good (id INTEGER PRIMARY KEY);"
-    )
-    (tmp_path / "0002_bad.sql").write_text(
-        "INSERT INTO nonexistent_table VALUES (1);"
-    )
+    (tmp_path / "0001_good.sql").write_text("CREATE TABLE good (id INTEGER PRIMARY KEY);")
+    (tmp_path / "0002_bad.sql").write_text("INSERT INTO nonexistent_table VALUES (1);")
 
     connection = sqlite3.connect(":memory:")
     try:
