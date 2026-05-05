@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from jobai import __version__
-from jobai.api.routes import health
+from jobai.api.routes import health, jobs
 
 
 @asynccontextmanager
@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     application.include_router(health.router, prefix="/api", tags=["health"])
+    application.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
     return application
 
 
