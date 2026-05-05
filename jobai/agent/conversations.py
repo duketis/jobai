@@ -71,9 +71,12 @@ def list_conversations(
     limit: int = 50,
     offset: int = 0,
 ) -> list[Conversation]:
+    # Secondary `id DESC` breaks ties when two conversations share the
+    # same millisecond `updated_at` — without it ordering on ties is
+    # undefined and the recent-conversations list flickers.
     rows = conn.execute(
         "SELECT id, title, created_at, updated_at FROM conversations "
-        "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
         (limit, offset),
     ).fetchall()
     return [_row_to_conversation(r) for r in rows]
