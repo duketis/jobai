@@ -6,6 +6,11 @@ Centralises the PRAGMAs and connection settings every caller needs:
 * Foreign keys ON (off by default in SQLite).
 * :class:`sqlite3.Row` row factory for dict-style column access.
 * A reasonable busy timeout so transient lock contention does not raise.
+* ``check_same_thread=False`` so a connection created in one thread
+  (e.g. a Starlette threadpool worker resolving a sync dependency)
+  can be used from another (the event-loop thread that runs an
+  ``async def`` endpoint or SSE generator). SQLite itself is
+  thread-safe; we serialise access through the request lifecycle.
 
 Callers acquire a connection through :func:`connect` (a context manager
 that closes on exit) rather than calling :func:`sqlite3.connect`
@@ -39,7 +44,11 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         A :class:`sqlite3.Connection` with WAL, foreign keys, and the
         :class:`sqlite3.Row` factory configured.
     """
-    connection = sqlite3.connect(db_path, timeout=_BUSY_TIMEOUT_SECONDS)
+    connection = sqlite3.connect(
+        db_path,
+        timeout=_BUSY_TIMEOUT_SECONDS,
+        check_same_thread=False,
+    )
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA journal_mode=WAL")
