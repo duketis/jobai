@@ -1,0 +1,56 @@
+# Bulk source seed file.
+#
+# Each top-level key is a source kind (must be registered in
+# jobai.sources.registry); each entry under it becomes one row in the
+# sources table when `jobai source sync` runs.
+#
+# Required per-entry: account, display_name.
+# Optional per-entry: default_tier (1/2/3), enabled (true/false),
+#                     cadence_seconds.
+#
+# Curated for AU-relevant tech companies plus a handful of high-signal
+# global names. Add more freely; sync is idempotent (existing rows have
+# their display_name / tier / cadence updated, but the enabled flag is
+# preserved so admin toggles stick).
+
+greenhouse:
+  - account: atlassian
+    display_name: Atlassian
+  - account: canva
+    display_name: Canva
+  - account: cultureamp
+    display_name: Culture Amp
+  - account: linktree
+    display_name: Linktree
+  - account: octopusdeploy
+    display_name: Octopus Deploy
+  - account: safetyculture
+    display_name: SafetyCulture
+  - account: anthropic
+    display_name: Anthropic
+  - account: cloudflare
+    display_name: Cloudflare
+  - account: stripe
+    display_name: Stripe
+  - account: airbnb
+    display_name: Airbnb
+  - account: figma
+    display_name: Figma
+  - account: vercel
+    display_name: Vercel
+  - account: notion
+    display_name: Notion
+  - account: discord
+    display_name: Discord
+  - account: gitlab
+    display_name: GitLab
+  - account: hashicorp
+    display_name: HashiCorp
+  - account: elastic
+    display_name: Elastic
+  - account: datadog
+    display_name: Datadog
+  - account: mongodb
+    display_name: MongoDB
+  - account: snowflake
+    display_name: Snowflake
