@@ -105,8 +105,11 @@ def append_message(
         "INSERT INTO messages (conversation_id, role, content_json) VALUES (?, ?, ?)",
         (conversation_id, role, content_json),
     )
+    # Millisecond precision (`%f`) avoids ties when two messages land in
+    # the same second — the list endpoint sorts by ``updated_at DESC``
+    # and we want a stable ordering for the recent-conversations view.
     conn.execute(
-        "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+        "UPDATE conversations SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ?",
         (conversation_id,),
     )
     conn.commit()
