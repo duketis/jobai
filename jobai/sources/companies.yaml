@@ -54,3 +54,7 @@ greenhouse:
     display_name: MongoDB
   - account: snowflake
     display_name: Snowflake
+
+lever:
+  - account: palantir
+    display_name: Palantir Technologies
