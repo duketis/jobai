@@ -141,6 +141,16 @@ def test_run_rejects_both_source_and_enabled(_isolated_db: Path) -> None:
     assert "mutually exclusive" in result.output.lower()
 
 
+def test_serve_help_lists_host_port_reload_flags(_isolated_db: Path) -> None:
+    """The serve command must expose host/port/reload — verify via --help so
+    the test does not actually start a long-running server."""
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "--host" in result.output
+    assert "--port" in result.output
+    assert "--reload" in result.output
+
+
 def test_reconcile_command_runs_against_empty_db(_isolated_db: Path) -> None:
     """`jobai reconcile` on an empty DB should report zero merges, not crash."""
     runner.invoke(app, ["migrate"])
