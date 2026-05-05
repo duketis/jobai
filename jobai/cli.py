@@ -20,6 +20,7 @@ import asyncio
 from pathlib import Path
 
 import typer
+import uvicorn
 
 from jobai.config import get_settings
 from jobai.db.connection import connect
@@ -65,6 +66,35 @@ def migrate() -> None:
     with connect(settings.db_path) as conn:
         applied = apply_pending(conn)
     typer.echo(f"applied {len(applied)} migration(s)")
+
+
+@app.command()
+def serve(
+    host: str | None = typer.Option(
+        None,
+        "--host",
+        help="Bind host. Defaults to JOBAI_API_HOST (127.0.0.1).",
+    ),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        help="Bind port. Defaults to JOBAI_API_PORT (8421).",
+    ),
+    reload: bool = typer.Option(
+        False,
+        "--reload",
+        help="Auto-reload on code change (development).",
+    ),
+) -> None:
+    """Run the FastAPI HTTP API via Uvicorn."""
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    uvicorn.run(
+        "jobai.api.server:app",
+        host=host or settings.api_host,
+        port=port or settings.api_port,
+        reload=reload,
+    )
 
 
 @app.command()
