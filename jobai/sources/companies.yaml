@@ -66,3 +66,7 @@ ashby:
     display_name: Vanta
   - account: mercor
     display_name: Mercor
+
+workable:
+  - account: huggingface
+    display_name: Hugging Face
