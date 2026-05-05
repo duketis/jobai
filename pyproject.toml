@@ -104,6 +104,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "PLR2004", "ANN", "PLR0915"]
 
+[tool.ruff.lint.flake8-bugbear]
+# Typer's idiomatic pattern is `param: T = typer.Option(...)` in argument
+# defaults. The call returns a marker object, not a stateful value, so the
+# usual B008 concerns do not apply.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
@@ -158,6 +164,10 @@ markers = [
 filterwarnings = [
   "error",
   "ignore::DeprecationWarning:apscheduler.*",
+  # Garbage-collection-time warnings from mixing asyncio.run() (used inside the
+  # CLI under test) with pytest-asyncio's own event loop. Not actionable; the
+  # underlying resources are cleaned, just not deterministically before GC.
+  "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]
