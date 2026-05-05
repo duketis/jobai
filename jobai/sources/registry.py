@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from jobai.sources.ashby import AshbySource
 from jobai.sources.base import BaseSource
 from jobai.sources.greenhouse import GreenhouseSource
 from jobai.sources.lever import LeverSource
 
 _REGISTRY: Mapping[str, type[BaseSource]] = {
+    "ashby": AshbySource,
     "greenhouse": GreenhouseSource,
     "lever": LeverSource,
 }
