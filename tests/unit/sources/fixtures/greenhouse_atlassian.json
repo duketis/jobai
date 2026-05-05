@@ -1,0 +1,58 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://www.atlassian.com/company/careers/details/12345",
+      "data_compliance": [],
+      "internal_job_id": 9999001,
+      "location": {
+        "name": "Sydney, Australia"
+      },
+      "metadata": null,
+      "id": 12345,
+      "updated_at": "2026-04-30T03:14:15-04:00",
+      "first_published": "2026-04-15T12:00:00-04:00",
+      "requisition_id": "R-1001",
+      "title": "Senior Software Engineer, Backend",
+      "content": "<p>We're looking for a Senior Software Engineer to join...</p>",
+      "departments": [{"id": 1, "name": "Engineering"}],
+      "offices": [{"id": 11, "name": "Sydney"}]
+    },
+    {
+      "absolute_url": "https://www.atlassian.com/company/careers/details/12346",
+      "data_compliance": [],
+      "internal_job_id": 9999002,
+      "location": {
+        "name": "Remote, Australia"
+      },
+      "metadata": null,
+      "id": 12346,
+      "updated_at": "2026-05-01T08:30:00-04:00",
+      "first_published": "2026-04-20T10:00:00-04:00",
+      "requisition_id": "R-1002",
+      "title": "Staff Frontend Engineer (Remote)",
+      "content": "<p>Build delightful UIs at scale...</p>",
+      "departments": [{"id": 1, "name": "Engineering"}],
+      "offices": [{"id": 11, "name": "Remote"}]
+    },
+    {
+      "absolute_url": "https://www.atlassian.com/company/careers/details/12347",
+      "data_compliance": [],
+      "internal_job_id": 9999003,
+      "location": {
+        "name": "Melbourne, Australia (Hybrid)"
+      },
+      "metadata": null,
+      "id": 12347,
+      "updated_at": "2026-05-02T11:00:00-04:00",
+      "first_published": "2026-04-22T11:00:00-04:00",
+      "requisition_id": "R-1003",
+      "title": "Engineering Manager, Platform",
+      "content": "<p>Lead a team of platform engineers...</p>",
+      "departments": [{"id": 1, "name": "Engineering"}],
+      "offices": [{"id": 12, "name": "Melbourne"}]
+    }
+  ],
+  "meta": {
+    "total": 3
+  }
+}
