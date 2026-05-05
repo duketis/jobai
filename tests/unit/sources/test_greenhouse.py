@@ -16,7 +16,7 @@ _ATLASSIAN_FIXTURE = (_FIXTURE_DIR / "greenhouse_atlassian.json").read_text(enco
 
 
 def test_greenhouse_source_name_includes_board() -> None:
-    source = GreenhouseSource(board="atlassian")
+    source = GreenhouseSource(account="atlassian")
     assert source.name == "greenhouse:atlassian"
     assert source.kind == "greenhouse"
     assert source.account == "atlassian"
@@ -28,7 +28,7 @@ async def test_discover_yields_one_job_per_listing_entry() -> None:
             return_value=httpx.Response(200, text=_ATLASSIAN_FIXTURE),
         )
 
-        source = GreenhouseSource(board="atlassian")
+        source = GreenhouseSource(account="atlassian")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 
@@ -41,7 +41,7 @@ async def test_discover_maps_core_fields() -> None:
             return_value=httpx.Response(200, text=_ATLASSIAN_FIXTURE),
         )
 
-        source = GreenhouseSource(board="atlassian")
+        source = GreenhouseSource(account="atlassian")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 
@@ -61,7 +61,7 @@ async def test_discover_infers_remote_type_from_location() -> None:
             return_value=httpx.Response(200, text=_ATLASSIAN_FIXTURE),
         )
 
-        source = GreenhouseSource(board="atlassian")
+        source = GreenhouseSource(account="atlassian")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 
@@ -79,7 +79,7 @@ async def test_discover_preserves_raw_payload() -> None:
             return_value=httpx.Response(200, text=_ATLASSIAN_FIXTURE),
         )
 
-        source = GreenhouseSource(board="atlassian")
+        source = GreenhouseSource(account="atlassian")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 
@@ -93,7 +93,7 @@ async def test_discover_raises_on_non_2xx_status() -> None:
             return_value=httpx.Response(404, text="not found"),
         )
 
-        source = GreenhouseSource(board="missing-co")
+        source = GreenhouseSource(account="missing-co")
         async with HttpFetcher() as fetcher:
             with pytest.raises(GreenhouseFetchError) as excinfo:
                 async for _ in source.discover(fetcher):
@@ -110,7 +110,7 @@ async def test_discover_handles_empty_jobs_array() -> None:
             return_value=httpx.Response(200, json={"jobs": [], "meta": {"total": 0}}),
         )
 
-        source = GreenhouseSource(board="empty-co")
+        source = GreenhouseSource(account="empty-co")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 
@@ -135,7 +135,7 @@ async def test_discover_handles_missing_optional_location() -> None:
             return_value=httpx.Response(200, json=payload),
         )
 
-        source = GreenhouseSource(board="x")
+        source = GreenhouseSource(account="x")
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in source.discover(fetcher)]
 

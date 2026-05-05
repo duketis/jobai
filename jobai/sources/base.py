@@ -59,14 +59,21 @@ class NormalizedJob:
 class BaseSource(ABC):
     """Abstract base class for every source.
 
-    A concrete source declares its identity via the ``kind`` and
-    ``account`` attributes (set in ``__init__`` or as class-level
-    constants where appropriate) and implements :meth:`discover`. The
-    fully-qualified ``name`` defaults to ``"{kind}:{account}"``.
+    Concrete sources declare ``kind`` as a class-level constant and
+    receive ``account`` through the constructor. The default
+    ``__init__`` covers both the per-board case (e.g.
+    ``GreenhouseSource("atlassian")``) and the no-account case (e.g.
+    ``HackerNewsSource()``); subclasses can override if they need
+    bespoke construction.
+
+    The fully-qualified :attr:`name` is ``"{kind}:{account}"``, or
+    bare ``kind`` when ``account`` is empty.
     """
 
     kind: str
-    account: str
+
+    def __init__(self, account: str = "") -> None:
+        self.account = account
 
     @property
     def name(self) -> str:
