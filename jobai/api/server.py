@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from jobai import __version__
-from jobai.api.routes import health, jobs, notifications, sources
+from jobai.api.routes import agent, health, jobs, notifications, sources
 
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
         prefix="/api/notifications",
         tags=["notifications"],
     )
+    application.include_router(agent.router, prefix="/api/agent", tags=["agent"])
     return application
 
 

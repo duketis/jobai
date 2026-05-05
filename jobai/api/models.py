@@ -133,3 +133,61 @@ class NotificationReadResponse(BaseModel):
 
     id: int
     read_at: str
+
+
+class AgentChatRequest(BaseModel):
+    """Request body for ``POST /api/agent/chat``.
+
+    A ``conversation_id`` of ``None`` starts a new conversation; the
+    server titles it from the first message. Otherwise the message is
+    appended to the existing thread.
+    """
+
+    conversation_id: int | None = Field(
+        default=None,
+        description="Existing conversation to continue, or null to start a new one.",
+    )
+    message: str = Field(
+        min_length=1,
+        max_length=10_000,
+        description="The user's message for this turn.",
+    )
+
+
+class ConversationItem(BaseModel):
+    """A single conversation in a list view."""
+
+    id: int
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ConversationsListResponse(BaseModel):
+    """Paginated list of conversations, newest activity first."""
+
+    items: list[ConversationItem]
+
+
+class ConversationMessageItem(BaseModel):
+    """One stored message returned over the wire.
+
+    ``content`` is JSON-decoded — either a plain string (user prompt)
+    or the polymorphic Anthropic content array (text + tool_use +
+    tool_result blocks).
+    """
+
+    id: int
+    role: str
+    content: list[dict[str, object]] | str
+    created_at: str
+
+
+class ConversationDetailResponse(BaseModel):
+    """A conversation with all its messages, oldest first."""
+
+    id: int
+    title: str
+    created_at: str
+    updated_at: str
+    messages: list[ConversationMessageItem]
