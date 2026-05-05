@@ -81,3 +81,55 @@ class JobStateResponse(BaseModel):
     state: str
     notes: str | None
     updated_at: str
+
+
+class SourceSummary(BaseModel):
+    """One configured source plus its current runtime health."""
+
+    id: int
+    name: str = Field(description="The source identifier, e.g. 'greenhouse:atlassian'.")
+    kind: str
+    account: str
+    display_name: str
+    default_tier: int
+    enabled: bool
+    cadence_seconds: int
+    current_tier: int | None = None
+    last_success_at: str | None = None
+    last_error_at: str | None = None
+    last_error_class: str | None = None
+    consecutive_failures: int = 0
+    cooldown_until: str | None = None
+
+
+class SourcesListResponse(BaseModel):
+    """List of configured sources for the dashboard / agent."""
+
+    items: list[SourceSummary]
+
+
+class NotificationItem(BaseModel):
+    """One in-app notification row."""
+
+    id: int
+    kind: str
+    severity: str = Field(description="'info' | 'warn' | 'error'.")
+    title: str
+    body: str | None = None
+    created_at: str
+    read_at: str | None = None
+
+
+class NotificationsListResponse(BaseModel):
+    """Paginated notifications, optionally filtered to unread."""
+
+    total: int
+    unread_count: int
+    items: list[NotificationItem]
+
+
+class NotificationReadResponse(BaseModel):
+    """Echo of the read state after marking a notification."""
+
+    id: int
+    read_at: str
