@@ -79,6 +79,17 @@ class Settings(BaseSettings):
         default="jobai/0.0.1 (+https://github.com/duketis/jobai)",
         description="Default HTTP User-Agent header for the tier-1 fetcher.",
     )
+    anthropic_api_key: str | None = Field(
+        default=None,
+        description=(
+            "Anthropic API key for the AI agent. If unset, the SDK falls back "
+            "to the ANTHROPIC_API_KEY environment variable."
+        ),
+    )
+    anthropic_model: str = Field(
+        default="claude-opus-4-7",
+        description="Anthropic model id to use for the agent.",
+    )
 
 
 @lru_cache(maxsize=1)

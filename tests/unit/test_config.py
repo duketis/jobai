@@ -40,6 +40,18 @@ def test_defaults_are_set() -> None:
     assert settings.api_port == 8421
     assert settings.default_cadence_seconds == 1800
     assert "jobai" in settings.user_agent.lower()
+    assert settings.anthropic_api_key is None
+    assert settings.anthropic_model == "claude-opus-4-7"
+
+
+def test_anthropic_settings_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JOBAI_ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.setenv("JOBAI_ANTHROPIC_MODEL", "claude-haiku-4-5")
+
+    settings = Settings()
+
+    assert settings.anthropic_api_key == "sk-ant-test-key"
+    assert settings.anthropic_model == "claude-haiku-4-5"
 
 
 def test_env_var_overrides_default(
