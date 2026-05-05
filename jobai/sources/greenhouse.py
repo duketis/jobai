@@ -25,12 +25,14 @@ _BOARD_URL_TEMPLATE = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs?c
 
 
 class GreenhouseSource(BaseSource):
-    """Pulls jobs from one Greenhouse-hosted board."""
+    """Pulls jobs from one Greenhouse-hosted board.
+
+    The ``account`` constructor argument is the board slug used in the
+    public boards-api URL (e.g. ``"atlassian"`` for
+    ``boards-api.greenhouse.io/v1/boards/atlassian/jobs``).
+    """
 
     kind = "greenhouse"
-
-    def __init__(self, board: str) -> None:
-        self.account = board
 
     async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
         url = _BOARD_URL_TEMPLATE.format(board=self.account)
