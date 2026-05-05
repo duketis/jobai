@@ -24,6 +24,8 @@ import typer
 from jobai.config import get_settings
 from jobai.db.connection import connect
 from jobai.db.migrations import apply_pending
+from jobai.dedup.fuzzy import DEFAULT_SIMILARITY_THRESHOLD
+from jobai.dedup.reconcile import DEFAULT_WINDOW_DAYS, reconcile_fuzzy_duplicates
 from jobai.fetcher.http import HttpFetcher
 from jobai.observability.logging import configure_logging, get_logger
 from jobai.pipeline.runner import RunResult, run_source
@@ -63,6 +65,34 @@ def migrate() -> None:
     with connect(settings.db_path) as conn:
         applied = apply_pending(conn)
     typer.echo(f"applied {len(applied)} migration(s)")
+
+
+@app.command()
+def reconcile(
+    window: int = typer.Option(
+        DEFAULT_WINDOW_DAYS,
+        "--window",
+        help="Only consider jobs whose last_seen_at is within this many days.",
+    ),
+    threshold: int = typer.Option(
+        DEFAULT_SIMILARITY_THRESHOLD,
+        "--threshold",
+        help="Fuzzy similarity threshold (0-100); higher = stricter.",
+    ),
+) -> None:
+    """Run the cross-source fuzzy reconciliation pass."""
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    with connect(settings.db_path) as conn:
+        result = reconcile_fuzzy_duplicates(
+            conn,
+            window_days=window,
+            threshold=threshold,
+        )
+    typer.echo(
+        f"reconcile: examined {result.groups_examined} group(s), "
+        f"merged {result.pairs_merged} pair(s)"
+    )
 
 
 @app.command()

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from jobai.dedup.promote import promote_to_canonical_jobs
 from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
@@ -79,10 +80,21 @@ async def run_source(
     try:
         async for job in source.discover(recorder):
             items_seen += 1
-            if _upsert_job_raw(conn, source_id=source_row.id, job=job):
+            jobs_raw_id, raw_was_new = _upsert_job_raw(
+                conn,
+                source_id=source_row.id,
+                job=job,
+            )
+            if raw_was_new:
                 items_new += 1
             else:
                 items_updated += 1
+            promote_to_canonical_jobs(
+                conn,
+                source_id=source_row.id,
+                jobs_raw_id=jobs_raw_id,
+                job=job,
+            )
     except Exception as exc:  # noqa: BLE001  - runner finalises on any failure
         status = "failed"
         error_summary = f"{type(exc).__name__}: {exc}"
@@ -171,8 +183,12 @@ def _upsert_job_raw(
     *,
     source_id: int,
     job: NormalizedJob,
-) -> bool:
-    """Upsert a NormalizedJob into ``jobs_raw``. Return True if newly inserted."""
+) -> tuple[int, bool]:
+    """Upsert a NormalizedJob into ``jobs_raw``.
+
+    Returns ``(jobs_raw_id, was_new)`` so callers can promote the row
+    into the canonical ``jobs`` table without a follow-up SELECT.
+    """
     raw_json = _serialize_job(job)
     raw_sha256 = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
     now = _now_iso()
@@ -183,7 +199,7 @@ def _upsert_job_raw(
     ).fetchone()
 
     if existing is None:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO jobs_raw "
             "(source_id, source_external_id, raw_json, raw_sha256, "
             " first_seen_at, last_seen_at) "
@@ -191,7 +207,10 @@ def _upsert_job_raw(
             (source_id, job.source_external_id, raw_json, raw_sha256, now, now),
         )
         conn.commit()
-        return True
+        last_id = cursor.lastrowid
+        if last_id is None:
+            raise RuntimeError("INSERT INTO jobs_raw returned no lastrowid")
+        return (int(last_id), True)
 
     existing_id = int(existing[0])
     existing_sha = str(existing[1])
@@ -207,7 +226,7 @@ def _upsert_job_raw(
             (now, existing_id),
         )
     conn.commit()
-    return False
+    return (existing_id, False)
 
 
 def _serialize_job(job: NormalizedJob) -> str:

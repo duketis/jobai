@@ -141,6 +141,24 @@ def test_run_rejects_both_source_and_enabled(_isolated_db: Path) -> None:
     assert "mutually exclusive" in result.output.lower()
 
 
+def test_reconcile_command_runs_against_empty_db(_isolated_db: Path) -> None:
+    """`jobai reconcile` on an empty DB should report zero merges, not crash."""
+    runner.invoke(app, ["migrate"])
+
+    result = runner.invoke(app, ["reconcile"])
+
+    assert result.exit_code == 0, result.output
+    assert "merged 0 pair" in result.output
+
+
+def test_reconcile_command_accepts_threshold_and_window_options(
+    _isolated_db: Path,
+) -> None:
+    runner.invoke(app, ["migrate"])
+    result = runner.invoke(app, ["reconcile", "--window", "30", "--threshold", "90"])
+    assert result.exit_code == 0, result.output
+
+
 def test_run_unknown_source_fails_cleanly(_isolated_db: Path) -> None:
     runner.invoke(app, ["migrate"])
 
