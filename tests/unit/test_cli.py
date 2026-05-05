@@ -143,8 +143,12 @@ def test_run_rejects_both_source_and_enabled(_isolated_db: Path) -> None:
 
 def test_serve_help_lists_host_port_reload_flags(_isolated_db: Path) -> None:
     """The serve command must expose host/port/reload — verify via --help so
-    the test does not actually start a long-running server."""
-    result = runner.invoke(app, ["serve", "--help"])
+    the test does not actually start a long-running server.
+
+    A wide ``COLUMNS`` value prevents rich's help formatter from wrapping
+    option names (which differs between macOS and Linux terminals).
+    """
+    result = runner.invoke(app, ["serve", "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
     assert "--host" in result.output
     assert "--port" in result.output
