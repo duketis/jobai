@@ -58,3 +58,11 @@ greenhouse:
 lever:
   - account: palantir
     display_name: Palantir Technologies
+
+ashby:
+  - account: linear
+    display_name: Linear
+  - account: vanta
+    display_name: Vanta
+  - account: mercor
+    display_name: Mercor
