@@ -236,6 +236,30 @@ async def test_run_source_marks_run_failed_when_source_raises(
     assert "RuntimeError" in row["error_summary"]
 
 
+async def test_run_source_promotes_jobs_into_canonical_table(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """The runner must populate the canonical jobs table and job_sources
+    link alongside jobs_raw."""
+    source = _FixedSource(
+        "atlassian",
+        [_make_job("1", title="Backend Engineer"), _make_job("2", title="Frontend Engineer")],
+    )
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    canonical_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    link_count = conn.execute("SELECT COUNT(*) FROM job_sources").fetchone()[0]
+    assert canonical_count == 2
+    assert link_count == 2
+
+
 async def test_run_source_records_raw_responses_via_recording_fetcher(
     conn: sqlite3.Connection,
     source_row: SourceRow,
