@@ -70,3 +70,7 @@ ashby:
 workable:
   - account: huggingface
     display_name: Hugging Face
+
+smartrecruiters:
+  - account: visa
+    display_name: Visa

@@ -1,0 +1,254 @@
+{
+  "offset": 0,
+  "limit": 3,
+  "totalFound": 42,
+  "content": [
+    {
+      "id": "744000124190269",
+      "name": "Director, Technology People Strategy & Operations",
+      "uuid": "ccbee485-72ca-4ffc-b15d-0755d8608423",
+      "jobAdId": "7fc81286-50f0-42d8-8e04-1e8298a0c5af",
+      "defaultJobAd": true,
+      "refNumber": "REF077304W",
+      "company": {
+        "identifier": "Visa",
+        "name": "Visa"
+      },
+      "releasedDate": "2026-05-01T21:42:17.825Z",
+      "location": {
+        "city": "Foster City",
+        "region": "CA",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Foster City, CA, United States"
+      },
+      "industry": {
+        "id": "it_and_services",
+        "label": "Information Technology And Services"
+      },
+      "department": {
+        "id": "868452",
+        "label": "Human Resources"
+      },
+      "function": {
+        "id": "human_resources",
+        "label": "Human Resources"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "director",
+        "label": "Director"
+      },
+      "customField": [
+        {
+          "fieldId": "58b7e4d1e4b0885c92cd9895",
+          "fieldLabel": "Department",
+          "valueId": "868452",
+          "valueLabel": "Human Resources"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "5bd89e45b1f60b7aea922c5b",
+          "fieldLabel": "Visa Inc. or Visa in Europe job?",
+          "valueId": "3a568048-d1c9-4741-be56-36b4f3addff7",
+          "valueLabel": "Visa Inc."
+        },
+        {
+          "fieldId": "58914413e4b04f807e6ee84f",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Visa"
+        },
+        {
+          "fieldId": "57ac0c81e4b06e7ab19310e1",
+          "fieldLabel": "Job Family Group",
+          "valueId": "MGT",
+          "valueLabel": "Management"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/visa/postings/744000124190269",
+      "creator": {
+        "name": "Jessica Barringer"
+      },
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000124008239",
+      "name": "Staff SW Engineer",
+      "uuid": "6786dec1-6b6e-4027-ba09-6545da570344",
+      "jobAdId": "5fcb20ff-0530-4f21-add7-539ce48e521d",
+      "defaultJobAd": true,
+      "refNumber": "REF97356W",
+      "company": {
+        "identifier": "Visa",
+        "name": "Visa"
+      },
+      "releasedDate": "2026-04-30T18:46:08.718Z",
+      "location": {
+        "city": "Austin",
+        "region": "TX",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "30.267153",
+        "longitude": "-97.7430608",
+        "fullLocation": "Austin, TX, United States"
+      },
+      "industry": {
+        "id": "it_and_services",
+        "label": "Information Technology And Services"
+      },
+      "department": {
+        "id": "868639",
+        "label": "Software Development/Engineering"
+      },
+      "function": {
+        "id": "information_technology",
+        "label": "Information Technology"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "58b7e4d1e4b0885c92cd9895",
+          "fieldLabel": "Department",
+          "valueId": "868639",
+          "valueLabel": "Software Development/Engineering"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "5bd89e45b1f60b7aea922c5b",
+          "fieldLabel": "Visa Inc. or Visa in Europe job?",
+          "valueId": "3a568048-d1c9-4741-be56-36b4f3addff7",
+          "valueLabel": "Visa Inc."
+        },
+        {
+          "fieldId": "58914413e4b04f807e6ee84f",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Visa"
+        },
+        {
+          "fieldId": "57ac0c81e4b06e7ab19310e1",
+          "fieldLabel": "Job Family Group",
+          "valueId": "TEC",
+          "valueLabel": "Engineering and Technology"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/visa/postings/744000124008239",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000124006605",
+      "name": "Staff SW Engineer",
+      "uuid": "85c60c36-bae5-4fcf-81bf-9fdd5f451cb2",
+      "jobAdId": "4d0d901c-e4bb-4461-bc33-5acffe3d58de",
+      "defaultJobAd": true,
+      "refNumber": "REF97357O",
+      "company": {
+        "identifier": "Visa",
+        "name": "Visa"
+      },
+      "releasedDate": "2026-04-30T18:38:19.496Z",
+      "location": {
+        "city": "Austin",
+        "region": "TX",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "30.267153",
+        "longitude": "-97.7430608",
+        "fullLocation": "Austin, TX, United States"
+      },
+      "industry": {
+        "id": "it_and_services",
+        "label": "Information Technology And Services"
+      },
+      "department": {
+        "id": "868639",
+        "label": "Software Development/Engineering"
+      },
+      "function": {
+        "id": "information_technology",
+        "label": "Information Technology"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "58b7e4d1e4b0885c92cd9895",
+          "fieldLabel": "Department",
+          "valueId": "868639",
+          "valueLabel": "Software Development/Engineering"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "5bd89e45b1f60b7aea922c5b",
+          "fieldLabel": "Visa Inc. or Visa in Europe job?",
+          "valueId": "3a568048-d1c9-4741-be56-36b4f3addff7",
+          "valueLabel": "Visa Inc."
+        },
+        {
+          "fieldId": "58914413e4b04f807e6ee84f",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Visa"
+        },
+        {
+          "fieldId": "57ac0c81e4b06e7ab19310e1",
+          "fieldLabel": "Job Family Group",
+          "valueId": "TEC",
+          "valueLabel": "Engineering and Technology"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/visa/postings/744000124006605",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    }
+  ]
+}
