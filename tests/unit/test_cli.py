@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 from jobai.cli import app
 from jobai.config import get_settings
@@ -145,14 +148,16 @@ def test_serve_help_lists_host_port_reload_flags(_isolated_db: Path) -> None:
     """The serve command must expose host/port/reload — verify via --help so
     the test does not actually start a long-running server.
 
-    A wide ``COLUMNS`` value prevents rich's help formatter from wrapping
-    option names (which differs between macOS and Linux terminals).
+    Rich's help formatter intersperses ANSI escape codes inside option
+    names (so '--host' appears as '--' + style escapes + 'host'). We
+    strip ANSI before substring-asserting, which is platform-stable.
     """
     result = runner.invoke(app, ["serve", "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    assert "--host" in result.output
-    assert "--port" in result.output
-    assert "--reload" in result.output
+    plain = _ANSI_RE.sub("", result.output)
+    assert "--host" in plain
+    assert "--port" in plain
+    assert "--reload" in plain
 
 
 def test_reconcile_command_runs_against_empty_db(_isolated_db: Path) -> None:
