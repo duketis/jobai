@@ -10,14 +10,14 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-
 from jobai.cli import app
 from jobai.config import get_settings
 from jobai.db.migrations import apply_pending
 from jobai.sources.repository import get_source_by_name, upsert_source
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 
 @pytest.fixture(autouse=True)
