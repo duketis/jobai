@@ -18,12 +18,14 @@ from jobai.sources.ashby import AshbySource
 from jobai.sources.base import BaseSource
 from jobai.sources.greenhouse import GreenhouseSource
 from jobai.sources.lever import LeverSource
+from jobai.sources.smartrecruiters import SmartRecruitersSource
 from jobai.sources.workable import WorkableSource
 
 _REGISTRY: Mapping[str, type[BaseSource]] = {
     "ashby": AshbySource,
     "greenhouse": GreenhouseSource,
     "lever": LeverSource,
+    "smartrecruiters": SmartRecruitersSource,
     "workable": WorkableSource,
 }
 
