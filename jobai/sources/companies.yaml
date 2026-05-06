@@ -14,10 +14,10 @@
 # preserved so admin toggles stick).
 
 greenhouse:
-  - account: atlassian
-    display_name: Atlassian
-  - account: canva
-    display_name: Canva
+  # NOTE: Atlassian and Canva moved off Greenhouse — Atlassian's board
+  # 404s and Canva's board 404s. Canva is on SmartRecruiters now (see
+  # below); Atlassian shows 0 listings on every public ATS we probe,
+  # so they may be in a hiring freeze or have rolled their own.
   - account: cultureamp
     display_name: Culture Amp
   - account: linktree
@@ -74,6 +74,8 @@ workable:
 smartrecruiters:
   - account: visa
     display_name: Visa
+  - account: canva
+    display_name: Canva
 
 # Seek is JS-rendered — needs the browser fetcher (default_tier: 2).
 # Account is the URL slug from the Seek search-results path. Add more
@@ -133,19 +135,24 @@ indeed:
     default_tier: 2
     cadence_seconds: 3600
 
-# APS Jobs — Australian federal government central job board.
-# Atom feed under /s/search.atom; HTTP-friendly so default_tier: 1.
-# Account is the URL-encoded query (empty = full open feed).
+# APS Jobs migrated to a Salesforce Lightning SPA in 2026; the Atom
+# feed at /s/search.atom no longer exists and the new endpoints
+# require Salesforce Aura/Lightning XHR calls that the parser
+# doesn't yet speak. Entries are seeded but disabled until the
+# Salesforce integration ships.
 apsjobs:
   - account: ""
     display_name: APS Jobs — All open positions
     default_tier: 1
     cadence_seconds: 7200
+    enabled: false
   - account: Keywords=software
     display_name: APS Jobs — Software
     default_tier: 1
     cadence_seconds: 7200
+    enabled: false
   - account: Keywords=data
     display_name: APS Jobs — Data
     default_tier: 1
     cadence_seconds: 7200
+    enabled: false

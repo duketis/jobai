@@ -84,7 +84,7 @@ def test_source_list_displays_synced_sources(_isolated_db: Path) -> None:
     result = runner.invoke(app, ["source", "list"])
 
     assert result.exit_code == 0
-    assert "greenhouse:atlassian" in result.output
+    assert "greenhouse:anthropic" in result.output
     assert "TIER" in result.output
 
 
@@ -99,25 +99,25 @@ def test_source_disable_then_list_enabled_only(_isolated_db: Path) -> None:
     runner.invoke(app, ["migrate"])
     runner.invoke(app, ["source", "sync"])
 
-    runner.invoke(app, ["source", "disable", "greenhouse:atlassian"])
+    runner.invoke(app, ["source", "disable", "greenhouse:anthropic"])
     result = runner.invoke(app, ["source", "list", "--enabled"])
 
     assert result.exit_code == 0
-    assert "greenhouse:atlassian" not in result.output
-    assert "greenhouse:canva" in result.output
+    assert "greenhouse:anthropic" not in result.output
+    assert "greenhouse:stripe" in result.output
 
 
 def test_source_enable_re_enables_after_disable(_isolated_db: Path) -> None:
     runner.invoke(app, ["migrate"])
     runner.invoke(app, ["source", "sync"])
 
-    runner.invoke(app, ["source", "disable", "greenhouse:atlassian"])
-    runner.invoke(app, ["source", "enable", "greenhouse:atlassian"])
+    runner.invoke(app, ["source", "disable", "greenhouse:anthropic"])
+    runner.invoke(app, ["source", "enable", "greenhouse:anthropic"])
 
     conn = sqlite3.connect(_isolated_db)
     conn.row_factory = sqlite3.Row
     try:
-        row = get_source_by_name(conn, kind="greenhouse", account="atlassian")
+        row = get_source_by_name(conn, kind="greenhouse", account="anthropic")
     finally:
         conn.close()
     assert row.enabled is True

@@ -1,17 +1,28 @@
-"""APS Jobs (Australian Public Service) source.
+"""APS Jobs (Australian Public Service) source — currently disabled.
 
-The APS publishes its central job board at https://www.apsjobs.gov.au/.
-The site offers an RSS feed at ``/s/search.atom`` that returns up to
-~200 listings per call with stable structured data — far cleaner than
-scraping the HTML search page.
+.. warning::
 
-Each ``<entry>`` carries a ``<link>`` to the job's HTML page and
-``<id>`` derived from the ``ItemID`` URL parameter, which we use as
-the stable ``source_external_id``.
+   APS Jobs migrated to a Salesforce Lightning SPA in 2026. The Atom
+   feed at ``/s/search.atom`` no longer exists (returns 404), and the
+   new search-results page (``/s/job-search``) lazy-loads jobs via
+   Salesforce Aura/Lightning XHR calls that this parser doesn't yet
+   speak. ``companies.yaml`` ships the entries with ``enabled: false``
+   so the scheduler skips them.
 
-The ``account`` is the RSS query string (URL-encoded), e.g.
-``"Keywords=software"``. An empty ``account`` returns the default
-"all open" feed.
+   Until a Salesforce-aware parser lands, this module's
+   :class:`APSJobsSource` is dead code; the file is preserved
+   (with passing tests against a representative legacy Atom fixture)
+   so the migration to the new endpoint is a parser swap, not a
+   greenfield addition.
+
+Original (legacy) behaviour:
+
+The site used to expose an Atom feed under ``/s/search.atom``; each
+``<entry>`` carried a stable ``<id>`` containing ``ItemID=<digits>``
+which became the ``source_external_id``.
+
+The ``account`` was the RSS query string (URL-encoded), e.g.
+``"Keywords=software"``; empty returned the full open feed.
 """
 
 from __future__ import annotations
