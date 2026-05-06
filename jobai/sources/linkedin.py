@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 from selectolax.parser import HTMLParser, Node
 
@@ -113,7 +113,7 @@ def _parse_card(card: Node) -> NormalizedJob | None:
         source_external_id=str(job_id),
         title=title.strip(),
         company=(company or "Unknown").strip(),
-        apply_url=urljoin(_BASE_URL, apply_url),
+        apply_url=_canonical_apply_url(apply_url),
         raw_data=_card_to_raw(card),
         location_raw=location.strip() if location else None,
         location_country=_country_from(location),
@@ -121,6 +121,19 @@ def _parse_card(card: Node) -> NormalizedJob | None:
         remote_type=_remote_from(location),
         posted_at=posted_at,
     )
+
+
+def _canonical_apply_url(href: str) -> str:
+    """Normalise to ``host + /jobs/view/{slug}-{id}`` without tracking.
+
+    Guest-mode LinkedIn URLs include rotating ``refId`` /
+    ``trackingId`` / ``position`` params that bloat the dedup index
+    with new-looking rows on every scrape. Stripping the query keeps
+    the canonical id surfaced in the path stable across runs.
+    """
+    full = urljoin(_BASE_URL, href)
+    parsed = urlparse(full)
+    return urlunparse(parsed._replace(query="", fragment=""))
 
 
 def _extract_job_id(card: Node) -> str | None:
