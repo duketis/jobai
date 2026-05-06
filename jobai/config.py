@@ -90,6 +90,18 @@ class Settings(BaseSettings):
         default="claude-opus-4-7",
         description="Anthropic model id to use for the agent.",
     )
+    agent_backend: str = Field(
+        default="api",
+        description=(
+            "Which auth path the agent uses. ``api`` (default) drives the "
+            "Anthropic SDK with an API key — pay-per-token billing. "
+            "``subscription`` drives the Claude Agent SDK which runs the "
+            "logged-in ``claude`` CLI in a subprocess, so calls bill against "
+            "your Claude Pro/Max subscription quota instead. Subscription "
+            "mode requires the ``claude`` CLI installed and authenticated "
+            "(typically via mounting your ``~/.claude/`` into the container)."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

@@ -24,11 +24,20 @@ The fastest path: one container, one volume, three commands.
 ```bash
 git clone https://github.com/duketis/jobai.git
 cd jobai
-cp .env.example .env  # then add your ANTHROPIC_API_KEY
+cp .env.example .env  # then fill in either an API key or an OAuth token, see below
 docker compose up -d
 ```
 
 The app is at <http://localhost:8421>. The SQLite DB lives in the `jobai-data` named volume, so `docker compose down` is safe — your scraped jobs persist.
+
+### Agent backends — pay-per-token vs subscription
+
+The chat dock has two auth paths; pick one in `.env`:
+
+* **`JOBAI_AGENT_BACKEND=api`** (default) — uses `ANTHROPIC_API_KEY` against the Anthropic API. Get a key from <https://console.anthropic.com>. Pay-per-token billing.
+* **`JOBAI_AGENT_BACKEND=subscription`** — uses your Claude Pro/Max plan via the `claude` CLI bundled into the image. Run `claude setup-token` on your host to generate a long-lived OAuth token (`sk-ant-oat-…`), paste it into `CLAUDE_CODE_OAUTH_TOKEN`, and the in-container CLI authenticates with your Max account. **Calls bill against your Max quota, not API credit.**
+
+Both are wired to the same `/api/agent/chat` endpoint and emit identical SSE events; the chat dock UI doesn't know which backend it's talking to.
 
 ## Quick start (local Python)
 

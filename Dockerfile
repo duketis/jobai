@@ -39,12 +39,20 @@ ENV PYTHONUNBUFFERED=1 \
 # System libs Chromium links against on Debian slim. Playwright's own
 # `--with-deps` would pull these in but also installs build-essential
 # we don't need at runtime; listing them here keeps the image lean.
+# We also install Node 20 + the ``claude`` CLI so the subscription
+# agent backend (claude-agent-sdk) has the binary it spawns. The
+# image stays usable in API-key mode regardless — claude is only
+# invoked when JOBAI_AGENT_BACKEND=subscription.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl tini \
+      ca-certificates curl tini gnupg \
       libglib2.0-0 libnss3 libnspr4 libdbus-1-3 libatk1.0-0 \
       libatk-bridge2.0-0 libcups2 libdrm2 libxcomposite1 libxdamage1 \
       libxext6 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 \
       libcairo2 libasound2 libatspi2.0-0 libx11-xcb1 \
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && apt-get purge -y --auto-remove gnupg \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

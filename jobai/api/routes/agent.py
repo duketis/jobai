@@ -40,10 +40,12 @@ from jobai.agent.conversations import (
     list_messages,
     messages_to_anthropic_format,
 )
-from jobai.agent.loop import TurnResult, run_chat_turn
+from jobai.agent.loop import StreamEvent, TurnResult, run_chat_turn
+from jobai.agent.subscription_loop import run_subscription_chat_turn
 from jobai.agent.tools import ToolExecutor
 from jobai.api.dependencies import AnthropicDep, ConnDep, ModelDep
 from jobai.api.models import AgentChatRequest
+from jobai.config import get_settings
 
 router = APIRouter()
 
@@ -139,25 +141,46 @@ async def _stream_turn(
     Each yielded dict has ``event`` (the type) and ``data`` (a JSON
     string). ``EventSourceResponse`` formats these as
     ``event: <type>\\n data: <json>\\n\\n`` on the wire.
+
+    The backend selection (API key vs Claude Pro/Max subscription)
+    happens here, not in the loops themselves: both
+    :func:`run_chat_turn` and :func:`run_subscription_chat_turn`
+    yield the same :class:`StreamEvent` shape, so the SSE wire
+    format is identical regardless of which auth path is in use.
     """
     yield _sse("conversation", {"conversation_id": conversation_id})
 
     history = _load_history(conn, conversation_id)
     executor = ToolExecutor(conn)
     result = TurnResult()
+    backend = get_settings().agent_backend.lower()
+
+    async def _events() -> AsyncIterator[StreamEvent]:
+        if backend == "subscription":
+            async for ev in run_subscription_chat_turn(
+                model=model or None,
+                user_message=user_message,
+                history=history,
+                tool_executor=executor,
+                result=result,
+            ):
+                yield ev
+        else:
+            async for ev in run_chat_turn(
+                client=client,
+                model=model,
+                user_message=user_message,
+                history=history,
+                tool_executor=executor,
+                result=result,
+            ):
+                yield ev
 
     try:
-        async for stream_event in run_chat_turn(
-            client=client,
-            model=model,
-            user_message=user_message,
-            history=history,
-            tool_executor=executor,
-            result=result,
-        ):
+        async for stream_event in _events():
             yield _sse(stream_event.type, stream_event.data)
     except Exception as exc:  # noqa: BLE001 - surface any unexpected failure as an SSE error
-        _log.exception("agent_chat_stream_failed")
+        _log.exception("agent_chat_stream_failed", extra={"backend": backend})
         yield _sse(
             "error",
             {"error_class": type(exc).__name__, "error": str(exc)},

@@ -4,9 +4,18 @@
 # http://localhost:8421. The SQLite DB persists under the `jobai-data`
 # named volume; deleting the container leaves the data intact.
 #
-# Required: an Anthropic API key in `.env` (see `.env.example`).
-# Without it the agent endpoints return 500; the scrape pipeline
-# still runs.
+# The agent has two backends, picked via JOBAI_AGENT_BACKEND in .env:
+#
+#   * ``api`` (default) — uses ANTHROPIC_API_KEY against the
+#     Anthropic API. Pay-per-token billing.
+#   * ``subscription`` — uses your Claude Pro/Max plan via the
+#     ``claude`` CLI bundled into the image. Set CLAUDE_CODE_OAUTH_TOKEN
+#     in .env (run ``claude setup-token`` on your host to get one).
+#     No API key needed; calls bill against your Max quota.
+#
+# Either mode is independent — the data + API endpoints work
+# without either being configured; only /api/agent/chat depends on
+# the chosen backend.
 
 services:
   jobai:
