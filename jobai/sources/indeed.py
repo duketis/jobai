@@ -23,20 +23,13 @@ from jobai.sources.base import BaseSource, NormalizedJob
 _BASE_URL = "https://au.indeed.com"
 _SEARCH_PATH = "/jobs"
 
-#: Match the inline data island the SSR pass emits before the React
-#: bundle hydrates. The JSON is single-line for the modern Indeed
-#: build but the regex stays DOTALL-tolerant in case that changes.
-_INITIAL_DATA_RE = re.compile(
-    r"window\._initialData\s*=\s*(\{.*?\})\s*;\s*window\.",
-    re.DOTALL,
-)
-
-#: Older Indeed variants emit ``window.mosaic.providerData["mosaic-provider-jobcards"]``
-#: instead. We try this fallback when ``_initialData`` is missing.
-_MOSAIC_DATA_RE = re.compile(
-    r'mosaic-provider-jobcards["\']\s*\]\s*=\s*(\{.*?\})\s*;\s*window\.',
-    re.DOTALL,
-)
+#: Locate the start of each candidate data island. The JSON object
+#: that follows is extracted via brace balancing in
+#: :func:`_extract_balanced_object` since regex backtracking on a
+#: ``\{.*?\}`` against multi-MB pages is both slow and fragile (a
+#: single ``}`` inside a string literal trips a non-greedy match).
+_INITIAL_DATA_START_RE = re.compile(r"window\._initialData\s*=\s*(?=\{)")
+_MOSAIC_DATA_START_RE = re.compile(r'mosaic-provider-jobcards["\']\s*\]\s*=\s*(?=\{)')
 
 
 class IndeedSource(BaseSource):
@@ -75,41 +68,85 @@ def build_query(*, keywords: str, location: str = "Australia", recency_days: int
 
 
 def _extract_results(html: str) -> list[dict[str, Any]]:
-    """Walk the embedded data island and return the per-job dicts."""
-    payload = _parse_initial_data(html) or _parse_mosaic_data(html)
-    if not isinstance(payload, dict):
+    """Walk the embedded data island and return the per-job dicts.
+
+    Modern Indeed renders both ``window._initialData`` (page-level
+    state) and ``window.mosaic.providerData["mosaic-provider-jobcards"]``
+    (the search-results provider). The job list lives in different
+    paths in each. We try every known path against every payload so
+    a renamed root key in one doesn't drag down the whole parser.
+    """
+    payloads = [
+        p for p in (_parse_initial_data(html), _parse_mosaic_data(html)) if isinstance(p, dict)
+    ]
+    if not payloads:
         return []
 
-    # `_initialData` shape: {"jobsearch": {"results": [...]}}.
-    candidates = (
-        _safe_dig(payload, "jobsearch", "results"),
-        _safe_dig(payload, "metaData", "mosaicProviderJobCardsModel", "results"),
-        _safe_dig(payload, "results"),
+    paths = (
+        ("jobsearch", "results"),
+        ("metaData", "mosaicProviderJobCardsModel", "results"),
+        ("results",),
     )
-    for results in candidates:
-        if isinstance(results, list):
-            return [r for r in results if isinstance(r, dict)]
+    for payload in payloads:
+        for path in paths:
+            results = _safe_dig(payload, *path)
+            if isinstance(results, list) and results:
+                return [r for r in results if isinstance(r, dict)]
     return []
 
 
 def _parse_initial_data(html: str) -> Any:
-    match = _INITIAL_DATA_RE.search(html)
-    if match is None:
-        return None
-    try:
-        return json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
+    return _extract_payload(html, _INITIAL_DATA_START_RE)
 
 
 def _parse_mosaic_data(html: str) -> Any:
-    match = _MOSAIC_DATA_RE.search(html)
+    return _extract_payload(html, _MOSAIC_DATA_START_RE)
+
+
+def _extract_payload(html: str, anchor_re: re.Pattern[str]) -> Any:
+    match = anchor_re.search(html)
     if match is None:
         return None
+    raw = _extract_balanced_object(html, match.end())
+    if raw is None:
+        return None
     try:
-        return json.loads(match.group(1))
+        return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_balanced_object(text: str, start: int) -> str | None:
+    """Return the JSON object literal that begins at ``text[start]``.
+
+    Walks the string counting brace depth, respecting string literals
+    and escapes so a ``}`` embedded in a string doesn't close the
+    object early. Returns ``None`` if the literal is malformed or
+    truncated (which we treat as "no data" rather than raising).
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
 
 
 def _safe_dig(payload: Any, *keys: str) -> Any:
@@ -157,10 +194,20 @@ def _parse_job(entry: dict[str, Any]) -> NormalizedJob | None:
 
 
 def _resolve_apply_url(entry: dict[str, Any], job_key: Any) -> str:
+    """Return a canonical ``/viewjob?jk={key}`` apply URL.
+
+    Indeed's ``viewJobLink`` field comes back with multi-KB tracking
+    payloads (``advn``, ``adid``, ``xkcb``, ``continueUrl``, ...).
+    Anchoring on ``jk`` keeps dedup keys stable across runs and the
+    DB rows readable. The ``link`` fallback is used only when no
+    ``jk`` is available.
+    """
+    if job_key is not None:
+        return f"{_BASE_URL}/viewjob?jk={job_key}"
     explicit = entry.get("viewJobLink") or entry.get("link")
     if isinstance(explicit, str) and explicit:
         return urljoin(_BASE_URL, explicit)
-    return f"{_BASE_URL}/viewjob?jk={job_key}"
+    return _BASE_URL
 
 
 def _city_from(location: Any) -> str | None:
