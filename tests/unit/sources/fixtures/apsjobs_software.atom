@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>APS Jobs Search Results</title>
+  <link href="https://www.apsjobs.gov.au/s/search.atom"/>
+  <updated>2026-05-05T22:00:00Z</updated>
+  <id>https://www.apsjobs.gov.au/s/search</id>
+
+  <entry>
+    <title>Senior Software Engineer</title>
+    <link href="https://www.apsjobs.gov.au/s/job-details?ItemID=3000123"/>
+    <id>https://www.apsjobs.gov.au/s/job-details?ItemID=3000123</id>
+    <updated>2026-05-04T09:00:00Z</updated>
+    <published>2026-05-01T09:00:00Z</published>
+    <summary>Department of Finance is hiring. Location: Canberra ACT. Salary: $120,000 - $140,000. Build cloud-native government services.</summary>
+  </entry>
+
+  <entry>
+    <title>Data Scientist (APS6)</title>
+    <link href="https://www.apsjobs.gov.au/s/job-details?ItemID=3000124"/>
+    <id>https://www.apsjobs.gov.au/s/job-details?ItemID=3000124</id>
+    <updated>2026-05-03T12:00:00Z</updated>
+    <published>2026-04-29T12:00:00Z</published>
+    <summary>Australian Bureau of Statistics is hiring. Location: Belconnen ACT. Build models for the next census.</summary>
+  </entry>
+
+  <entry>
+    <title>Junior Developer (Graduate)</title>
+    <link href="https://www.apsjobs.gov.au/s/job-details?ItemID=3000125"/>
+    <id>tag:apsjobs.gov.au,2026:3000125</id>
+    <updated>2026-05-02T08:00:00Z</updated>
+    <published>2026-04-25T08:00:00Z</published>
+    <summary>Department of Defence Graduate Program. Location: Canberra ACT.</summary>
+  </entry>
+</feed>

@@ -108,7 +108,14 @@ def _validate_entry(kind: str, entry: Any) -> None:
             raise CompaniesYamlError(
                 f"entry under {kind!r} missing required field {required_key!r}: {entry!r}"
             )
-        if not isinstance(entry[required_key], str) or not entry[required_key]:
-            raise CompaniesYamlError(
-                f"entry under {kind!r} has invalid {required_key!r}: {entry[required_key]!r}"
-            )
+    # ``account`` may legitimately be empty for sources whose name is
+    # the bare ``kind`` (see :class:`BaseSource.name`); APS Jobs uses
+    # this for its full-feed entry. ``display_name`` must be non-empty.
+    if not isinstance(entry["account"], str):
+        raise CompaniesYamlError(
+            f"entry under {kind!r} has invalid 'account': {entry['account']!r}"
+        )
+    if not isinstance(entry["display_name"], str) or not entry["display_name"]:
+        raise CompaniesYamlError(
+            f"entry under {kind!r} has invalid 'display_name': {entry['display_name']!r}"
+        )
