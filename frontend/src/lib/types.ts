@@ -1,0 +1,130 @@
+/**
+ * Wire-format types mirroring the FastAPI Pydantic models in
+ * jobai/api/models.py. Hand-maintained: a single source of truth lives in
+ * Python (the API contract); we re-state the shape here so TypeScript
+ * call sites get inference.
+ */
+
+export interface JobSourceLink {
+  source_name: string;
+  apply_url: string;
+}
+
+export interface JobSummary {
+  id: number;
+  title: string;
+  company: string;
+  location_raw: string | null;
+  location_country: string | null;
+  location_city: string | null;
+  remote_type: string | null;
+  employment_type: string | null;
+  posted_at: string | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  salary_currency: string | null;
+  apply_url: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  sources: JobSourceLink[];
+}
+
+export interface JobDetail extends JobSummary {
+  description_text: string | null;
+  description_html: string | null;
+  company_norm: string;
+  fingerprint_json: string;
+}
+
+export interface JobsListResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: JobSummary[];
+}
+
+export type JobState = "new" | "saved" | "applied" | "dismissed" | "rejected";
+
+export interface JobStateResponse {
+  job_id: number;
+  state: JobState;
+  notes: string | null;
+  updated_at: string;
+}
+
+export interface ConversationItem {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationsListResponse {
+  items: ConversationItem[];
+}
+
+export type MessageContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean }
+  | { type: "thinking"; thinking: string; signature?: string };
+
+export interface ConversationMessageItem {
+  id: number;
+  role: "user" | "assistant";
+  /** Plain string for early user turns; content array for assistant + tool turns. */
+  content: string | MessageContentBlock[];
+  created_at: string;
+}
+
+export interface ConversationDetailResponse {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: ConversationMessageItem[];
+}
+
+export interface SourceSummary {
+  id: number;
+  name: string;
+  kind: string;
+  account: string;
+  display_name: string;
+  default_tier: number;
+  enabled: boolean;
+  cadence_seconds: number;
+  current_tier: number | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error_class: string | null;
+  consecutive_failures: number;
+  cooldown_until: string | null;
+}
+
+export interface HealthSnapshot {
+  status: string;
+  jobs_total: number;
+  jobs_added_24h: number;
+  sources_total: number;
+  sources_enabled: number;
+  sources_failing: number;
+  timestamp: string;
+}
+
+/**
+ * Server-Sent Event types emitted by /api/agent/chat. Maps 1:1 to the
+ * StreamEvent type values produced by the agent loop in
+ * jobai/agent/loop.py.
+ */
+export type AgentStreamEvent =
+  | { type: "conversation"; data: { conversation_id: number } }
+  | { type: "text_delta"; data: { text: string } }
+  | { type: "thinking_delta"; data: { text: string } }
+  | { type: "tool_use_start"; data: { id: string; name: string } }
+  | { type: "tool_call"; data: { id: string; name: string; input: Record<string, unknown> } }
+  | { type: "tool_result"; data: { id: string; name: string; result: unknown } }
+  | { type: "tool_error"; data: { id: string; name: string; error_class: string; error: string } }
+  | { type: "pause_turn"; data: Record<string, never> }
+  | { type: "done"; data: { stop_reason: string; usage?: Record<string, number>; iterations?: number } }
+  | { type: "error"; data: { error_class: string; error: string } };
