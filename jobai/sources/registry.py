@@ -14,17 +14,25 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from jobai.sources.apsjobs import APSJobsSource
 from jobai.sources.ashby import AshbySource
 from jobai.sources.base import BaseSource
 from jobai.sources.greenhouse import GreenhouseSource
+from jobai.sources.indeed import IndeedSource
 from jobai.sources.lever import LeverSource
+from jobai.sources.linkedin import LinkedInSource
+from jobai.sources.seek import SeekSource
 from jobai.sources.smartrecruiters import SmartRecruitersSource
 from jobai.sources.workable import WorkableSource
 
 _REGISTRY: Mapping[str, type[BaseSource]] = {
+    "apsjobs": APSJobsSource,
     "ashby": AshbySource,
     "greenhouse": GreenhouseSource,
+    "indeed": IndeedSource,
     "lever": LeverSource,
+    "linkedin": LinkedInSource,
+    "seek": SeekSource,
     "smartrecruiters": SmartRecruitersSource,
     "workable": WorkableSource,
 }

@@ -74,3 +74,78 @@ workable:
 smartrecruiters:
   - account: visa
     display_name: Visa
+
+# Seek is JS-rendered — needs the browser fetcher (default_tier: 2).
+# Account is the URL slug from the Seek search-results path. Add more
+# slugs to broaden coverage; each one runs as its own source row.
+seek:
+  - account: python-jobs/in-All-Australia
+    display_name: Seek — Python (Australia)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: software-engineer-jobs/in-All-Melbourne-VIC
+    display_name: Seek — Software Engineer (Melbourne)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: software-engineer-jobs/in-All-Sydney-NSW
+    display_name: Seek — Software Engineer (Sydney)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: backend-developer-jobs/in-All-Australia
+    display_name: Seek — Backend (Australia)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: full-stack-developer-jobs/in-All-Australia
+    display_name: Seek — Full Stack (Australia)
+    default_tier: 2
+    cadence_seconds: 3600
+
+# LinkedIn fingerprints aggressively — needs the stealth (Patchright)
+# fetcher (default_tier: 3). Account is the URL-encoded query string
+# for /jobs/search.
+linkedin:
+  - account: keywords=python&location=Australia
+    display_name: LinkedIn — Python (Australia)
+    default_tier: 3
+    cadence_seconds: 7200
+  - account: keywords=software%20engineer&location=Australia
+    display_name: LinkedIn — Software Engineer (Australia)
+    default_tier: 3
+    cadence_seconds: 7200
+  - account: keywords=backend%20engineer&location=Australia
+    display_name: LinkedIn — Backend Engineer (Australia)
+    default_tier: 3
+    cadence_seconds: 7200
+
+# Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
+# tier (2) is enough to render the island; promotes to stealth on 403.
+indeed:
+  - account: q=python&l=Australia&fromage=7
+    display_name: Indeed — Python (Australia, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: q=software+engineer&l=Australia&fromage=7
+    display_name: Indeed — Software Engineer (Australia, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: q=python&l=Melbourne+VIC&fromage=7
+    display_name: Indeed — Python (Melbourne, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+
+# APS Jobs — Australian federal government central job board.
+# Atom feed under /s/search.atom; HTTP-friendly so default_tier: 1.
+# Account is the URL-encoded query (empty = full open feed).
+apsjobs:
+  - account: ""
+    display_name: APS Jobs — All open positions
+    default_tier: 1
+    cadence_seconds: 7200
+  - account: Keywords=software
+    display_name: APS Jobs — Software
+    default_tier: 1
+    cadence_seconds: 7200
+  - account: Keywords=data
+    display_name: APS Jobs — Data
+    default_tier: 1
+    cadence_seconds: 7200
