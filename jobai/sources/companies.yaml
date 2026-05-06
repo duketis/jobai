@@ -206,6 +206,21 @@ nsw_iworkfor:
     default_tier: 2
     cadence_seconds: 7200
 
+# QLD Government — smartjobs.qld.gov.au, an NGA Talent Solutions
+# board. The default unfiltered search-results URL is plain HTTP
+# (default_tier: 1) and serves all open positions in one request.
+qld_smartjobs:
+  - account: "14904"
+    display_name: QLD Government — All open positions
+    default_tier: 1
+    cadence_seconds: 7200
+
+# NOTE: VIC (jobs.careers.vic.gov.au), SA (iworkfor.sa.gov.au), and
+# WA (search.jobs.wa.gov.au) all sit behind multi-step form-submission
+# search flows, not at stable GET URLs. They need a Playwright
+# form-fill workflow (page.fill + click + wait) which is queued for
+# a future "WorkflowFetcher" capability — not currently seeded.
+
 # APS Jobs migrated to a Salesforce Lightning SPA in 2026; the Atom
 # feed at /s/search.atom no longer exists and the new endpoints
 # require Salesforce Aura/Lightning XHR calls that the parser

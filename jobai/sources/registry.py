@@ -22,6 +22,7 @@ from jobai.sources.indeed import IndeedSource
 from jobai.sources.lever import LeverSource
 from jobai.sources.linkedin import LinkedInSource
 from jobai.sources.nsw_iworkfor import NSWIWorkForSource
+from jobai.sources.qld_smartjobs import QLDSmartJobsSource
 from jobai.sources.seek import SeekSource
 from jobai.sources.smartrecruiters import SmartRecruitersSource
 from jobai.sources.workable import WorkableSource
@@ -34,6 +35,7 @@ _REGISTRY: Mapping[str, type[BaseSource]] = {
     "lever": LeverSource,
     "linkedin": LinkedInSource,
     "nsw_iworkfor": NSWIWorkForSource,
+    "qld_smartjobs": QLDSmartJobsSource,
     "seek": SeekSource,
     "smartrecruiters": SmartRecruitersSource,
     "workable": WorkableSource,
