@@ -6,109 +6,127 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 [![Type-checked: mypy](https://img.shields.io/badge/type--checked-mypy%20strict-1f5082.svg)](http://mypy-lang.org/)
 
-A local-first job-hunting agent. Continuously ingests listings from many sources, deduplicates them across providers, and exposes them through a search API and a conversational AI layer that helps you find, evaluate, and apply to roles.
+A local-first AI job-hunting agent for the Australian market. One process scrapes 70+ AU and global job boards on a schedule into a SQLite database, exposes a REST + SSE API, and runs an Anthropic-powered chat agent that uses tools to search and triage roles. The whole thing ships as a single container.
 
-> **Status:** in active development. The data layer (sprint 1) is being built; the AI/agent layer follows.
+> **Status:** v0.5.x — data layer, agent layer, and frontend all live. Tracking towards `v1.0.0`.
 
-## Features
+## What it does
 
-- **Multi-source ingestion** — Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Seek, Jora, EthicalJobs, RemoteOK, Remotive, We Work Remotely, Hacker News "Who is Hiring", LinkedIn (guest), AU government boards, and more.
-- **Cross-source deduplication** — the same role posted to Greenhouse and LinkedIn resolves to a single record, with both apply links preserved.
-- **Local-first storage** — SQLite with full-text search; no external services required.
-- **Tiered fetching** — plain HTTP, headless browser, and stealth browser, picked per source.
-- **Resilient orchestration** — per-source schedules, automatic retry/backoff, schema-change detection, in-app notifications when something needs attention.
-- **HTTP API** — clean REST surface for programmatic access and consumption by the AI layer.
-- **Conversational AI** *(sprint 2)* — natural-language search, fit scoring, resume tailoring, cover-letter drafting.
+- **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, all 5 AU state government boards (NSW / VIC / QLD / SA / WA), and the federal APS Jobs board.
+- **Deduplicates** the same role posted to multiple boards into one canonical row, with all source links preserved.
+- **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
+- **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
 
-## Installation
+## Quick start (Docker)
 
-Requires Python 3.12+.
+The fastest path: one container, one volume, three commands.
 
 ```bash
 git clone https://github.com/duketis/jobai.git
 cd jobai
-python3.12 -m venv .venv
-source .venv/bin/activate
+cp .env.example .env  # then add your ANTHROPIC_API_KEY
+docker compose up -d
+```
+
+The app is at <http://localhost:8421>. The SQLite DB lives in the `jobai-data` named volume, so `docker compose down` is safe — your scraped jobs persist.
+
+## Quick start (local Python)
+
+Requires Python 3.12, Node 22+, and a Chromium that Playwright can drive.
+
+```bash
+git clone https://github.com/duketis/jobai.git
+cd jobai
+
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pre-commit install
 playwright install chromium
+patchright install chromium
+
+(cd frontend && npm ci && npm run build)
+
+jobai migrate
+jobai source sync
+jobai serve  # http://localhost:8421
 ```
 
-## Quick start
+For a one-off scrape without booting the API:
 
 ```bash
-jobai migrate              # create the SQLite DB
-jobai run --source greenhouse:atlassian   # one-shot scrape of one source
-jobai serve                # start the scheduler + HTTP API on :8421
+jobai run --source greenhouse:atlassian
+jobai run --enabled    # walks every enabled source sequentially
 ```
-
-Then in another terminal:
-
-```bash
-curl 'http://localhost:8421/api/jobs?q=python&remote=true&limit=20'
-curl 'http://localhost:8421/api/health'
-```
-
-The OpenAPI spec lives at `http://localhost:8421/docs`.
 
 ## CLI
 
-```
+```text
 jobai migrate                       Apply pending DB migrations.
-jobai serve                         Start the scheduler + HTTP API.
-jobai run --source <name>           Run a single source once, ad hoc.
-jobai source list                   List configured sources and last-success times.
+jobai serve                         Start the scheduler + HTTP API + agent.
+jobai run --source <kind>:<acct>    Run one source ad hoc.
+jobai run --enabled                 Run every enabled source sequentially.
+jobai reconcile                     Re-run cross-source fuzzy reconciliation.
+jobai source sync                   Upsert source rows from companies.yaml.
+jobai source list                   List configured sources.
 jobai source enable <name>          Re-enable a disabled source.
 jobai source disable <name>         Disable a source (kill switch).
-jobai health                        Print a health summary.
-jobai notifications                 List unread notifications.
 ```
 
 ## HTTP API
 
+Full OpenAPI spec at <http://localhost:8421/docs>. The headline endpoints:
+
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/jobs` | Search and filter jobs (q, location, remote, posted_since, source, limit, offset). |
-| GET | `/api/jobs/{id}` | Full job detail. |
-| POST | `/api/jobs/{id}/state` | Mark saved / applied / dismissed. |
-| GET | `/api/sources` | Source registry with health per source. |
-| GET | `/api/health` | Aggregate system health. |
-| GET | `/api/notifications` | In-app notifications. |
-| POST | `/api/notifications/{id}/read` | Mark notification read. |
+| `GET` | `/api/jobs` | Search + filter (q, location, remote, posted_since, source, limit, offset). |
+| `GET` | `/api/jobs/{id}` | Full job detail. |
+| `POST` | `/api/jobs/{id}/state` | Mark saved / applied / dismissed. |
+| `GET` | `/api/sources` | Source registry with per-source health. |
+| `GET` | `/api/health` | Aggregate health snapshot. |
+| `POST` | `/api/agent/chat` | SSE-streamed agent turn. Body: `{conversation_id?, message}`. |
+| `GET` | `/api/conversations` | List recent conversations. |
+| `GET` | `/api/conversations/{id}` | Full message history for a conversation. |
+| `DELETE` | `/api/conversations/{id}` | Delete a conversation. |
+
+## Architecture
+
+```text
+┌─ jobai/sources/         per-board parsers (one Source class per kind)
+│  ├─ {greenhouse,lever,ashby,smartrecruiters,workable}.py  ATS APIs
+│  ├─ {seek,linkedin,indeed}.py                             big private boards
+│  ├─ {nsw,vic,qld,sa,wa}_*.py                              AU state govs
+│  └─ apsjobs.py                                            AU federal (Salesforce Lightning)
+├─ jobai/fetcher/         3-tier fetcher pattern
+│  ├─ http.py             tier 1 (httpx)
+│  ├─ browser.py          tier 2 (Playwright + run_in_page escape hatch)
+│  ├─ stealth.py          tier 3 (Patchright)
+│  └─ escalation.py       transparent tier promotion on 403
+├─ jobai/dedup/           deterministic SHA256 + fuzzy rapidfuzz reconciliation
+├─ jobai/pipeline/        scrape runner, schema-change detection, description backfill
+├─ jobai/agent/           Anthropic SDK agent — 5 tools, manual loop, SSE streaming
+├─ jobai/api/             FastAPI app: /api/* + the React SPA mounted at /
+├─ jobai/scheduler.py     APScheduler runs in the FastAPI lifespan
+└─ frontend/              React + Vite + TypeScript + Tailwind v4 SPA
+```
+
+A few decisions worth pulling out:
+
+- **3-tier fetcher** — sources declare `default_tier=1`; the runtime wraps tier-1 in `EscalatingFetcher` so a single 403 promotes the whole cycle to tier-2 (or tier-3 if the source's quirk demands it). Saves the request budget against walls.
+- **`run_in_page()` escape hatch** — the AU state government boards (VIC, SA, WA) only render results after a click on a search-form button. Rather than force every source to learn Playwright, the browser tier exposes a single `run_in_page(url, page_script)` method that hands the source a Playwright `Page` to drive directly.
+- **Frozen system prompt + cache_control** — keeps the Anthropic prompt cache warm across agent turns so token cost stays low and latency stays predictable.
+- **Modular monolith** — one process, SQLite + WAL, no message broker. Solo user, complexity-budget reasoning.
 
 ## Development
 
 ```bash
-pytest                  # run all tests
-pytest --cov            # with coverage
-mypy                    # strict type checking
-ruff check .            # lint
-ruff format .           # format
-pre-commit run --all-files
+pytest -q                       # 530+ tests
+pytest --cov=jobai --cov-report=term-missing
+mypy jobai tests                # strict
+ruff check . && ruff format --check .
+
+(cd frontend && npm run build)  # TypeScript strict, Vite production build
 ```
 
-CI runs ruff, mypy, and pytest on every push and pull request. Pre-commit hooks enforce the same checks locally before you commit.
-
-## Project layout
-
-```
-jobai/                  # source package
-├── api/                # FastAPI server and routes
-├── cli.py              # Typer CLI
-├── db/                 # SQLite schema and migrations
-├── dedup/              # deterministic + fuzzy job deduplication
-├── fetcher/            # HTTP / browser / stealth fetchers
-├── notifications/      # in-app notifications service
-├── observability/      # structured logging
-├── parsers/            # raw-to-canonical job normalization
-├── pipeline/           # orchestration: scheduler, runner, cleanup
-└── sources/            # one module per source family
-
-tests/
-├── unit/
-├── integration/
-└── fixtures/           # captured responses used by parser tests
-```
+CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed.
 
 ## License
 
