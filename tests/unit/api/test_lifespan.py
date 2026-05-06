@@ -66,8 +66,11 @@ def test_scheduler_boots_when_env_unset(
         scheduler = app.state.scheduler
         assert scheduler is not None
         assert scheduler.running
-        # Greenhouse:atlassian was seeded → expect one job registered.
-        assert len(scheduler.get_jobs()) == 1
+        # One source-cadence job for the seeded greenhouse:atlassian
+        # plus the singleton description-backfill job.
+        job_ids = sorted(j.id for j in scheduler.get_jobs())
+        assert any(jid.startswith("jobai.source.") for jid in job_ids)
+        assert "jobai.backfill.descriptions" in job_ids
 
     # Lifespan exit should have stopped the scheduler. ``running`` is
     # a property that re-reads state on each access, so this is a

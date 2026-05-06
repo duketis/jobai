@@ -32,6 +32,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from jobai.db.connection import connect
 from jobai.fetcher.dispatch import build_fetcher
+from jobai.pipeline.description_backfill import backfill_descriptions
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.sources.registry import UnknownSourceKindError, get_source_class
 from jobai.sources.repository import SourceRow, list_sources
@@ -46,6 +47,16 @@ _INITIAL_JITTER_SECONDS = 30
 #: Job IDs follow this format so reconciling DB → scheduler is a
 #: simple lookup. Source ids are stable (PK in the sources table).
 _JOB_ID_PREFIX = "jobai.source."
+
+#: ID for the singleton description-backfill job, distinct from
+#: per-source IDs so registration logic doesn't accidentally clobber it.
+_BACKFILL_JOB_ID = "jobai.backfill.descriptions"
+
+#: Cadence and per-tick budget for the backfill. 600s = every 10 min;
+#: 25 jobs per tick = ~150/hour, well below the per-IP rate-limit
+#: floor for LinkedIn guest pages.
+_BACKFILL_INTERVAL_SECONDS = 600
+_BACKFILL_LIMIT_PER_TICK = 25
 
 
 def build_scheduler() -> AsyncIOScheduler:
@@ -104,6 +115,59 @@ def register_sources(
         )
         registered += 1
     return registered
+
+
+def register_description_backfill(
+    scheduler: AsyncIOScheduler,
+    *,
+    db_path: Path,
+    interval_seconds: int = _BACKFILL_INTERVAL_SECONDS,
+    limit_per_tick: int = _BACKFILL_LIMIT_PER_TICK,
+) -> None:
+    """Add the singleton description-backfill job to the scheduler.
+
+    Walks ``jobs`` rows missing ``description_text`` and fetches
+    each apply URL on the source's appropriate fetcher tier. Tier-3
+    (stealth) is used for the only currently-supported parser
+    (LinkedIn) since vanilla Playwright is more aggressively
+    fingerprinted on detail pages.
+    """
+    # Drop any prior job by this id so re-registration is idempotent.
+    if scheduler.get_job(_BACKFILL_JOB_ID) is not None:
+        scheduler.remove_job(_BACKFILL_JOB_ID)
+
+    async def _run() -> None:
+        await _run_description_backfill(db_path, limit=limit_per_tick)
+
+    scheduler.add_job(
+        _run,
+        trigger=IntervalTrigger(seconds=interval_seconds),
+        id=_BACKFILL_JOB_ID,
+        name="description backfill",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        jitter=_INITIAL_JITTER_SECONDS,
+    )
+
+
+async def _run_description_backfill(db_path: Path, *, limit: int) -> None:
+    """Backfill body, called by the scheduled job each tick."""
+    fetcher = build_fetcher(tier=3)
+    try:
+        with connect(db_path) as conn:
+            result = await backfill_descriptions(conn, fetcher, limit=limit)
+        _log.info(
+            "description_backfill_tick",
+            extra={
+                "attempted": result.attempted,
+                "filled": result.filled,
+                "skipped": result.skipped,
+            },
+        )
+    finally:
+        with suppress(Exception):
+            await fetcher.aclose()
 
 
 def _default_job_factory(

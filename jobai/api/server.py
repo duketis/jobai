@@ -21,7 +21,12 @@ from fastapi import FastAPI
 from jobai import __version__
 from jobai.api.routes import agent, conversations, health, jobs, notifications, sources
 from jobai.config import get_settings
-from jobai.scheduler import build_scheduler, register_sources, shutdown
+from jobai.scheduler import (
+    build_scheduler,
+    register_description_backfill,
+    register_sources,
+    shutdown,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -53,8 +58,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = build_scheduler()
     try:
         registered = register_sources(scheduler, db_path=settings.db_path)
+        register_description_backfill(scheduler, db_path=settings.db_path)
         scheduler.start()
-        _log.info("scheduler_started", extra={"jobs": registered})
+        _log.info(
+            "scheduler_started",
+            extra={"jobs": registered, "backfill": "enabled"},
+        )
         app.state.scheduler = scheduler
         yield
     finally:

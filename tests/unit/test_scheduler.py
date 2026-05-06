@@ -11,8 +11,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from jobai.db.migrations import apply_pending
 from jobai.scheduler import (
+    _BACKFILL_JOB_ID,
     _JOB_ID_PREFIX,
     build_scheduler,
+    register_description_backfill,
     register_sources,
     run_source_by_id,
     shutdown,
@@ -189,6 +191,35 @@ async def test_shutdown_stops_running_scheduler() -> None:
     assert scheduler.running is True
     await shutdown(scheduler)
     assert scheduler.running is False
+
+
+# ---------------------------------------------------------------------------
+# register_description_backfill
+# ---------------------------------------------------------------------------
+
+
+def test_register_description_backfill_adds_singleton_job(seeded_db: Path) -> None:
+    scheduler = build_scheduler()
+    register_description_backfill(scheduler, db_path=seeded_db)
+    assert scheduler.get_job(_BACKFILL_JOB_ID) is not None
+
+
+def test_register_description_backfill_is_idempotent(seeded_db: Path) -> None:
+    scheduler = build_scheduler()
+    register_description_backfill(scheduler, db_path=seeded_db)
+    register_description_backfill(scheduler, db_path=seeded_db)
+    backfill_jobs = [j for j in scheduler.get_jobs() if j.id == _BACKFILL_JOB_ID]
+    assert len(backfill_jobs) == 1
+
+
+def test_register_description_backfill_uses_configurable_interval(
+    seeded_db: Path,
+) -> None:
+    scheduler = build_scheduler()
+    register_description_backfill(scheduler, db_path=seeded_db, interval_seconds=900)
+    job = scheduler.get_job(_BACKFILL_JOB_ID)
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 900
 
 
 # ---------------------------------------------------------------------------
