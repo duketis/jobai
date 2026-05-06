@@ -224,7 +224,11 @@ def _parse_job(entry: dict[str, Any]) -> NormalizedJob | None:
         salary_min=_parse_salary_min(salary_text),
         salary_max=_parse_salary_max(salary_text),
         salary_currency="AUD" if salary_text else None,
-        description_text=_normalise_str(entry.get("snippet")),
+        # Search-result snippets are truncated and end with "..."; we
+        # leave description_text empty here and let the per-job
+        # description backfill (pipeline/description_backfill.py)
+        # populate the full text from the side-panel render. The
+        # snippet is preserved in raw_data for downstream debugging.
     )
 
 

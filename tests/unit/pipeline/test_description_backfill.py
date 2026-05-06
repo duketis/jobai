@@ -13,8 +13,11 @@ import pytest
 from jobai.db.migrations import apply_pending
 from jobai.fetcher.base import Response
 from jobai.pipeline.description_backfill import (
-    PARSERS,
+    RECIPES,
     BackfillResult,
+    DescriptionRecipe,
+    _indeed_side_panel_url,
+    _parse_indeed_description,
     _parse_linkedin_description,
     backfill_descriptions,
     select_pending_jobs,
@@ -289,5 +292,132 @@ async def test_backfill_returns_zero_when_nothing_pending(
     assert result == BackfillResult(attempted=0, filled=0, skipped=0)
 
 
-def test_parsers_registry_exports_linkedin() -> None:
-    assert "linkedin" in PARSERS
+def test_recipes_registry_exports_linkedin() -> None:
+    assert "linkedin" in RECIPES
+    # LinkedIn fetches the apply URL as-is; no wait selector needed.
+    assert RECIPES["linkedin"].fetch_url("https://l.in/x") == "https://l.in/x"
+    assert RECIPES["linkedin"].wait_selector is None
+
+
+def test_recipes_registry_exports_indeed() -> None:
+    assert "indeed" in RECIPES
+    indeed = RECIPES["indeed"]
+    assert indeed.wait_selector is not None
+    # Indeed's fetch URL must rewrite ``/viewjob`` to a search-page hit
+    # (Cloudflare gates the apply URL itself).
+    rewritten = indeed.fetch_url("https://au.indeed.com/viewjob?jk=abc123")
+    assert "vjk=abc123" in rewritten
+    assert "/jobs?" in rewritten
+
+
+# ---------------------------------------------------------------------------
+# _indeed_side_panel_url
+# ---------------------------------------------------------------------------
+
+
+def test_indeed_side_panel_url_extracts_jk() -> None:
+    """The transform pulls the ``jk`` param out of any-position query
+    string and emits a side-panel URL anchored at /jobs."""
+    url = _indeed_side_panel_url("https://au.indeed.com/viewjob?jk=abc123")
+    assert url == "https://au.indeed.com/jobs?q=&l=Australia&vjk=abc123"
+
+
+def test_indeed_side_panel_url_handles_extra_params() -> None:
+    url = _indeed_side_panel_url(
+        "https://au.indeed.com/viewjob?from=serp&jk=def456&advn=12345",
+    )
+    assert url.endswith("vjk=def456")
+
+
+def test_indeed_side_panel_url_passes_through_when_no_jk() -> None:
+    """Without a ``jk`` param the rewrite would mislead, so leave the
+    URL untouched and let the fetch fail in a known way."""
+    untouched = "https://au.indeed.com/jobs?q=python"
+    assert _indeed_side_panel_url(untouched) == untouched
+
+
+# ---------------------------------------------------------------------------
+# _parse_indeed_description
+# ---------------------------------------------------------------------------
+
+
+def test_parse_indeed_description_extracts_text() -> None:
+    html = (
+        "<html><body>"
+        '<div id="jobDescriptionText"><p>About Acme.</p>'
+        "<p>You will build cool things.</p></div></body></html>"
+    )
+    assert _parse_indeed_description(html) == "About Acme.You will build cool things."
+
+
+def test_parse_indeed_description_falls_back_to_data_testid() -> None:
+    html = (
+        '<html><body><div data-testid="jobsearch-JobComponent-description">Body</div></body></html>'
+    )
+    assert _parse_indeed_description(html) == "Body"
+
+
+def test_parse_indeed_description_returns_none_on_missing() -> None:
+    assert _parse_indeed_description("<html><body></body></html>") is None
+
+
+# ---------------------------------------------------------------------------
+# Indeed integration: backfill applies the URL transform
+# ---------------------------------------------------------------------------
+
+
+async def test_backfill_uses_indeed_side_panel_url(conn: sqlite3.Connection) -> None:
+    """An Indeed pending job triggers a fetch against the rewritten URL,
+    not the raw ``/viewjob`` apply URL."""
+    job_id = _seed_job(
+        conn,
+        kind="indeed",
+        apply_url="https://au.indeed.com/viewjob?jk=feedface",
+    )
+    side_panel_url = "https://au.indeed.com/jobs?q=&l=Australia&vjk=feedface"
+    fetcher = _ScriptedFetcher(
+        {
+            side_panel_url: _resp(
+                200,
+                body=(
+                    b'<html><body><div id="jobDescriptionText">'
+                    b"Real Indeed body.</div></body></html>"
+                ),
+            ),
+        },
+    )
+
+    result = await backfill_descriptions(conn, fetcher)
+
+    assert result == BackfillResult(attempted=1, filled=1, skipped=0)
+    # The fetch went to the rewritten URL, not the raw apply URL.
+    assert fetcher.calls == [side_panel_url]
+    row = conn.execute(
+        "SELECT description_text FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row[0] == "Real Indeed body."
+
+
+async def test_backfill_overrides_recipes_via_kwarg(conn: sqlite3.Connection) -> None:
+    """Tests can inject a custom recipe map; production map untouched."""
+    _seed_job(
+        conn,
+        kind="custom",
+        apply_url="https://example.com/job/77",
+    )
+    fetcher = _ScriptedFetcher(
+        {
+            "https://example.com/job/77": _resp(
+                200,
+                body=b"<html><body><pre>Custom body</pre></body></html>",
+            ),
+        },
+    )
+    custom = {
+        "custom": DescriptionRecipe(
+            parse=lambda html: "Custom body" if "<pre>Custom body</pre>" in html else None,
+        ),
+    }
+    result = await backfill_descriptions(conn, fetcher, recipes=custom)
+    assert result.filled == 1
