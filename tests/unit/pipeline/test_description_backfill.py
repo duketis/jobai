@@ -94,6 +94,7 @@ class _ScriptedFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109
+        wait_for_selector: str | None = None,
     ) -> Response:
         self.calls.append(url)
         item = self._responses.get(url)

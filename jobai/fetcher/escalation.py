@@ -77,6 +77,7 @@ class EscalatingFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to wrapped fetcher
+        wait_for_selector: str | None = None,
     ) -> Response:
         if self._escalated:
             return await self._call_fallback(
@@ -85,6 +86,7 @@ class EscalatingFetcher:
                 headers=headers,
                 json=json,
                 timeout=timeout,
+                wait_for_selector=wait_for_selector,
             )
 
         response = await self._primary.fetch(
@@ -93,6 +95,7 @@ class EscalatingFetcher:
             headers=headers,
             json=json,
             timeout=timeout,
+            wait_for_selector=wait_for_selector,
         )
         if not _looks_blocked(response):
             return response
@@ -104,6 +107,7 @@ class EscalatingFetcher:
             headers=headers,
             json=json,
             timeout=timeout,
+            wait_for_selector=wait_for_selector,
         )
 
     async def _call_fallback(
@@ -114,6 +118,7 @@ class EscalatingFetcher:
         headers: Mapping[str, str] | None,
         json: Any,
         timeout: float | None,  # noqa: ASYNC109  - delegates to wrapped fetcher
+        wait_for_selector: str | None = None,
     ) -> Response:
         if self._fallback is None:
             self._fallback = self._fallback_factory()
@@ -123,6 +128,7 @@ class EscalatingFetcher:
             headers=headers,
             json=json,
             timeout=timeout,
+            wait_for_selector=wait_for_selector,
         )
 
     async def aclose(self) -> None:

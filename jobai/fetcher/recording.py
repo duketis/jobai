@@ -49,6 +49,7 @@ class RecordingFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109
+        wait_for_selector: str | None = None,
     ) -> Response:
         response = await self._inner.fetch(
             url,
@@ -56,6 +57,7 @@ class RecordingFetcher:
             headers=headers,
             json=json,
             timeout=timeout,
+            wait_for_selector=wait_for_selector,
         )
         if response.is_ok:
             self._record(response)

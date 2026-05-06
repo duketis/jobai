@@ -38,9 +38,15 @@ class _FakeDriver:
         *,
         headers: Mapping[str, str] | None,
         timeout_ms: float,
+        wait_for_selector: str | None = None,
     ) -> Response:
         self.calls.append(
-            {"url": url, "headers": dict(headers or {}), "timeout_ms": timeout_ms},
+            {
+                "url": url,
+                "headers": dict(headers or {}),
+                "timeout_ms": timeout_ms,
+                "wait_for_selector": wait_for_selector,
+            },
         )
         return self._response
 
@@ -92,6 +98,7 @@ async def test_fetch_passes_headers_and_timeout_to_driver() -> None:
             "url": "https://example.com/x",
             "headers": {"X-Run-Id": "abc"},
             "timeout_ms": 5_000.0,
+            "wait_for_selector": None,
         }
     ]
 
@@ -101,6 +108,16 @@ async def test_fetch_uses_default_timeout_when_none_given() -> None:
     async with BrowserFetcher(driver=driver, timeout=20.0) as fetcher:
         await fetcher.fetch("https://example.com/y")
     assert driver.calls[0]["timeout_ms"] == 20_000.0
+
+
+async def test_fetch_passes_wait_for_selector_to_driver() -> None:
+    driver = _FakeDriver()
+    async with BrowserFetcher(driver=driver) as fetcher:
+        await fetcher.fetch(
+            "https://example.com/spa",
+            wait_for_selector="article[data-jobcard]",
+        )
+    assert driver.calls[0]["wait_for_selector"] == "article[data-jobcard]"
 
 
 # ---------------------------------------------------------------------------

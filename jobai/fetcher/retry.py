@@ -99,6 +99,7 @@ class RetryingFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to inner fetcher
+        wait_for_selector: str | None = None,
     ) -> Response:
         for attempt in range(1, self._max_attempts + 1):
             try:
@@ -108,6 +109,7 @@ class RetryingFetcher:
                     headers=headers,
                     json=json,
                     timeout=timeout,
+                    wait_for_selector=wait_for_selector,
                 )
             except _TRANSIENT_EXCEPTIONS as exc:
                 if attempt >= self._max_attempts:

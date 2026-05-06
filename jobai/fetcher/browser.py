@@ -20,6 +20,7 @@ fetcher's contract without ever launching Chromium.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from types import TracebackType
@@ -51,6 +52,7 @@ class _Driver(Protocol):
         *,
         headers: Mapping[str, str] | None,
         timeout_ms: float,
+        wait_for_selector: str | None = None,
     ) -> Response: ...
 
     async def close(self) -> None: ...
@@ -95,6 +97,7 @@ class PlaywrightDriver:
         *,
         headers: Mapping[str, str] | None,
         timeout_ms: float,
+        wait_for_selector: str | None = None,
     ) -> Response:
         browser = await self._ensure_browser()
         context = await browser.new_context(user_agent=self._user_agent)
@@ -104,6 +107,14 @@ class PlaywrightDriver:
                 await page.set_extra_http_headers(dict(headers))
             response = await page.goto(url, timeout=timeout_ms)
             await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            if wait_for_selector is not None:
+                # Wait for the SPA to populate the requested selector
+                # (Next.js / Salesforce Lightning / React lazy-load
+                # results after first paint). Soft-fail: a timeout
+                # here yields the partially-rendered DOM rather than
+                # raising — better than zero data on the first cycle.
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(wait_for_selector, timeout=timeout_ms)
             html = await page.content()
 
             if response is None:
@@ -162,6 +173,7 @@ class BrowserFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to playwright
+        wait_for_selector: str | None = None,
     ) -> Response:
         if method != "GET":
             msg = (
@@ -178,6 +190,7 @@ class BrowserFetcher:
             url,
             headers=headers,
             timeout_ms=timeout_ms,
+            wait_for_selector=wait_for_selector,
         )
 
     async def aclose(self) -> None:

@@ -66,6 +66,7 @@ class Fetcher(Protocol):
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to httpx, not asyncio.timeout
+        wait_for_selector: str | None = None,
     ) -> Response:
         """Issue a request and return the :class:`Response`.
 
@@ -73,6 +74,15 @@ class Fetcher(Protocol):
         statuses; raising is reserved for genuine network or protocol
         failures (timeouts, connection resets, malformed responses).
         Status-based decisions belong to the caller.
+
+        ``wait_for_selector`` is a CSS selector that browser-tier
+        implementations should wait for after navigation before
+        snapshotting the DOM. It's the standard knob for scraping
+        SPAs that lazy-load their data after first paint
+        (Next.js / React / Salesforce Lightning sites). HTTP-tier
+        implementations ignore it; the value is part of the Protocol
+        so sources can request rendering without caring which tier
+        the runner picked.
         """
         ...
 

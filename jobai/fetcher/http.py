@@ -48,7 +48,12 @@ class HttpFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109
+        wait_for_selector: str | None = None,
     ) -> Response:
+        # ``wait_for_selector`` is part of the Fetcher Protocol so
+        # browser-tier sources can request rendering, but plain HTTP
+        # has nothing to wait for. Accept and ignore.
+        del wait_for_selector
         kwargs: dict[str, Any] = {}
         if headers is not None:
             kwargs["headers"] = dict(headers)

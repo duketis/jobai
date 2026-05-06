@@ -53,6 +53,7 @@ class _StubFetcher:
         headers: Mapping[str, str] | None = None,
         json: Any = None,
         timeout: float | None = None,  # noqa: ASYNC109
+        wait_for_selector: str | None = None,
     ) -> Response:
         del method, headers, json, timeout
         if url in self._responses:
