@@ -31,8 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from jobai.db.connection import connect
-from jobai.fetcher.http import HttpFetcher
-from jobai.fetcher.retry import RetryingFetcher
+from jobai.fetcher.dispatch import build_fetcher
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.sources.registry import UnknownSourceKindError, get_source_class
 from jobai.sources.repository import SourceRow, list_sources
@@ -145,22 +144,17 @@ async def run_source_by_id(source_id: int, db_path: Path) -> RunResult | None:
             return None
 
         source = source_class(account=row.account)
-
-        async with HttpFetcher() as http_fetcher:
-            fetcher = RetryingFetcher(http_fetcher)
-            try:
-                return await run_source(
-                    conn=conn,
-                    source=source,
-                    source_row=row,
-                    fetcher=fetcher,
-                )
-            finally:
-                # RetryingFetcher.aclose() closes the wrapped fetcher.
-                # The async-with on http_fetcher would re-close it; the
-                # idempotent aclose() in HttpFetcher tolerates that.
-                with suppress(Exception):
-                    await fetcher.aclose()
+        fetcher = build_fetcher(tier=row.default_tier)
+        try:
+            return await run_source(
+                conn=conn,
+                source=source,
+                source_row=row,
+                fetcher=fetcher,
+            )
+        finally:
+            with suppress(Exception):
+                await fetcher.aclose()
 
 
 def _load_source_row(conn: sqlite3.Connection, source_id: int) -> SourceRow | None:

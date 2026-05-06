@@ -27,7 +27,7 @@ from jobai.db.connection import connect
 from jobai.db.migrations import apply_pending
 from jobai.dedup.fuzzy import DEFAULT_SIMILARITY_THRESHOLD
 from jobai.dedup.reconcile import DEFAULT_WINDOW_DAYS, reconcile_fuzzy_duplicates
-from jobai.fetcher.http import HttpFetcher
+from jobai.fetcher.dispatch import build_fetcher
 from jobai.observability.logging import configure_logging, get_logger
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.sources.base import BaseSource
@@ -258,13 +258,16 @@ async def _run_one_by_name(db_path: Path, *, name: str) -> RunResult:
     with connect(db_path) as conn:
         source_row = get_source_by_name(conn, kind=kind, account=account)
         source = _instantiate_source(source_row)
-        async with HttpFetcher() as fetcher:
+        fetcher = build_fetcher(tier=source_row.default_tier)
+        try:
             result = await run_source(
                 conn=conn,
                 source=source,
                 source_row=source_row,
                 fetcher=fetcher,
             )
+        finally:
+            await fetcher.aclose()
     log.info("cli_run_complete", source=name, result=result)
     return result
 
@@ -277,7 +280,8 @@ async def _run_all_enabled(db_path: Path) -> list[tuple[str, RunResult]]:
 
     for source_row in rows:
         source = _instantiate_source(source_row)
-        async with HttpFetcher() as fetcher:
+        fetcher = build_fetcher(tier=source_row.default_tier)
+        try:
             with connect(db_path) as conn:
                 result = await run_source(
                     conn=conn,
@@ -285,6 +289,8 @@ async def _run_all_enabled(db_path: Path) -> list[tuple[str, RunResult]]:
                     source_row=source_row,
                     fetcher=fetcher,
                 )
+        finally:
+            await fetcher.aclose()
         log.info("cli_run_complete", source=source_row.name, result=result)
         results.append((source_row.name, result))
 
