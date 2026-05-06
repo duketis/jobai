@@ -215,11 +215,35 @@ qld_smartjobs:
     default_tier: 1
     cadence_seconds: 7200
 
-# NOTE: VIC (jobs.careers.vic.gov.au), SA (iworkfor.sa.gov.au), and
-# WA (search.jobs.wa.gov.au) all sit behind multi-step form-submission
-# search flows, not at stable GET URLs. They need a Playwright
-# form-fill workflow (page.fill + click + wait) which is queued for
-# a future "WorkflowFetcher" capability — not currently seeded.
+# VIC Government — jobs.careers.vic.gov.au, also an NGA Talent
+# Solutions board but its deployment requires submitting the search
+# form (no direct GET to results). Driven via BrowserFetcher's
+# run_in_page() escape hatch (default_tier: 2 with the form-fill
+# workflow); cadence is 2h since the browser-tier round-trip is
+# heavier than HTTP.
+vic_careers:
+  - account: "14123"
+    display_name: VIC Government — All open positions
+    default_tier: 2
+    cadence_seconds: 7200
+
+# SA Government — iworkfor.sa.gov.au. Behind a search form whose
+# submit button is #brsSearchBtn; results render into a
+# table.Report with cells keyed by data-fieldname. Driven via the
+# same run_in_page() form-fill workflow as VIC.
+sa_iworkfor:
+  - account: jb/list/all
+    display_name: SA Government — All open positions
+    default_tier: 2
+    cadence_seconds: 7200
+
+# WA Government — search.jobs.wa.gov.au, same Report-table pattern
+# as SA after a form submit. Driven via run_in_page() form-fill.
+wa_jobs:
+  - account: page.php?pageID=215
+    display_name: WA Government — All open positions
+    default_tier: 2
+    cadence_seconds: 7200
 
 # APS Jobs migrated to a Salesforce Lightning SPA in 2026; the Atom
 # feed at /s/search.atom no longer exists and the new endpoints
