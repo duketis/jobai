@@ -79,3 +79,11 @@ pip-delete-this-directory.txt
 # Jupyter
 .ipynb_checkpoints
 *.ipynb
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Built SPA emitted by `npm run build` in frontend/. CI rebuilds on
+# every push so the source of truth stays in `frontend/src`.
+jobai/api/static/

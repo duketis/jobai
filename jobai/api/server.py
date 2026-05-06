@@ -15,8 +15,13 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
+from starlette.responses import Response
 
 from jobai import __version__
 from jobai.api.routes import agent, conversations, health, jobs, notifications, sources
@@ -27,6 +32,11 @@ from jobai.scheduler import (
     register_sources,
     shutdown,
 )
+
+#: Built-frontend directory. Vite emits ``index.html`` + ``assets/*`` here
+#: when ``npm run build`` runs in ``frontend/``. The directory is gitignored
+#: in production deploys but committed for repeatable builds.
+_STATIC_DIR = Path(__file__).parent / "static"
 
 _log = logging.getLogger(__name__)
 
@@ -96,7 +106,47 @@ def create_app() -> FastAPI:
         prefix="/api/conversations",
         tags=["conversations"],
     )
+    _mount_frontend(application)
     return application
+
+
+def _mount_frontend(application: FastAPI) -> None:
+    """Serve the React SPA from ``jobai/api/static`` if it exists.
+
+    Mounting is conditional so a fresh checkout (where the frontend
+    hasn't been built yet) still boots a working API. The ``/api/*``
+    routes already declared above take precedence — Starlette's mount
+    sits at the root and only catches paths that fall through.
+
+    SPA fallback: any non-``/api/*`` GET that isn't a real file under
+    ``static/`` returns ``index.html`` so React Router's client-side
+    routes (``/jobs``, ``/chat/:id``, ...) render correctly on a
+    direct page load or refresh.
+    """
+    if not (_STATIC_DIR / "index.html").is_file():
+        _log.info(
+            "frontend_static_dir_missing",
+            extra={"path": str(_STATIC_DIR)},
+        )
+        return
+
+    assets_dir = _STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=assets_dir),
+            name="frontend-assets",
+        )
+
+    @application.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(request: Request, full_path: str) -> Response:
+        # /api/* never reaches here — those routers are matched first.
+        candidate = _STATIC_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        # Otherwise hand back index.html and let React Router decide.
+        del request
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 #: Module-level ASGI app for ``uvicorn jobai.api.server:app``.
