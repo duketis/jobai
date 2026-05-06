@@ -32,6 +32,13 @@ from jobai.dedup.promote import promote_to_canonical_jobs
 from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
+from jobai.pipeline.schema_change import (
+    FieldChange,
+    FieldStats,
+    detect_changes,
+    empty_stats,
+    update_stats,
+)
 from jobai.sources.base import BaseSource, NormalizedJob
 from jobai.sources.repository import SourceRow
 
@@ -48,6 +55,7 @@ class RunResult:
     items_new: int
     items_updated: int
     error_summary: str | None = None
+    schema_changes: tuple[FieldChange, ...] = ()
 
 
 async def run_source(
@@ -76,10 +84,12 @@ async def run_source(
     items_updated = 0
     status = "success"
     error_summary: str | None = None
+    field_stats: FieldStats = empty_stats()
 
     try:
         async for job in source.discover(recorder):
             items_seen += 1
+            field_stats = update_stats(field_stats, job)
             jobs_raw_id, raw_was_new = _upsert_job_raw(
                 conn,
                 source_id=source_row.id,
@@ -106,6 +116,21 @@ async def run_source(
             error=str(exc),
         )
 
+    schema_changes: tuple[FieldChange, ...] = ()
+    if status == "success":
+        previous_stats = _load_previous_stats(conn, source_id=source_row.id, before_run_id=run_id)
+        schema_changes = tuple(detect_changes(previous_stats, field_stats))
+        for change in schema_changes:
+            _log.warning(
+                "schema_change_detected",
+                source=source_row.name,
+                run_id=run_id,
+                field=change.field,
+                prev_null_rate=round(change.prev_null_rate, 3),
+                curr_null_rate=round(change.curr_null_rate, 3),
+                delta=round(change.delta, 3),
+            )
+
     _finish_run(
         conn,
         run_id=run_id,
@@ -114,6 +139,7 @@ async def run_source(
         items_new=items_new,
         items_updated=items_updated,
         error_summary=error_summary,
+        field_stats=field_stats,
     )
 
     _log.info(
@@ -133,6 +159,7 @@ async def run_source(
         items_new=items_new,
         items_updated=items_updated,
         error_summary=error_summary,
+        schema_changes=schema_changes,
     )
 
 
@@ -158,12 +185,13 @@ def _finish_run(
     items_new: int,
     items_updated: int,
     error_summary: str | None,
+    field_stats: FieldStats,
 ) -> None:
     conn.execute(
         "UPDATE scrape_runs "
         "SET finished_at = ?, status = ?, "
         "    items_seen = ?, items_new = ?, items_updated = ?, "
-        "    error_summary = ? "
+        "    error_summary = ?, field_stats_json = ? "
         "WHERE id = ?",
         (
             _now_iso(),
@@ -172,10 +200,35 @@ def _finish_run(
             items_new,
             items_updated,
             error_summary,
+            field_stats.to_json(),
             run_id,
         ),
     )
     conn.commit()
+
+
+def _load_previous_stats(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    before_run_id: int,
+) -> FieldStats | None:
+    """Return the field-stats from this source's most recent successful run.
+
+    Used to compare against the current run's stats for schema-change
+    detection. Returns ``None`` if there is no prior successful run
+    or its stats column is null/malformed.
+    """
+    row = conn.execute(
+        "SELECT field_stats_json FROM scrape_runs "
+        "WHERE source_id = ? AND id < ? AND status = 'success' "
+        "  AND field_stats_json IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (source_id, before_run_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return FieldStats.from_json(row[0])
 
 
 def _upsert_job_raw(
