@@ -15,6 +15,15 @@ from jobai.api.server import create_app
 from jobai.db.migrations import apply_pending
 
 
+@pytest.fixture(autouse=True)
+def _disable_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests should not boot APScheduler — kicking off real cadence
+    runs against an empty test DB risks weird side-effects and slows
+    every test by the start-up delay. The lifespan reads this env var
+    and skips scheduler init when it's set."""
+    monkeypatch.setenv("JOBAI_DISABLE_SCHEDULER", "1")
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     """Create a fresh migrated SQLite file per test."""
