@@ -8,7 +8,13 @@ import pytest
 from selectolax.parser import HTMLParser
 
 from jobai.fetcher.http import HttpFetcher
-from jobai.sources.wa_jobs import WAJobsSource, _parse_row
+from jobai.sources.wa_jobs import (
+    WAJobsFetchError,
+    WAJobsSource,
+    _parse_row,
+    _submit_search_form,
+)
+from tests.unit.sources._browser_fakes import FakeBrowserFetcher, html_response
 
 _FIXTURE = (Path(__file__).parent / "fixtures" / "wa_jobs.html").read_text(encoding="utf-8")
 
@@ -46,3 +52,34 @@ async def test_discover_rejects_non_browser_fetcher() -> None:
         with pytest.raises(TypeError, match="run_in_page"):
             async for _ in WAJobsSource().discover(fetcher):
                 pass
+
+
+async def test_discover_yields_jobs_through_run_in_page() -> None:
+    fetcher = FakeBrowserFetcher(html_response(_FIXTURE))
+    jobs = [j async for j in WAJobsSource().discover(fetcher)]
+    assert jobs
+    assert len({j.source_external_id for j in jobs}) == len(jobs)
+    assert fetcher.calls == [
+        "https://search.jobs.wa.gov.au/page.php?pageID=215",
+    ]
+
+
+async def test_discover_raises_on_non_2xx() -> None:
+    fetcher = FakeBrowserFetcher(html_response("<html/>", status_code=500))
+    with pytest.raises(WAJobsFetchError) as excinfo:
+        async for _ in WAJobsSource().discover(fetcher):
+            pass
+    assert excinfo.value.status_code == 500
+
+
+async def test_submit_search_form_swallows_missing_button() -> None:
+    class _DeadPage:
+        async def click(self, *_args: object, **_kwargs: object) -> None:
+            msg = "no button"
+            raise RuntimeError(msg)
+
+        async def wait_for_selector(self, *_args: object, **_kwargs: object) -> None:
+            msg = "timed out"
+            raise RuntimeError(msg)
+
+    await _submit_search_form(_DeadPage())  # type: ignore[arg-type]

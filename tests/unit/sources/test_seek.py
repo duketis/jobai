@@ -13,9 +13,19 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from selectolax.parser import HTMLParser
 
 from jobai.fetcher.http import HttpFetcher
-from jobai.sources.seek import SeekFetchError, SeekSource
+from jobai.sources.seek import (
+    SeekFetchError,
+    SeekSource,
+    _href_from_overlay,
+    _infer_remote_type,
+    _parse_card,
+    _parse_salary,
+    _strip_query_anchors,
+    _to_int,
+)
 
 _FIXTURE = (Path(__file__).parent / "fixtures" / "seek_python_au.html").read_text(encoding="utf-8")
 _SLUG = "python-jobs/in-All-Australia"
@@ -178,3 +188,95 @@ async def test_discover_walks_multiple_pages_and_dedups() -> None:
 async def test_max_pages_validation() -> None:
     with pytest.raises(ValueError, match="max_pages"):
         SeekSource(account=_SLUG, max_pages=0)
+
+
+async def test_discover_terminates_silently_on_later_page_failure() -> None:
+    """A non-2xx after page 1 ends the walk without raising — we keep
+    everything yielded so far."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, text=_FIXTURE)
+        return httpx.Response(503)
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_URL).mock(side_effect=respond)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in SeekSource(account=_SLUG, max_pages=3).discover(fetcher)]
+    # Page 1 still yielded its three cards.
+    assert len(jobs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Helper-function coverage
+# ---------------------------------------------------------------------------
+
+
+def test_strip_query_anchors_drops_query_and_anchor() -> None:
+    """Apply URL strips ``?ref=...`` and ``#sol=...`` to keep dedup keys
+    stable across runs that capture different referrer params."""
+    assert _strip_query_anchors("/job/91899557?ref=search&type=standard#sol=abc") == "/job/91899557"
+
+
+def test_strip_query_anchors_returns_input_when_path_empty() -> None:
+    """An input that urlparse can't extract a path from is passed through
+    untouched (Seek emits these for tracking-only links)."""
+    assert _strip_query_anchors("?only=query") == "?only=query"
+
+
+def test_href_from_overlay_returns_none_when_no_overlay() -> None:
+    card = HTMLParser('<article data-automation="normalJob"></article>').css_first("article")
+    assert card is not None
+    assert _href_from_overlay(card) is None
+
+
+def test_href_from_overlay_picks_up_alt_link_data_automation() -> None:
+    card = HTMLParser(
+        '<article data-automation="normalJob">'
+        '<a data-automation="job-list-view-job-link" href="/job/abc">x</a>'
+        "</article>",
+    ).css_first("article")
+    assert card is not None
+    assert _href_from_overlay(card) == "/job/abc"
+
+
+def test_parse_card_returns_none_when_no_job_id() -> None:
+    """Cards without a ``data-job-id`` attribute are not yieldable."""
+    card = HTMLParser(
+        '<article data-automation="normalJob">'
+        '<a data-automation="jobTitle" href="/job/x">Engineer</a>'
+        "</article>",
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+
+def test_parse_card_returns_none_when_no_apply_path() -> None:
+    """Card with id+title but no link is unusable downstream."""
+    card = HTMLParser(
+        '<article data-automation="normalJob" data-job-id="42">'
+        '<a data-automation="jobTitle">Engineer</a>'
+        "</article>",
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+
+def test_infer_remote_type_picks_up_remote_and_hybrid() -> None:
+    assert _infer_remote_type("Remote, Australia") == "remote"
+    assert _infer_remote_type("Hybrid - Sydney") == "hybrid"
+    assert _infer_remote_type("Sydney NSW") is None
+    assert _infer_remote_type(None) is None
+
+
+def test_parse_salary_handles_single_value_and_unparseable() -> None:
+    assert _parse_salary("$95,000 per year") == (95_000, None, "AUD")
+    assert _parse_salary("Negotiable") == (None, None, None)
+
+
+def test_to_int_upscales_thousands_shorthand() -> None:
+    """Seek sometimes lists short-form salaries (``$200``) meaning 200k."""
+    assert _to_int("250") == 250_000
+    assert _to_int("not a number") is None
+    assert _to_int("85,000") == 85_000

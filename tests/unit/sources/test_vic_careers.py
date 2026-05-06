@@ -16,10 +16,13 @@ from selectolax.parser import HTMLParser
 
 from jobai.fetcher.http import HttpFetcher
 from jobai.sources.vic_careers import (
+    VICCareersFetchError,
     VICCareersSource,
     _parse_row,
     _parse_salary,
+    _submit_search_form,
 )
+from tests.unit.sources._browser_fakes import FakeBrowserFetcher, html_response
 
 _FIXTURE = (Path(__file__).parent / "fixtures" / "vic_careers.html").read_text(encoding="utf-8")
 
@@ -79,3 +82,37 @@ async def test_discover_rejects_non_browser_fetcher() -> None:
         with pytest.raises(TypeError, match="run_in_page"):
             async for _ in VICCareersSource(account="14123").discover(fetcher):
                 pass
+
+
+async def test_discover_yields_jobs_through_run_in_page() -> None:
+    fetcher = FakeBrowserFetcher(html_response(_FIXTURE))
+    jobs = [j async for j in VICCareersSource(account="14123").discover(fetcher)]
+    assert jobs
+    assert fetcher.calls == [
+        "https://jobs.careers.vic.gov.au/jobtools/jncustomsearch.jobsearch?in_organid=14123",
+    ]
+
+
+async def test_discover_raises_on_non_2xx() -> None:
+    fetcher = FakeBrowserFetcher(html_response("<html/>", status_code=502))
+    with pytest.raises(VICCareersFetchError) as excinfo:
+        async for _ in VICCareersSource().discover(fetcher):
+            pass
+    assert excinfo.value.status_code == 502
+
+
+async def test_submit_search_form_returns_when_button_missing() -> None:
+    """If the Search button isn't on the page, ``_submit_search_form``
+    returns early so the caller still gets the rendered DOM."""
+
+    class _NoButtonPage:
+        async def click(self, *_args: object, **_kwargs: object) -> None:
+            msg = "no button"
+            raise RuntimeError(msg)
+
+        async def wait_for_selector(
+            self, *_args: object, **_kwargs: object
+        ) -> None:  # pragma: no cover - never reached
+            return
+
+    await _submit_search_form(_NoButtonPage())  # type: ignore[arg-type]
