@@ -1,39 +1,61 @@
 import { useQuery } from "@tanstack/react-query";
 import { Briefcase, MessageSquarePlus, Plus, Trash2 } from "lucide-react";
-import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
+import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
 
+import { ChatDock } from "@/components/ChatDock";
 import { deleteConversation, listConversations } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /**
- * Persistent app shell: left rail with primary navigation + recent
- * conversations, right pane is the current route's content.
+ * Persistent app shell:
  *
- * Conversations are fetched once with TanStack Query; the chat page
- * invalidates the query when a new turn lands so the sidebar reflects
- * fresh activity without a manual reload.
+ *   ┌──────────┬─────────────────────────────┐
+ *   │ sidebar  │  current route (top 2/3)    │
+ *   │          │                             │
+ *   │          ├─────────────────────────────┤
+ *   │          │  chat dock (bottom 1/3)     │
+ *   └──────────┴─────────────────────────────┘
+ *
+ * The chat dock is always mounted so the active conversation survives
+ * navigation between /jobs and /jobs/:id, and so the agent's tool
+ * calls (search_jobs, get_job_detail, …) can drive the upper view.
+ *
+ * The active conversation id is carried in the URL as ``?chat=<id>``
+ * (preserved across route changes by the dock's nav handlers); a
+ * missing param means "fresh chat".
  */
 export function Shell() {
   return (
     <div className="flex h-full bg-background text-foreground">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto">
-        <Outlet />
-      </main>
+      <div className="flex-1 flex flex-col min-w-0">
+        <main className="flex-[2] overflow-y-auto min-h-0 border-b border-border">
+          <Outlet />
+        </main>
+        <ChatDock />
+      </div>
     </div>
   );
 }
 
 function Sidebar() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const { id: activeChatId } = useParams();
+  const [searchParams] = useSearchParams();
+  const activeChatId = searchParams.get("chat");
   const { data, refetch } = useQuery({
     queryKey: ["conversations"],
     queryFn: listConversations,
   });
 
   const conversations = data?.items ?? [];
+
+  /** Switch the active conversation while keeping the user on the same route. */
+  function selectChat(id: number | null) {
+    const next = new URLSearchParams(searchParams);
+    if (id === null) next.delete("chat");
+    else next.set("chat", String(id));
+    navigate({ search: next.toString() ? `?${next.toString()}` : "" });
+  }
 
   return (
     <aside className="w-72 shrink-0 border-r border-border bg-card flex flex-col">
@@ -43,13 +65,20 @@ function Sidebar() {
       </div>
 
       <nav className="p-2 space-y-1">
-        <NavItem to="/jobs" icon={<Briefcase className="size-4" />} label="Jobs" />
-        <NavItem
-          to="/chat"
-          icon={<MessageSquarePlus className="size-4" />}
-          label="New chat"
-          active={location.pathname === "/chat" && !activeChatId}
-        />
+        <SidebarLink to="/jobs" icon={<Briefcase className="size-4" />} label="Jobs" />
+        <button
+          type="button"
+          onClick={() => selectChat(null)}
+          className={cn(
+            "w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+            activeChatId === null
+              ? "bg-accent text-accent-foreground"
+              : "text-foreground/80 hover:bg-accent/50",
+          )}
+        >
+          <MessageSquarePlus className="size-4" />
+          New chat
+        </button>
       </nav>
 
       <div className="px-3 py-2 flex items-center justify-between">
@@ -58,7 +87,7 @@ function Sidebar() {
         </span>
         <button
           type="button"
-          onClick={() => navigate("/chat")}
+          onClick={() => selectChat(null)}
           className="text-muted-foreground hover:text-foreground transition-colors"
           title="New conversation"
         >
@@ -69,60 +98,62 @@ function Sidebar() {
       <ul className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
         {conversations.length === 0 ? (
           <li className="px-3 py-2 text-xs text-muted-foreground italic">
-            No chats yet. Hit "New chat" to start.
+            No chats yet. Type below to start.
           </li>
         ) : (
-          conversations.map((c) => (
-            <li key={c.id} className="group flex items-center">
-              <NavLink
-                to={`/chat/${c.id}`}
-                className={({ isActive }) =>
-                  cn(
-                    "flex-1 truncate rounded-md px-3 py-2 text-sm transition-colors",
+          conversations.map((c) => {
+            const isActive = String(c.id) === activeChatId;
+            return (
+              <li key={c.id} className="group flex items-center">
+                <button
+                  type="button"
+                  onClick={() => selectChat(c.id)}
+                  className={cn(
+                    "flex-1 truncate rounded-md px-3 py-2 text-sm text-left transition-colors",
                     isActive
                       ? "bg-accent text-accent-foreground"
                       : "text-foreground/80 hover:bg-accent/50",
-                  )
-                }
-              >
-                {c.title || "Untitled"}
-              </NavLink>
-              <button
-                type="button"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  await deleteConversation(c.id);
-                  if (String(c.id) === activeChatId) navigate("/chat");
-                  void refetch();
-                }}
-                className="opacity-0 group-hover:opacity-100 p-1 mx-1 text-muted-foreground hover:text-destructive transition-opacity"
-                title="Delete"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </li>
-          ))
+                  )}
+                >
+                  {c.title || "Untitled"}
+                </button>
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await deleteConversation(c.id);
+                    if (isActive) selectChat(null);
+                    void refetch();
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 mx-1 text-muted-foreground hover:text-destructive transition-opacity"
+                  title="Delete"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </li>
+            );
+          })
         )}
       </ul>
     </aside>
   );
 }
 
-interface NavItemProps {
+interface SidebarLinkProps {
   to: string;
   icon: React.ReactNode;
   label: string;
-  active?: boolean;
 }
 
-function NavItem({ to, icon, label, active }: NavItemProps) {
+function SidebarLink({ to, icon, label }: SidebarLinkProps) {
   return (
     <NavLink
       to={to}
+      end
       className={({ isActive }) =>
         cn(
           "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-          (active ?? isActive)
+          isActive
             ? "bg-accent text-accent-foreground"
             : "text-foreground/80 hover:bg-accent/50",
         )

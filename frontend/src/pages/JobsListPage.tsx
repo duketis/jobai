@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, ExternalLink, MapPin, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { listJobs, type JobsListParams } from "@/lib/api";
 import type { JobSummary } from "@/lib/types";
@@ -9,38 +9,86 @@ import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
+const REMOTE_VALUES = ["remote", "hybrid", "onsite"] as const;
+type RemoteValue = (typeof REMOTE_VALUES)[number];
+
+function asRemote(value: string | null): RemoteValue | undefined {
+  return REMOTE_VALUES.includes(value as RemoteValue) ? (value as RemoteValue) : undefined;
+}
+
+/** Param keys the page understands; everything else stays untouched
+ * (e.g. the chat dock's ``?chat=NN`` rides along). */
+const FILTER_KEYS = ["q", "remote", "location", "company", "source_kind", "page"] as const;
+
 /**
- * Searchable + filterable job list. Search input is debounced 250ms so
- * keystrokes don't spam the backend. Filters are URL-state-free for
- * v1 — keep the page cheap and the bookmarkable surface small until
- * we know what filters people actually use.
+ * Searchable + filterable job list. State lives in the URL so the
+ * agent's ``search_jobs`` tool calls and the user's typing both push
+ * to the same place — the chat dock writes ``?q=…&remote=…`` and the
+ * list re-renders. Other URL params (notably ``chat``) ride through
+ * untouched.
+ *
+ * Free-text input is debounced 250ms before it lands in the URL so
+ * keystrokes don't spam history entries or the backend.
  */
 export function JobsListPage() {
-  const [searchInput, setSearchInput] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [remote, setRemote] = useState<JobsListParams["remote"]>(undefined);
-  const [locationFilter, setLocationFilter] = useState("");
-  const [page, setPage] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
 
+  const urlSearch = searchParams.get("q") ?? "";
+  const remote = asRemote(searchParams.get("remote"));
+  const locationFilter = searchParams.get("location") ?? "";
+  const company = searchParams.get("company") ?? "";
+  const sourceKind = searchParams.get("source_kind") ?? "";
+  const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
+
+  const [searchInput, setSearchInput] = useState(urlSearch);
+  // Reflect URL changes (the agent or another tab) back into the visible input.
   useEffect(() => {
-    const id = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
+    setSearchInput(urlSearch);
+  }, [urlSearch]);
+
+  // Debounce typed search before pushing to the URL.
+  useEffect(() => {
+    if (searchInput.trim() === urlSearch) return;
+    const id = window.setTimeout(() => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (searchInput.trim()) next.set("q", searchInput.trim());
+          else next.delete("q");
+          next.delete("page");
+          return next;
+        },
+        { replace: true },
+      );
+    }, 250);
     return () => window.clearTimeout(id);
-  }, [searchInput]);
+  }, [searchInput, urlSearch, setSearchParams]);
 
-  // Reset to page 0 whenever filters change.
-  useEffect(() => {
-    setPage(0);
-  }, [debouncedSearch, remote, locationFilter]);
+  /** Update one filter while preserving non-filter params (e.g. ``chat``). */
+  function setFilter(key: (typeof FILTER_KEYS)[number], value: string | undefined) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value && value.trim()) next.set(key, value.trim());
+        else next.delete(key);
+        if (key !== "page") next.delete("page");
+        return next;
+      },
+      { replace: true },
+    );
+  }
 
   const params = useMemo<JobsListParams>(
     () => ({
-      q: debouncedSearch || undefined,
+      q: urlSearch || undefined,
       remote,
-      location: locationFilter.trim() || undefined,
+      location: locationFilter || undefined,
+      company: company || undefined,
+      source_kind: sourceKind || undefined,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
     }),
-    [debouncedSearch, remote, locationFilter, page],
+    [urlSearch, remote, locationFilter, company, sourceKind, page],
   );
 
   const { data, isLoading, isError, error } = useQuery({
@@ -67,9 +115,7 @@ export function JobsListPage() {
         <SearchInput value={searchInput} onChange={setSearchInput} />
         <select
           value={remote ?? ""}
-          onChange={(e) =>
-            setRemote((e.target.value || undefined) as JobsListParams["remote"])
-          }
+          onChange={(e) => setFilter("remote", e.target.value || undefined)}
           className="h-10 px-3 rounded-md border border-input bg-background text-sm"
         >
           <option value="">Any remote type</option>
@@ -80,7 +126,7 @@ export function JobsListPage() {
         <input
           type="text"
           value={locationFilter}
-          onChange={(e) => setLocationFilter(e.target.value)}
+          onChange={(e) => setFilter("location", e.target.value || undefined)}
           placeholder="Location contains…"
           className="h-10 px-3 rounded-md border border-input bg-background text-sm"
         />
@@ -104,8 +150,13 @@ export function JobsListPage() {
           <Pagination
             page={page}
             lastPage={lastPage}
-            onPrev={() => setPage((p) => Math.max(0, p - 1))}
-            onNext={() => setPage((p) => Math.min(lastPage, p + 1))}
+            onPrev={() => {
+              const next = Math.max(0, page - 1);
+              setFilter("page", next === 0 ? undefined : String(next));
+            }}
+            onNext={() =>
+              setFilter("page", String(Math.min(lastPage, page + 1)))
+            }
           />
         </>
       )}
