@@ -122,3 +122,59 @@ async def test_discover_returns_empty_on_page_with_no_cards() -> None:
             jobs = [j async for j in SeekSource(account=_SLUG).discover(fetcher)]
 
     assert jobs == []
+
+
+async def test_discover_walks_multiple_pages_and_dedups() -> None:
+    """Pages 2..N are walked; jobs already seen on page 1 are skipped.
+
+    Mirrors Seek's real behaviour where the tail of the result set
+    sometimes pads with already-shown listings — without dedup we'd
+    over-count and over-write the canonical row.
+    """
+
+    def page_for(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, text=_FIXTURE)
+        if page == 2:
+            # One new card + one already-seen card from page 1
+            return httpx.Response(
+                200,
+                text=(
+                    "<html><body>"
+                    '<article data-automation="normalJob" data-job-id="91899557">'
+                    '<a data-automation="jobTitle" href="/job/91899557">Software Engineer</a>'
+                    '<a data-automation="jobCompany">GTurbo</a>'
+                    "</article>"
+                    '<article data-automation="normalJob" data-job-id="99999999">'
+                    '<a data-automation="jobTitle" href="/job/99999999">New Engineer</a>'
+                    '<a data-automation="jobCompany">Other Co</a>'
+                    "</article>"
+                    "</body></html>"
+                ),
+            )
+        # Page 3 onward: only already-seen cards → walk terminates
+        return httpx.Response(
+            200,
+            text=(
+                "<html><body>"
+                '<article data-automation="normalJob" data-job-id="91899557">'
+                '<a data-automation="jobTitle" href="/job/91899557">Software Engineer</a>'
+                '<a data-automation="jobCompany">GTurbo</a>'
+                "</article>"
+                "</body></html>"
+            ),
+        )
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_URL).mock(side_effect=page_for)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in SeekSource(account=_SLUG, max_pages=5).discover(fetcher)]
+
+    ids = {j.source_external_id for j in jobs}
+    assert ids == {"91899557", "91749277", "91818594", "99999999"}
+
+
+async def test_max_pages_validation() -> None:
+    with pytest.raises(ValueError, match="max_pages"):
+        SeekSource(account=_SLUG, max_pages=0)

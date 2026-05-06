@@ -23,6 +23,16 @@ from jobai.sources.base import BaseSource, NormalizedJob
 _BASE_URL = "https://au.indeed.com"
 _SEARCH_PATH = "/jobs"
 
+#: Cap on pages walked per scrape cycle. Indeed serves 10 cards per
+#: page so a 5-page walk yields ~50 results — enough for a freshness
+#: signal while staying under any per-IP rate limits we'd otherwise
+#: hit on the browser tier.
+DEFAULT_MAX_PAGES = 5
+
+#: Indeed's ``start`` query param is a 0-indexed offset into the
+#: result set, advancing by ``_PAGE_SIZE`` per page.
+_PAGE_SIZE = 10
+
 #: Locate the start of each candidate data island. The JSON object
 #: that follows is extracted via brace balancing in
 #: :func:`_extract_balanced_object` since regex backtracking on a
@@ -33,7 +43,7 @@ _MOSAIC_DATA_START_RE = re.compile(r'mosaic-provider-jobcards["\']\s*\]\s*=\s*(?
 
 
 class IndeedSource(BaseSource):
-    """One Indeed (au.indeed.com) jobs search.
+    """One Indeed (au.indeed.com) jobs search (paginated).
 
     ``account`` is the URL-encoded query string for ``/jobs``,
     e.g. ``"q=python&l=Melbourne&fromage=7"``.
@@ -41,16 +51,41 @@ class IndeedSource(BaseSource):
 
     kind = "indeed"
 
-    async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
-        url = f"{_BASE_URL}{_SEARCH_PATH}?{self.account}"
-        response = await fetcher.fetch(url)
-        if not response.is_ok:
-            raise IndeedFetchError(self.account, response.status_code)
+    def __init__(self, account: str = "", *, max_pages: int = DEFAULT_MAX_PAGES) -> None:
+        super().__init__(account)
+        if max_pages < 1:
+            msg = f"max_pages must be >= 1, got {max_pages}"
+            raise ValueError(msg)
+        self._max_pages = max_pages
 
-        for entry in _extract_results(response.text):
-            job = _parse_job(entry)
-            if job is not None:
+    async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
+        seen_ids: set[str] = set()
+        for page in range(self._max_pages):
+            url = _page_url(self.account, page)
+            response = await fetcher.fetch(url)
+            if not response.is_ok:
+                if page == 0:
+                    raise IndeedFetchError(self.account, response.status_code)
+                return
+
+            page_yielded = 0
+            for entry in _extract_results(response.text):
+                job = _parse_job(entry)
+                if job is None or job.source_external_id in seen_ids:
+                    continue
+                seen_ids.add(job.source_external_id)
+                page_yielded += 1
                 yield job
+            if page_yielded == 0:
+                return
+
+
+def _page_url(account: str, page: int) -> str:
+    base = f"{_BASE_URL}{_SEARCH_PATH}?{account}"
+    if page == 0:
+        return base
+    sep = "&" if account else ""
+    return f"{base}{sep}start={page * _PAGE_SIZE}"
 
 
 class IndeedFetchError(RuntimeError):

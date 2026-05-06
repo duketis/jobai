@@ -32,24 +32,66 @@ from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://www.seek.com.au"
 
+#: Hard cap on pages walked per scrape cycle. Five pages of ~22 jobs
+#: each gives ~100 results per slug, which is plenty of depth without
+#: burning half an hour against the browser tier per cadence tick.
+DEFAULT_MAX_PAGES = 5
+
 
 class SeekSource(BaseSource):
-    """Pulls jobs from one Seek search-result page."""
+    """Pulls jobs from one Seek search-result page (paginated)."""
 
     kind = "seek"
 
+    def __init__(self, account: str = "", *, max_pages: int = DEFAULT_MAX_PAGES) -> None:
+        super().__init__(account)
+        if max_pages < 1:
+            msg = f"max_pages must be >= 1, got {max_pages}"
+            raise ValueError(msg)
+        self._max_pages = max_pages
+
     async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
-        url = f"{_BASE_URL}/{self.account}"
-        response = await fetcher.fetch(url)
+        seen_ids: set[str] = set()
+        for page in range(1, self._max_pages + 1):
+            url = _page_url(self.account, page)
+            response = await fetcher.fetch(url)
 
-        if not response.is_ok:
-            raise SeekFetchError(self.account, response.status_code)
+            if not response.is_ok:
+                if page == 1:
+                    raise SeekFetchError(self.account, response.status_code)
+                # Mid-walk failure on later pages: stop short rather
+                # than fail the whole run; we still return everything
+                # already yielded.
+                return
 
-        tree = HTMLParser(response.text)
-        for card in tree.css('article[data-automation="normalJob"]'):
-            job = _parse_card(card)
-            if job is not None:
+            tree = HTMLParser(response.text)
+            cards = tree.css('article[data-automation="normalJob"]')
+            page_yielded = 0
+            for card in cards:
+                job = _parse_card(card)
+                if job is None or job.source_external_id in seen_ids:
+                    continue
+                seen_ids.add(job.source_external_id)
+                page_yielded += 1
                 yield job
+            # Last page reached when Seek serves zero new cards (the
+            # site sometimes pads with already-seen jobs near the end).
+            if page_yielded == 0:
+                return
+
+
+def _page_url(slug: str, page: int) -> str:
+    """Append ``?page=N`` (or ``&page=N``) to ``account``-derived URL.
+
+    Page 1 is fetched without ``?page=1`` to mirror the canonical
+    landing URL exactly — Seek serves the same data either way but
+    response caching keys can differ.
+    """
+    base = f"{_BASE_URL}/{slug}"
+    if page == 1:
+        return base
+    sep = "&" if "?" in slug else "?"
+    return f"{base}{sep}page={page}"
 
 
 class SeekFetchError(RuntimeError):

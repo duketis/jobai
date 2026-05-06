@@ -31,6 +31,16 @@ from jobai.sources.base import BaseSource, NormalizedJob
 _BASE_URL = "https://www.linkedin.com"
 _SEARCH_PATH = "/jobs/search"
 
+#: Cap on pages walked per scrape cycle. LinkedIn returns ~25 cards
+#: per page; four pages = ~100 results. Beyond that we'd hit
+#: increasingly redundant tail listings and risk longer rate-limit
+#: backoffs, so the cap is intentionally tight.
+DEFAULT_MAX_PAGES = 4
+
+#: LinkedIn's offset-style pagination — ``start`` is a 0-indexed
+#: position into the result set, advancing by ``_PAGE_SIZE`` per page.
+_PAGE_SIZE = 25
+
 #: Match the integer job id LinkedIn embeds in `data-entity-urn` and
 #: in the per-card detail URL (``/jobs/view/<id>``). Used as the
 #: ``source_external_id`` so dedup across runs is stable.
@@ -39,7 +49,7 @@ _VIEW_ID_RE = re.compile(r"/jobs/view/[^/]*-(\d+)")
 
 
 class LinkedInSource(BaseSource):
-    """One LinkedIn guest-mode jobs search.
+    """One LinkedIn guest-mode jobs search (paginated).
 
     ``account`` is the URL-encoded query string passed to
     ``/jobs/search``, e.g. ``"keywords=python&location=Australia"``.
@@ -47,16 +57,43 @@ class LinkedInSource(BaseSource):
 
     kind = "linkedin"
 
-    async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
-        url = f"{_BASE_URL}{_SEARCH_PATH}?{self.account}"
-        response = await fetcher.fetch(url)
-        if not response.is_ok:
-            raise LinkedInFetchError(self.account, response.status_code)
+    def __init__(self, account: str = "", *, max_pages: int = DEFAULT_MAX_PAGES) -> None:
+        super().__init__(account)
+        if max_pages < 1:
+            msg = f"max_pages must be >= 1, got {max_pages}"
+            raise ValueError(msg)
+        self._max_pages = max_pages
 
-        for card in _iterate_cards(response.text):
-            job = _parse_card(card)
-            if job is not None:
+    async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
+        seen_ids: set[str] = set()
+        for page in range(self._max_pages):
+            url = _page_url(self.account, page)
+            response = await fetcher.fetch(url)
+
+            if not response.is_ok:
+                if page == 0:
+                    raise LinkedInFetchError(self.account, response.status_code)
+                return
+
+            page_yielded = 0
+            for card in _iterate_cards(response.text):
+                job = _parse_card(card)
+                if job is None or job.source_external_id in seen_ids:
+                    continue
+                seen_ids.add(job.source_external_id)
+                page_yielded += 1
                 yield job
+            if page_yielded == 0:
+                return
+
+
+def _page_url(account: str, page: int) -> str:
+    """Build the page URL for offset ``page * _PAGE_SIZE``."""
+    base = f"{_BASE_URL}{_SEARCH_PATH}?{account}"
+    if page == 0:
+        return base
+    sep = "&" if account else ""
+    return f"{base}{sep}start={page * _PAGE_SIZE}"
 
 
 class LinkedInFetchError(RuntimeError):
