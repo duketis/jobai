@@ -1,8 +1,10 @@
-"""Tests for the APS Jobs source."""
+"""Tests for the APS Jobs (Salesforce Lightning) source."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -11,87 +13,236 @@ import respx
 from jobai.fetcher.http import HttpFetcher
 from jobai.sources.apsjobs import APSJobsFetchError, APSJobsSource
 
-_FIXTURE = (Path(__file__).parent / "fixtures" / "apsjobs_software.atom").read_text(
-    encoding="utf-8"
-)
-_QUERY = "Keywords=software"
-_URL = f"https://www.apsjobs.gov.au/s/search.atom?{_QUERY}"
-_DEFAULT_URL = "https://www.apsjobs.gov.au/s/search.atom"
+_FIXTURE_DIR = Path(__file__).parent / "fixtures"
+_BOOTSTRAP_HTML = (_FIXTURE_DIR / "apsjobs_bootstrap.html").read_text(encoding="utf-8")
+_PAGE1 = (_FIXTURE_DIR / "apsjobs_aura_page1.json").read_text(encoding="utf-8")
+_PAGE2 = (_FIXTURE_DIR / "apsjobs_aura_page2.json").read_text(encoding="utf-8")
+_EMPTY = (_FIXTURE_DIR / "apsjobs_aura_empty.json").read_text(encoding="utf-8")
+
+_BOOTSTRAP_URL = "https://www.apsjobs.gov.au/s/job-search"
+_AURA_URL = "https://www.apsjobs.gov.au/s/sfsites/aura"
+
+
+def _aura_route(router: respx.MockRouter, *bodies: str) -> respx.Route:
+    """Mock the Aura POST and return successive bodies on each call."""
+    route = router.post(url__regex=rf"{_AURA_URL}.*")
+    route.side_effect = [httpx.Response(200, text=b) for b in bodies]
+    return route
 
 
 def test_apsjobs_source_name_includes_query() -> None:
-    source = APSJobsSource(account=_QUERY)
-    assert source.name == f"apsjobs:{_QUERY}"
+    source = APSJobsSource(account="software")
+    assert source.name == "apsjobs:software"
 
 
-async def test_discover_yields_one_job_per_entry() -> None:
+def test_apsjobs_source_name_omits_query_when_empty() -> None:
+    source = APSJobsSource(account="")
+    assert source.name == "apsjobs"
+
+
+async def test_discover_paginates_until_empty() -> None:
+    """Bootstrap then walk pages until ``jobListings`` comes back empty."""
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        _aura_route(router, _PAGE1, _PAGE2, _EMPTY)
         async with HttpFetcher() as fetcher:
-            jobs = [j async for j in APSJobsSource(account=_QUERY).discover(fetcher)]
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
 
-    assert {j.source_external_id for j in jobs} == {"3000123", "3000124", "3000125"}
+    assert {j.source_external_id for j in jobs} == {
+        "a05OY00000ORdYvYAL",
+        "a05OY00000ORVhpYAH",
+        "a05OY00000ORTT7YAP",
+        "a05OY00000ORTRVYA5",
+    }
 
 
-async def test_discover_empty_account_uses_default_feed() -> None:
+async def test_discover_dedupes_repeated_listings() -> None:
+    """If the API returns the same id twice across pages we yield it once."""
     with respx.mock(assert_all_called=False) as router:
-        router.get(_DEFAULT_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        # Same listings on every page until empty terminates the walk.
+        _aura_route(router, _PAGE1, _PAGE1, _EMPTY)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
     assert len(jobs) == 3
 
 
-async def test_discover_extracts_agency_from_summary() -> None:
+async def test_discover_extracts_core_fields() -> None:
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        _aura_route(router, _PAGE1, _EMPTY)
         async with HttpFetcher() as fetcher:
-            jobs = [j async for j in APSJobsSource(account=_QUERY).discover(fetcher)]
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
 
     by_id = {j.source_external_id: j for j in jobs}
-    assert "Department of Finance" in by_id["3000123"].company
-    assert by_id["3000124"].company == "Australian Bureau of Statistics"
-    assert "Department of Defence" in by_id["3000125"].company
-
-
-async def test_discover_extracts_location_from_summary() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
-        async with HttpFetcher() as fetcher:
-            jobs = [j async for j in APSJobsSource(account=_QUERY).discover(fetcher)]
-    by_id = {j.source_external_id: j for j in jobs}
-    assert by_id["3000123"].location_raw == "Canberra ACT"
-    assert by_id["3000123"].location_city == "Canberra ACT"
-    assert by_id["3000123"].location_country == "Australia"
+    first = by_id["a05OY00000ORdYvYAL"]
+    assert first.title == "Program Director"
+    assert first.company == "Australian Securities and Investments Commission"
+    assert first.apply_url == ("https://www.apsjobs.gov.au/s/job-details?jobId=a05OY00000ORdYvYAL")
+    assert first.location_country == "Australia"
+    assert first.location_city == "Adelaide SA"
+    assert first.posted_at == "2026-05-06"
+    assert first.description_html is not None
+    assert "ASIC" in first.description_html
 
 
 async def test_discover_extracts_salary_when_present() -> None:
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        _aura_route(router, _PAGE1, _EMPTY)
         async with HttpFetcher() as fetcher:
-            jobs = [j async for j in APSJobsSource(account=_QUERY).discover(fetcher)]
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
     by_id = {j.source_external_id: j for j in jobs}
-    assert by_id["3000123"].salary_min == 120_000
-    assert by_id["3000123"].salary_max == 140_000
-    assert by_id["3000123"].salary_currency == "AUD"
-    # No salary in entry 124
-    assert by_id["3000124"].salary_min is None
+    salaried = by_id["a05OY00000ORTT7YAP"]
+    assert salaried.salary_min == 125_820
+    assert salaried.salary_max == 137_127
+    assert salaried.salary_currency == "AUD"
+    # Listings without salary collapse to None / no currency.
+    no_salary = by_id["a05OY00000ORdYvYAL"]
+    assert no_salary.salary_min is None
+    assert no_salary.salary_currency is None
 
 
-async def test_discover_uses_published_or_updated_for_posted_at() -> None:
+async def test_discover_normalises_office_arrangement_to_remote_type() -> None:
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        _aura_route(router, _PAGE1, _EMPTY)
         async with HttpFetcher() as fetcher:
-            jobs = [j async for j in APSJobsSource(account=_QUERY).discover(fetcher)]
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
     by_id = {j.source_external_id: j for j in jobs}
-    # Updated wins over published
-    assert by_id["3000123"].posted_at == "2026-05-04T09:00:00Z"
+    # First listing has officeArrangement = "Hybrid"
+    assert by_id["a05OY00000ORdYvYAL"].remote_type == "hybrid"
+    # Sport Integrity Australia listing is "Flexible" (remote-friendly)
+    assert by_id["a05OY00000ORTT7YAP"].remote_type == "remote"
 
 
-async def test_discover_raises_on_non_2xx() -> None:
+async def test_discover_passes_search_string_through_filter() -> None:
+    """A non-empty ``account`` populates the ``filter.searchString`` slot."""
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(500))
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        aura_route = _aura_route(router, _EMPTY)
+        async with HttpFetcher() as fetcher:
+            _ = [j async for j in APSJobsSource(account="python").discover(fetcher)]
+
+        # Decode the form-encoded body and inspect the inner filter
+        request = aura_route.calls.last.request
+        form = parse_qs(request.content.decode("utf-8"))
+        message = json.loads(form["message"][0])
+        action_params = message["actions"][0]["params"]
+        assert action_params["classname"] == "aps_jobSearchController"
+        assert action_params["method"] == "retrieveJobListings"
+        inner_filter = json.loads(action_params["params"]["filter"])
+        assert inner_filter["searchString"] == "python"
+        assert inner_filter["offset"] == 0
+
+
+async def test_discover_paginates_using_returned_new_offset() -> None:
+    """Each page request sends ``offset`` set from the previous ``newOffset``."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        aura_route = _aura_route(router, _PAGE1, _PAGE2, _EMPTY)
+        async with HttpFetcher() as fetcher:
+            _ = [j async for j in APSJobsSource(account="").discover(fetcher)]
+
+        offsets = []
+        for call in aura_route.calls:
+            form = parse_qs(call.request.content.decode("utf-8"))
+            inner_filter = json.loads(
+                json.loads(form["message"][0])["actions"][0]["params"]["params"]["filter"],
+            )
+            offsets.append(inner_filter["offset"])
+    # First page asks offset=0; page 1 returned newOffset=3, page 2 newOffset=4.
+    assert offsets == [0, 3, 4]
+
+
+async def test_discover_raises_when_bootstrap_fails() -> None:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(return_value=httpx.Response(500))
         async with HttpFetcher() as fetcher:
             with pytest.raises(APSJobsFetchError) as excinfo:
-                async for _ in APSJobsSource(account=_QUERY).discover(fetcher):
+                async for _ in APSJobsSource(account="").discover(fetcher):
                     pass
     assert excinfo.value.status_code == 500
+    assert excinfo.value.stage == "bootstrap"
+
+
+async def test_discover_raises_when_aura_call_fails() -> None:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        router.post(url__regex=rf"{_AURA_URL}.*").mock(
+            return_value=httpx.Response(503),
+        )
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(APSJobsFetchError) as excinfo:
+                async for _ in APSJobsSource(account="").discover(fetcher):
+                    pass
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.stage.startswith("page-")
+
+
+async def test_discover_extracts_aura_context_from_link_header() -> None:
+    """Salesforce's small first-render HTML omits the inline JS aura
+    config but always includes both tokens in the URL-encoded ``Link``
+    response header. We must parse them from there too.
+    """
+    link_header = (
+        "</s/sfsites/auraFW/javascript/HEADER_FWUID_999/aura_prod.js>;"
+        "rel=preload;as=script;nopush, "
+        "</s/sfsites/l/%7B%22mode%22%3A%22PROD%22%2C%22fwuid%22%3A%22"
+        "HEADER_FWUID_999"
+        "%22%2C%22loaded%22%3A%7B%22APPLICATION%40markup%3A%2F%2F"
+        "siteforce%3AcommunityApp%22%3A%22HEADER_APP_TOKEN_888%22%7D%7D"
+        "/resources.js>;rel=preload;as=script;nopush"
+    )
+    body_without_aura = "<html><body>maintenance</body></html>"
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(
+                200,
+                text=body_without_aura,
+                headers={"Link": link_header},
+            ),
+        )
+        aura_route = _aura_route(router, _EMPTY)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
+
+        request = aura_route.calls.last.request
+        form = parse_qs(request.content.decode("utf-8"))
+        aura_context = json.loads(form["aura.context"][0])
+
+    assert jobs == []
+    assert aura_context["fwuid"] == "HEADER_FWUID_999"
+    assert (
+        aura_context["loaded"]["APPLICATION@markup://siteforce:communityApp"]
+        == "HEADER_APP_TOKEN_888"
+    )
+
+
+async def test_discover_raises_when_bootstrap_missing_aura_context() -> None:
+    """A bootstrap HTML lacking fwuid surfaces a clear error, not a regex crash."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text="<html>maintenance</html>"),
+        )
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(APSJobsFetchError) as excinfo:
+                async for _ in APSJobsSource(account="").discover(fetcher):
+                    pass
+    assert excinfo.value.stage == "bootstrap-parse"

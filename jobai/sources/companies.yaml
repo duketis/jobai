@@ -245,24 +245,21 @@ wa_jobs:
     default_tier: 2
     cadence_seconds: 7200
 
-# APS Jobs migrated to a Salesforce Lightning SPA in 2026; the Atom
-# feed at /s/search.atom no longer exists and the new endpoints
-# require Salesforce Aura/Lightning XHR calls that the parser
-# doesn't yet speak. Entries are seeded but disabled until the
-# Salesforce integration ships.
+# APS Jobs (federal AU public service). The Salesforce Lightning
+# rewrite replays the retrieveJobListings Apex action over plain
+# HTTP — see jobai/sources/apsjobs.py. The "All" feed surfaces the
+# whole open-positions catalogue (~500 listings); narrower searches
+# pass the keyword as the account string (mapped to filter.searchString).
 apsjobs:
   - account: ""
     display_name: APS Jobs — All open positions
     default_tier: 1
     cadence_seconds: 7200
-    enabled: false
-  - account: Keywords=software
+  - account: software
     display_name: APS Jobs — Software
     default_tier: 1
     cadence_seconds: 7200
-    enabled: false
-  - account: Keywords=data
+  - account: data
     display_name: APS Jobs — Data
     default_tier: 1
     cadence_seconds: 7200
-    enabled: false

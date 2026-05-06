@@ -1,0 +1,21 @@
+{
+  "actions": [
+    {
+      "id": "1;a",
+      "state": "SUCCESS",
+      "returnValue": {
+        "returnValue": {
+          "jobListingCount": 4,
+          "jobListings": [],
+          "newOffset": 4
+        },
+        "cacheable": false
+      },
+      "error": []
+    }
+  ],
+  "context": {
+    "mode": "PROD"
+  },
+  "perfSummary": {}
+}

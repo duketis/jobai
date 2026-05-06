@@ -1,0 +1,60 @@
+{
+  "actions": [
+    {
+      "id": "1;a",
+      "state": "SUCCESS",
+      "returnValue": {
+        "returnValue": {
+          "jobListingCount": 4,
+          "jobListings": [
+            {
+              "agencyEmploymentAct": "PS Act 1999",
+              "agencyImageURL": "https://s3-ap-southeast-2.amazonaws.com/apsc.image/06A5m00000148T2EAI.png",
+              "agencyInformationURL": "www.finance.gov.au",
+              "applicationURL": "https://financejobs.nga.net.au/?jati=54A83937-7E7B-9B39-6BD1-ECED9518ECF2",
+              "departmentDescription": "As a central agency of the Australian Government, the Department of Finance (Finance) plays an important role in assisting government across a wide range of policy areas to ensure its outcomes are met.\r\n\r\nFinance supports the government's ongoing priorities through the Budget process and fosters leading practice through the public sector resource management, governance and accountability frameworks. Finance plays a leading role in advising the government on many of its strategic priorities. We do this through our professional and considered approach to providing advice, developing policy, delivering services and engaging with our clients and stakeholders.\r\n\r\nFinance's key areas of focus are:\r\n\r\n- Budget\r\n- Business Enabling Services\r\n- Commercial \r\n- Governance and Resource Management",
+              "departmentName": "Department of Finance",
+              "departmentURL": "www.finance.gov.au",
+              "futureLocationSuburb": "Various locations - ACT, Various locations - NSW, Various locations - VIC, Various locations - WA, Various locations - QLD, Various locations - TAS, Various locations - NT, Various locations - SA",
+              "futureVacancyNull": "false",
+              "intentionToCreateMerit": "true",
+              "jobCategory": "Security",
+              "jobClassification": "APS Level 5;APS Level 6",
+              "jobCloseDate": "2026-05-20",
+              "jobContact": "Paul Williams",
+              "jobContactEmail": "paul.williams1@finance.gov.au",
+              "jobContactPhone": "0262151416",
+              "jobDescription": "<p>The Internal Services and Cyber Branch (ISCB) provides the core digital, infrastructure and cyber security capabilities that enable the Department of Finance to operate securely, reliably and at scale. The Branch underpins day?to?day business operations by delivering and sustaining enterprise ICT services, safeguarding critical systems and information, and ensuring staff have trusted, modern tools to perform their roles effectively.</p><p><br></p><p>The Cyber Security team forms a part of ISCB and is the Finance central point of contact for cyber advice, governance, incident management and cyber security operations.</p><p><br></p><p>The purpose of the team is to support defence of the Department&#39;s data and assets from both internal and external threats. This is achieved through strong governance, robust monitoring and considered advice provided across the department.</p><p><br></p><p>These roles support the security operations team, with a focus on log monitoring, alert investigation, threat intel &amp; vulnerability management.</p>",
+              "jobDuties": "<p>These positions represent an opportunity for the successful candidates to demonstrate and develop a wide range of skills to protect, detect, and respond to cyber security threats. The successful candidate will act as a member of the cyber security team with exposure to the operational, governance, risk and compliance functions. The successful candidate will support senior team members and the Finance IT Security Adviser (ITSA) to develop, implement, operate, and improve Finance\u2019s ICT Security capability.</p><p>You will have the opportunity to enrol in learning and training pathways, leading to recognised certifications and qualifications in Cyber Security domains.</p><p>We seek team-oriented candidates with technical and organisational skills and adaptability to work in a small dynamic team.</p><p><br></p><p>Under supervision and guidance, the APS 5 Cyber Security Analyst is responsible for the following deliverables.</p><p>\u2022\tassist system managers to identify security risks and recommend appropriate treatments through established governance processes</p><p>\u2022\tliaise with internal and external stakeholders on cyber security related practices and issues</p><p>\u2022\tconduct research and provide analysis to assist the development and provision of advice on current trends, vulnerabilities and threats within cyber security</p><p>\u2022\tleverage available toolsets to assist with security testing and vulnerability identification of ICT systems</p><p>\u2022\tleverage available toolsets to assist with the detection, containment, investigation and remediation of security incidents</p><p>\u2022\tassist the ITSA to improve the overall security posture of Finance by increasing the efficiency of cyber security core functions</p><p>\u2022\tassist with the development and maintenance of departmental IT security policies, standards and plans</p><p>\u2022\tassist with the production, review and distribution of periodic and ad-hoc reporting associated with team activities</p><p>\u2022\tUndertake additional cyber related activities as directed</p><p><br></p><p><br></p><p>Under limited supervision and guidance, the APS 6 Senior Cyber Security Analyst is responsible for the following deliverables:</p><p>\u2022\tassist system managers to identify security risks and recommend appropriate treatments through established governance processes</p><p>\u2022\tliaise with internal and external stakeholders on cyber security related practices and issues</p><p>\u2022\tdevelopment and provision of advice on current trends, vulnerabilities and threats within cyber security</p><p>\u2022\tleverage available toolsets to assist with security testing and vulnerability identification of ICT systems</p><p>\u2022\tleverage available toolsets to lead the detection, containment, investigation and remediation of security incidents</p><p>\u2022\tassist the ITSA to improve the overall security posture of Finance by increasing the efficiency of cyber security core functions</p><p>\u2022\tassist with the development and maintenance of departmental IT security policies, standards and plans</p><p>\u2022\tproduce, review and distribute periodic and ad-hoc reporting associated with team activities</p><p>\u2022\tSupport the development of junior analysts, and maintain a high standard in your own work</p><p>\u2022\tUndertake additional cyber related activities as directed.</p><p><br></p><p>Skills and experience in Splunk, Tenable, or Microsoft Defender is highly desirable. Candidates should be able to demonstrate a continuous learning mindset, and be proactive in their work.</p>",
+              "jobEligibilityRequirements": "<p><strong>ELIGIBILITY ADVICE &amp; CANDIDATE NOTES</strong></p><p><br></p><ul><li>Under section 22(8) of the Public Service Act 1999, employees must be Australian citizens to be employed in the Australian Public Service (APS) unless the Agency Head has agreed otherwise, in writing.</li><li>Successful applicants will be required to undergo the process to obtain and maintain, or continue to hold the required security clearance level for the role as indicated in the downloadable job pack. All Finance staff are required to have a minimum baseline security clearance prior to commencement.</li><li>This role is being advertised as both ongoing and non-ongoing. Roles may be offered as either ongoing or non-ongoing subject to operational requirements. Where a non-ongoing position is offered, the role will be filled for a specified term of up to 12 months. Specified term vacancies may be extended up to a maximum period of 18 months.\u00a0</li><li>We encourage and welcome applications from Aboriginal and Torres Strait Islander peoples, people with Disability, LGBTQI+ people, people from culturally and linguistically diverse backgrounds and mature aged people.\u00a0</li></ul><p><br></p><p><br></p><p>Finance welcomes applications from public and private sector candidates who can demonstrate the skills and expertise, or experience required to contribute to maintaining the Department\u2019s Cyber Security program.</p><p>\u2022\texperience in using toolsets such as vulnerability assessment, logging and monitoring systems.</p><p>\u2022\texperience leading or participating in Cyber Security Incident Response teams</p><p>\u2022\tability to research and analyse current trends, vulnerabilities and threats within cyber security</p><p>\u2022\texcellent written and oral communication skills</p><p>\u2022\tfamiliarity with government guidelines and frameworks relevant to the ICT security domain</p><p>\u2022\tindustry-specific certifications or qualifications or a tertiary degree in cyber security will be highly regarded.</p><p>\u2022\thighly motivated and eager to learn new skills and technologies</p><p>\u2022\tbe resilient and able to effectively work in a fast-paced dynamic environment that routinely receives high priority and short-notice tasks</p><p>\u2022\tpersonal drive, integrity, and commitment to the APS Values and Code of Conduct and ongoing self-development</p>",
+              "jobId": "a05OY00000ORTRVYA5",
+              "jobLocation": "Canberra ACT",
+              "jobName": "Cyber Security Analyst",
+              "jobPostedDate": "2026-05-06",
+              "jobSalaryFrom": 92127.0,
+              "jobSalaryTo": 123702.0,
+              "jobStatus": "Ongoing",
+              "jobType": "Full-Time",
+              "meritAllStates": "true",
+              "meritListing": true,
+              "officeArrangement": "On Site",
+              "officeArrangementDetails": "Finance supports flexible workplace arrangements as per operational requirements.",
+              "positionInitiatives": "RecruitAbility",
+              "positionNumber": "2026/061",
+              "recordType": "Live_Vacancy_Notice",
+              "status": "Live",
+              "vacancyNumber": "VN-0769337"
+            }
+          ],
+          "newOffset": 4
+        },
+        "cacheable": false
+      },
+      "error": []
+    }
+  ],
+  "context": {
+    "mode": "PROD"
+  },
+  "perfSummary": {}
+}
