@@ -1,49 +1,40 @@
 """Seek source — Australia's dominant job board.
 
-Seek has no public API. Its search-results page is a Next.js React
-app that embeds the full result set as JSON in a
-``<script id="__NEXT_DATA__">`` block. Parsing that island is far
-more reliable than scraping the rendered DOM: the JSON is a stable
-interface (it has to feed the React app on hydration), while CSS
-class names change with every release.
+Seek has no public API and serves a Cloudflare-fronted React SPA.
+Plain HTTP gets 403; the fetcher layer escalates to Chromium for us.
+
+The DOM is parsed via stable ``data-automation`` attributes that
+Seek exposes for testing/automation tools. They're effectively a
+contract — selectors targeting them survive design refactors that
+would break a CSS-class-based scraper. Per-card root is
+``article[data-automation="normalJob"]`` carrying the canonical job
+id in ``data-job-id``.
 
 A :class:`SeekSource` instance covers one search slug — the path
-fragment from a Seek URL, e.g. ``"python-jobs/in-Melbourne-VIC"``
-for ``https://www.seek.com.au/python-jobs/in-Melbourne-VIC``.
-``companies.yaml`` (or its successor) lists the slugs we care about.
+fragment from a Seek URL, e.g. ``"python-jobs/in-Melbourne-VIC"``.
+``companies.yaml`` lists the slugs we care about.
 
-Pagination is intentionally not handled in this first cut: the
-default Seek page returns ~20 results, which is enough for the
-freshness signal the agent surfaces. Phase 6.x will add ``?page=N``
-walks once we wire the source to the scheduler and want depth.
+Pagination is intentionally not handled in this first cut: each page
+returns ~22 results which is plenty for a freshness signal. A
+follow-up phase walks ``?page=N`` once we want depth.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator
-from typing import Any
+from urllib.parse import urljoin, urlparse
+
+from selectolax.parser import HTMLParser, Node
 
 from jobai.fetcher.base import Fetcher
 from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://www.seek.com.au"
 
-#: Matches the Next.js data-island script tag and captures its JSON
-#: body. ``re.DOTALL`` is required because the JSON spans many lines.
-_NEXT_DATA_RE = re.compile(
-    r'<script\s+id="__NEXT_DATA__"\s+type="application/json"[^>]*>(.*?)</script>',
-    re.DOTALL,
-)
-
 
 class SeekSource(BaseSource):
-    """Pulls jobs from one Seek search-result page.
-
-    The ``account`` is the URL path fragment after the ``seek.com.au/``
-    prefix, e.g. ``"python-jobs/in-Melbourne-VIC"``.
-    """
+    """Pulls jobs from one Seek search-result page."""
 
     kind = "seek"
 
@@ -54,9 +45,9 @@ class SeekSource(BaseSource):
         if not response.is_ok:
             raise SeekFetchError(self.account, response.status_code)
 
-        results = _extract_results(response.text)
-        for result in results:
-            job = _parse_job(result)
+        tree = HTMLParser(response.text)
+        for card in tree.css('article[data-automation="normalJob"]'):
+            job = _parse_card(card)
             if job is not None:
                 yield job
 
@@ -70,156 +61,133 @@ class SeekFetchError(RuntimeError):
         self.status_code = status_code
 
 
-def _extract_results(html: str) -> list[dict[str, Any]]:
-    """Pull the search results array out of the Next.js data island.
-
-    Returns an empty list if the island is missing or malformed —
-    those are recoverable conditions a runner should treat as "no
-    new jobs this cycle", not a hard failure.
-    """
-    match = _NEXT_DATA_RE.search(html)
-    if match is None:
-        return []
-    try:
-        payload = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return []
-
-    page_props = payload.get("props", {}).get("pageProps", {}) if isinstance(payload, dict) else {}
-    search_results = page_props.get("searchResults") if isinstance(page_props, dict) else None
-    if not isinstance(search_results, dict):
-        return []
-    results = search_results.get("results")
-    if not isinstance(results, list):
-        return []
-    return [r for r in results if isinstance(r, dict)]
-
-
-def _parse_job(result: dict[str, Any]) -> NormalizedJob | None:
-    """Translate one Seek result dict to a :class:`NormalizedJob`.
+def _parse_card(card: Node) -> NormalizedJob | None:
+    """Translate one job card into a :class:`NormalizedJob`.
 
     Returns ``None`` when the entry is missing the minimum required
-    fields (id, title, an apply URL we can derive). The parser is
-    defensive on every other field — Seek's payload shape varies
-    between regions and listing types, so we ``.get()`` everything
-    and fall back to ``None`` rather than raising.
+    fields (id, title, an apply URL we can derive). Every other field
+    is best-effort — Seek varies what's populated by listing type.
     """
-    job_id = result.get("id")
-    title = result.get("title")
-    if job_id is None or not isinstance(title, str) or not title:
+    job_id = card.attributes.get("data-job-id")
+    if not job_id:
         return None
 
-    apply_url = _derive_apply_url(result, job_id)
-    if apply_url is None:
+    title_node = _automation(card, "jobTitle")
+    if title_node is None:
+        return None
+    title = title_node.text(strip=True)
+    if not title:
         return None
 
-    advertiser = result.get("advertiser") or {}
-    company = (advertiser.get("description") if isinstance(advertiser, dict) else None) or "Unknown"
+    apply_path = title_node.attributes.get("href") or _href_from_overlay(card)
+    if not apply_path:
+        return None
+    apply_url = urljoin(_BASE_URL, _strip_query_anchors(apply_path))
 
-    location_raw = _first_str(
-        result.get("location"),
-        result.get("jobLocation"),
-        _first_label(result.get("locations")),
+    company = _text(_automation(card, "jobCompany")) or "Unknown"
+    location = _text(_automation(card, "jobCardLocation")) or _text(
+        _automation(card, "jobLocation")
     )
-
-    salary_min, salary_max, salary_currency = _parse_salary(result)
+    salary_text = _text(_automation(card, "jobSalary"))
+    salary_min, salary_max, salary_currency = _parse_salary(salary_text)
+    posted_label = _text(_automation(card, "jobListingDate"))
+    teaser = _text(_automation(card, "jobShortDescription"))
+    classification = _text(_automation(card, "jobClassification"))
+    sub_classification = _text(_automation(card, "jobSubClassification"))
+    employment_type = _employment_type_from_card(card)
 
     return NormalizedJob(
         source_external_id=str(job_id),
-        title=title.strip(),
-        company=str(company).strip(),
+        title=title,
+        company=company.strip(),
         apply_url=apply_url,
-        raw_data=result,
-        location_raw=location_raw,
-        location_country=_first_str(
-            _country_from_locations(result.get("locations")),
-            "Australia",
-        ),
-        location_city=_city_from_locations(result.get("locations")),
-        remote_type=_infer_remote_type(result),
-        employment_type=_normalise_str(result.get("workType")),
-        posted_at=_normalise_str(result.get("listingDate")),
+        raw_data={
+            "title": title,
+            "company": company,
+            "location": location,
+            "salary_text": salary_text,
+            "posted_label": posted_label,
+            "classification": classification,
+            "sub_classification": sub_classification,
+            "teaser": teaser,
+        },
+        location_raw=location,
+        location_country="Australia",
+        location_city=_first_segment(location),
+        remote_type=_infer_remote_type(location),
+        employment_type=employment_type,
+        posted_at=posted_label,
         salary_min=salary_min,
         salary_max=salary_max,
         salary_currency=salary_currency,
-        description_text=_normalise_str(result.get("teaser")),
+        description_text=teaser,
+        extra_tags=tuple(t for t in (classification, sub_classification) if t),
     )
 
 
-def _derive_apply_url(result: dict[str, Any], job_id: Any) -> str | None:
-    """Return the canonical Seek apply URL for a result entry."""
-    explicit = result.get("url")
-    if isinstance(explicit, str) and explicit.startswith("http"):
-        return explicit
-    return f"{_BASE_URL}/job/{job_id}"
+def _automation(card: Node, name: str) -> Node | None:
+    return card.css_first(f'[data-automation="{name}"]')
 
 
-def _first_str(*candidates: Any) -> str | None:
-    for c in candidates:
-        if isinstance(c, str) and c.strip():
-            return c.strip()
-    return None
-
-
-def _first_label(value: Any) -> str | None:
-    """Return the ``label`` of the first dict in a list, else None."""
-    if not isinstance(value, list):
+def _text(node: Node | None) -> str | None:
+    if node is None:
         return None
-    for entry in value:
-        if isinstance(entry, dict):
-            label = entry.get("label")
-            if isinstance(label, str) and label.strip():
-                return label.strip()
-    return None
+    text = node.text(strip=True)
+    return text or None
 
 
-def _country_from_locations(value: Any) -> str | None:
-    if not isinstance(value, list):
+def _href_from_overlay(card: Node) -> str | None:
+    overlay = _automation(card, "job-list-item-link-overlay") or _automation(
+        card, "job-list-view-job-link"
+    )
+    if overlay is None:
         return None
-    for entry in value:
-        if isinstance(entry, dict):
-            country = entry.get("country")
-            if isinstance(country, str) and country.strip():
-                return country.strip()
+    return overlay.attributes.get("href")
+
+
+def _strip_query_anchors(path: str) -> str:
+    """Drop tracking params and fragment so dedup keys stay stable.
+
+    Seek's apply URLs include ``ref``, ``origin``, ``#sol=...``
+    fragments that change per visit; a canonical job has the same
+    ``/job/{id}?type=standard`` regardless.
+    """
+    parsed = urlparse(path)
+    if not parsed.path:
+        return path
+    return parsed.path
+
+
+def _employment_type_from_card(card: Node) -> str | None:
+    """Seek embeds ``This is a Full time job`` in plain text on each card."""
+    for node in card.css("p"):
+        text = node.text(strip=True)
+        if text.lower().startswith("this is a"):
+            cleaned = text.removeprefix("This is a ").removesuffix(" job").strip()
+            return cleaned or None
     return None
 
 
-def _city_from_locations(value: Any) -> str | None:
-    if not isinstance(value, list):
+def _first_segment(value: str | None) -> str | None:
+    if not value:
         return None
-    for entry in value:
-        if isinstance(entry, dict):
-            city = entry.get("city") or entry.get("suburb")
-            if isinstance(city, str) and city.strip():
-                return city.strip()
-    return None
+    head = value.split(",")[0].strip()
+    return head or None
 
 
-def _normalise_str(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _infer_remote_type(result: dict[str, Any]) -> str | None:
-    """Map Seek's work-arrangements entries onto remote/hybrid/onsite."""
-    arrangements = result.get("workArrangements")
-    if isinstance(arrangements, dict):
-        data = arrangements.get("data")
-        if isinstance(data, list):
-            labels = [entry.get("label", "").lower() for entry in data if isinstance(entry, dict)]
-            if "remote" in labels:
-                return "remote"
-            if "hybrid" in labels:
-                return "hybrid"
-            if "on-site" in labels or "onsite" in labels:
-                return "onsite"
+def _infer_remote_type(location: str | None) -> str | None:
+    """Seek surfaces remote/hybrid in the location field on flexible roles."""
+    if not location:
+        return None
+    lower = location.lower()
+    if "remote" in lower:
+        return "remote"
+    if "hybrid" in lower:
+        return "hybrid"
     return None
 
 
 # Seek uses Unicode dashes in salary ranges alongside plain hyphens.
-# Built via \N escapes so the source file stays ASCII (avoids ruff
-# RUF001 ambiguous-character warnings on en/em-dashes).
 _DASH_CLASS = "-\N{EN DASH}\N{EM DASH}"
 _SALARY_RANGE_RE = re.compile(
     rf"\$?\s*([\d,]+)\s*(?:[{_DASH_CLASS}]|to)\s*\$?\s*([\d,]+)",
@@ -228,26 +196,18 @@ _SALARY_RANGE_RE = re.compile(
 _SALARY_SINGLE_RE = re.compile(r"\$?\s*([\d,]+)")
 
 
-def _parse_salary(result: dict[str, Any]) -> tuple[int | None, int | None, str | None]:
-    """Parse Seek's free-text salary string into ``(min, max, currency)``.
-
-    Seek emits salary as a string like ``"$140,000 - $160,000"`` or
-    ``"$80k+"``. We look for two integers (range) or one (single
-    number). Any failure → all-Nones, preserving the raw text in
-    ``raw_data``.
-    """
-    salary = result.get("salary")
-    if not isinstance(salary, str) or not salary.strip():
+def _parse_salary(text: str | None) -> tuple[int | None, int | None, str | None]:
+    if not text:
         return None, None, None
 
-    range_match = _SALARY_RANGE_RE.search(salary)
+    range_match = _SALARY_RANGE_RE.search(text)
     if range_match:
         low = _to_int(range_match.group(1))
         high = _to_int(range_match.group(2))
         if low is not None and high is not None:
             return low, high, "AUD"
 
-    single_match = _SALARY_SINGLE_RE.search(salary)
+    single_match = _SALARY_SINGLE_RE.search(text)
     if single_match:
         value = _to_int(single_match.group(1))
         if value is not None:
@@ -261,8 +221,9 @@ def _to_int(token: str) -> int | None:
     if not cleaned.isdigit():
         return None
     value = int(cleaned)
-    # Detect "80k" style by checking length — anything under 1000 in a
-    # salary context is almost certainly thousands and we should multiply.
     if value < 1000:
         return value * 1000
     return value
+
+
+__all__: list[str] = ["SeekFetchError", "SeekSource"]
