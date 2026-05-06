@@ -89,6 +89,34 @@ async def test_fetch_supports_post_with_json_body() -> None:
         assert b"includeCompensation" in request.content
 
 
+async def test_fetch_supports_post_with_form_encoded_data() -> None:
+    """``data=`` URL-encodes a mapping for ``application/x-www-form-urlencoded``
+    bodies — Salesforce Aura, OAuth token exchanges, classic HTML
+    forms.
+    """
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post("https://api.example.com/aura").mock(
+            return_value=httpx.Response(200, text="ok"),
+        )
+
+        async with HttpFetcher() as fetcher:
+            response = await fetcher.fetch(
+                "https://api.example.com/aura",
+                method="POST",
+                data={"message": '{"a":1}', "aura.token": "null"},
+            )
+
+        assert response.is_ok
+        assert route.called
+        request = route.calls.last.request
+        assert request.headers["content-type"].startswith(
+            "application/x-www-form-urlencoded",
+        )
+        # httpx URL-encodes the JSON values (curly braces and colons).
+        assert b"message=%7B%22a%22%3A1%7D" in request.content
+        assert b"aura.token=null" in request.content
+
+
 async def test_fetch_records_fetched_at_timestamp_in_utc() -> None:
     with respx.mock(assert_all_called=False) as router:
         router.get("https://api.example.com/").mock(

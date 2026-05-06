@@ -68,10 +68,11 @@ class _StubFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
     ) -> Response:
-        del method, headers, json, timeout
+        del method, headers, json, data, timeout
         self.fetch_calls.append(url)
         return self._response
 

@@ -31,6 +31,7 @@ class _ScriptedFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - matches Fetcher Protocol
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -40,6 +41,7 @@ class _ScriptedFetcher:
                 "method": method,
                 "headers": dict(headers or {}),
                 "json": json,
+                "data": dict(data) if data is not None else None,
                 "timeout": timeout,
             },
         )
@@ -221,6 +223,7 @@ async def test_arguments_forwarded_to_primary() -> None:
         "method": "POST",
         "headers": {"X-Run-Id": "abc"},
         "json": {"q": "python"},
+        "data": None,
         "timeout": 12.5,
     }
 

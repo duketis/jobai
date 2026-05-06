@@ -65,6 +65,7 @@ class Fetcher(Protocol):
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to httpx, not asyncio.timeout
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -83,6 +84,12 @@ class Fetcher(Protocol):
         implementations ignore it; the value is part of the Protocol
         so sources can request rendering without caring which tier
         the runner picked.
+
+        ``data`` is a form-encoded body (``application/x-www-form-urlencoded``).
+        Mirrors ``json`` for the form-POST case — Salesforce Aura
+        endpoints, OAuth token exchanges, classic HTML forms.
+        Browser-tier implementations reject it (they only navigate
+        via GET); HTTP-tier accepts and URL-encodes the mapping.
         """
         ...
 

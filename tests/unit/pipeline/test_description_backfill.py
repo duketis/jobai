@@ -93,6 +93,7 @@ class _ScriptedFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
     ) -> Response:

@@ -155,6 +155,14 @@ async def test_fetch_rejects_json_payload() -> None:
     assert driver.calls == []
 
 
+async def test_fetch_rejects_form_data_payload() -> None:
+    driver = _FakeDriver()
+    async with BrowserFetcher(driver=driver) as fetcher:
+        with pytest.raises(ValueError, match="data"):
+            await fetcher.fetch("https://example.com", data={"k": "v"})
+    assert driver.calls == []
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------

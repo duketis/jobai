@@ -224,6 +224,7 @@ class BrowserFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to playwright
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -235,6 +236,9 @@ class BrowserFetcher:
             raise ValueError(msg)
         if json is not None:
             msg = "BrowserFetcher does not support `json` payloads."
+            raise ValueError(msg)
+        if data is not None:
+            msg = "BrowserFetcher does not support `data` (form) payloads."
             raise ValueError(msg)
 
         timeout_ms = (timeout if timeout is not None else self._timeout) * 1000

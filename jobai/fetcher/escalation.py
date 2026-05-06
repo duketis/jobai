@@ -76,6 +76,7 @@ class EscalatingFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to wrapped fetcher
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -85,6 +86,7 @@ class EscalatingFetcher:
                 method=method,
                 headers=headers,
                 json=json,
+                data=data,
                 timeout=timeout,
                 wait_for_selector=wait_for_selector,
             )
@@ -94,6 +96,7 @@ class EscalatingFetcher:
             method=method,
             headers=headers,
             json=json,
+            data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
         )
@@ -106,6 +109,7 @@ class EscalatingFetcher:
             method=method,
             headers=headers,
             json=json,
+            data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
         )
@@ -117,6 +121,7 @@ class EscalatingFetcher:
         method: str,
         headers: Mapping[str, str] | None,
         json: Any,
+        data: Mapping[str, str] | None,
         timeout: float | None,  # noqa: ASYNC109  - delegates to wrapped fetcher
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -127,6 +132,7 @@ class EscalatingFetcher:
             method=method,
             headers=headers,
             json=json,
+            data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
         )

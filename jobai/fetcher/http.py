@@ -47,6 +47,7 @@ class HttpFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -59,6 +60,8 @@ class HttpFetcher:
             kwargs["headers"] = dict(headers)
         if json is not None:
             kwargs["json"] = json
+        if data is not None:
+            kwargs["data"] = dict(data)
         if timeout is not None:
             kwargs["timeout"] = timeout
 

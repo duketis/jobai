@@ -98,6 +98,7 @@ class RetryingFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to inner fetcher
         wait_for_selector: str | None = None,
     ) -> Response:
@@ -108,6 +109,7 @@ class RetryingFetcher:
                     method=method,
                     headers=headers,
                     json=json,
+                    data=data,
                     timeout=timeout,
                     wait_for_selector=wait_for_selector,
                 )

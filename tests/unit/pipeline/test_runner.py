@@ -52,10 +52,11 @@ class _StubFetcher:
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
         json: Any = None,
+        data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
     ) -> Response:
-        del method, headers, json, timeout
+        del method, headers, json, data, timeout
         if url in self._responses:
             return self._responses[url]
         return Response(url=url, status_code=200, headers={}, body=b"{}")
