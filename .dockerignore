@@ -1,0 +1,47 @@
+# Match the .gitignore intent for the build context, plus a few
+# items that are fine in git but waste image-layer cache time.
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local env / IDE
+.venv/
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Frontend (rebuilt inside the image)
+frontend/node_modules/
+frontend/dist/
+
+# Local-only state never used in containers
+jobai.db
+jobai.db-*
+*.db-journal
+data/
+
+# Repo private notes that aren't shipped
+_private/
+
+# Git history isn't needed in the image (and bloats the build context)
+.git/
+.github/
+
+# Test artifacts
+tests/**/__pycache__/
+.tool-versions

@@ -1,0 +1,34 @@
+# jobai — single-service Docker Compose deployment.
+#
+# `docker compose up -d` boots the API + scheduler + agent on
+# http://localhost:8421. The SQLite DB persists under the `jobai-data`
+# named volume; deleting the container leaves the data intact.
+#
+# Required: an Anthropic API key in `.env` (see `.env.example`).
+# Without it the agent endpoints return 500; the scrape pipeline
+# still runs.
+
+services:
+  jobai:
+    build: .
+    image: jobai:latest
+    container_name: jobai
+    restart: unless-stopped
+    ports:
+      - "8421:8421"
+    env_file:
+      - .env
+    environment:
+      # Override-able by .env, but these are sensible defaults.
+      - JOBAI_DB_PATH=/data/jobai.db
+    volumes:
+      - jobai-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8421/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  jobai-data:
