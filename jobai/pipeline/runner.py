@@ -32,6 +32,7 @@ from jobai.dedup.promote import promote_to_canonical_jobs
 from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
+from jobai.pipeline.remote_inference import infer_remote_type
 from jobai.pipeline.schema_change import (
     FieldChange,
     FieldStats,
@@ -99,11 +100,17 @@ async def run_source(
                 items_new += 1
             else:
                 items_updated += 1
+            # Make sure the canonical row always lands with a
+            # remote_type set. Sources that already populate it (most
+            # ATS APIs, APS Jobs) pass through untouched; everyone
+            # else gets the heuristic over title + description +
+            # location, defaulting to onsite when nothing matches.
+            promotable = _ensure_remote_type(job)
             promote_to_canonical_jobs(
                 conn,
                 source_id=source_row.id,
                 jobs_raw_id=jobs_raw_id,
-                job=job,
+                job=promotable,
             )
     except Exception as exc:  # noqa: BLE001  - runner finalises on any failure
         status = "failed"
@@ -161,6 +168,18 @@ async def run_source(
         error_summary=error_summary,
         schema_changes=schema_changes,
     )
+
+
+def _ensure_remote_type(job: NormalizedJob) -> NormalizedJob:
+    """Return ``job`` with ``remote_type`` set to a heuristic value if absent."""
+    if job.remote_type:
+        return job
+    inferred = infer_remote_type(
+        title=job.title,
+        description=job.description_text,
+        location=job.location_raw,
+    )
+    return dataclasses.replace(job, remote_type=inferred)
 
 
 def _start_run(conn: sqlite3.Connection, *, source_id: int, tier: int) -> int:

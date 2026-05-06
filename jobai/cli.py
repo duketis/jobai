@@ -29,6 +29,7 @@ from jobai.dedup.fuzzy import DEFAULT_SIMILARITY_THRESHOLD
 from jobai.dedup.reconcile import DEFAULT_WINDOW_DAYS, reconcile_fuzzy_duplicates
 from jobai.fetcher.dispatch import build_fetcher
 from jobai.observability.logging import configure_logging, get_logger
+from jobai.pipeline.remote_inference import backfill_remote_types
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.sources.base import BaseSource
 from jobai.sources.loader import DEFAULT_COMPANIES_YAML, sync_companies_yaml
@@ -122,6 +123,33 @@ def reconcile(
     typer.echo(
         f"reconcile: examined {result.groups_examined} group(s), "
         f"merged {result.pairs_merged} pair(s)"
+    )
+
+
+@app.command(name="infer-remote")
+def infer_remote(
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Cap the pass at N rows (default: all jobs lacking a remote_type).",
+    ),
+) -> None:
+    """Fill ``remote_type`` for every job whose source didn't tell us.
+
+    Walks ``jobs`` rows where ``remote_type`` is null/empty, runs the
+    title + description + location heuristic, and writes back one of
+    ``remote`` / ``hybrid`` / ``onsite``. Future scrapes get the same
+    treatment automatically inside the runner.
+    """
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    with connect(settings.db_path) as conn:
+        result = backfill_remote_types(conn, limit=limit)
+    typer.echo(
+        f"infer-remote: inspected {result.inspected}, updated {result.updated} "
+        f"→ remote={result.by_value['remote']} "
+        f"hybrid={result.by_value['hybrid']} "
+        f"onsite={result.by_value['onsite']}",
     )
 
 
