@@ -189,6 +189,23 @@ indeed:
     default_tier: 2
     cadence_seconds: 3600
 
+# NSW Government — iworkfor.nsw.gov.au, a Next.js SPA. Browser
+# tier with wait_for_selector lands the rendered job-card list. Each
+# slug below is the URL path fragment after iworkfor.nsw.gov.au/.
+nsw_iworkfor:
+  - account: jobs/all-keywords/all-agencies/all-organisations-entities/all-categories/all-locations/all-worktypes
+    display_name: NSW Government — All open positions
+    default_tier: 2
+    cadence_seconds: 7200
+  - account: jobs/all-keywords/health/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=1
+    display_name: NSW Government — Health
+    default_tier: 2
+    cadence_seconds: 7200
+  - account: jobs/all-keywords/education/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=7
+    display_name: NSW Government — Education
+    default_tier: 2
+    cadence_seconds: 7200
+
 # APS Jobs migrated to a Salesforce Lightning SPA in 2026; the Atom
 # feed at /s/search.atom no longer exists and the new endpoints
 # require Salesforce Aura/Lightning XHR calls that the parser
