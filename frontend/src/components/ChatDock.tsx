@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Send, Wrench } from "lucide-react";
+import { ChevronDown, ChevronRight, Send, Settings, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
+import { SettingsModal } from "@/components/SettingsModal";
 import { getConversation, streamAgentChat } from "@/lib/api";
 import type { AgentStreamEvent, ConversationMessageItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ export function ChatDock() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState<StreamingTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -154,13 +156,22 @@ export function ChatDock() {
 
   return (
     <section className="flex-1 flex flex-col min-h-0 bg-card/40">
-      <header className="px-4 py-2 border-b border-border flex items-center justify-between">
-        <h2 className="text-sm font-medium truncate">
+      <header className="px-4 py-2 border-b border-border flex items-center justify-between gap-2">
+        <h2 className="text-sm font-medium truncate flex-1">
           {history?.title ?? (conversationId ? "Loading…" : "New chat")}
         </h2>
         <span className="text-[11px] text-muted-foreground">
           {conversationId ? `#${conversationId}` : "ephemeral"}
         </span>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+          title="Settings"
+          aria-label="Open settings"
+        >
+          <Settings className="size-4" />
+        </button>
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
@@ -188,6 +199,8 @@ export function ChatDock() {
         onSend={send}
         disabled={streaming !== null}
       />
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </section>
   );
 }

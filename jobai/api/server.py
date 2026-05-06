@@ -24,7 +24,17 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from jobai import __version__
-from jobai.api.routes import agent, conversations, health, jobs, notifications, sources
+from jobai.api.routes import (
+    agent,
+    conversations,
+    health,
+    jobs,
+    notifications,
+    sources,
+)
+from jobai.api.routes import (
+    settings as settings_routes,
+)
 from jobai.config import get_settings
 from jobai.scheduler import (
     build_scheduler,
@@ -105,6 +115,11 @@ def create_app() -> FastAPI:
         conversations.router,
         prefix="/api/conversations",
         tags=["conversations"],
+    )
+    application.include_router(
+        settings_routes.router,
+        prefix="/api/settings",
+        tags=["settings"],
     )
     _mount_frontend(application)
     return application

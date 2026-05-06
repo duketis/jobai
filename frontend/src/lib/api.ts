@@ -19,6 +19,7 @@ import type {
   JobState,
   JobStateResponse,
   JobsListResponse,
+  SettingsView,
   SourceSummary,
 } from "./types";
 
@@ -108,6 +109,25 @@ export async function deleteConversation(id: number): Promise<void> {
 
 export async function getHealth(): Promise<HealthSnapshot> {
   return fetchJson<HealthSnapshot>("/health");
+}
+
+/** Partial body accepted by PUT /api/settings. Empty strings clear secrets. */
+export interface SettingsUpdate {
+  agent_backend?: "api" | "subscription";
+  anthropic_api_key?: string;
+  claude_code_oauth_token?: string;
+  anthropic_model?: string;
+}
+
+export async function getSettings(): Promise<SettingsView> {
+  return fetchJson<SettingsView>("/settings");
+}
+
+export async function updateSettings(body: SettingsUpdate): Promise<SettingsView> {
+  return fetchJson<SettingsView>("/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function listSources(): Promise<{ items: SourceSummary[] }> {

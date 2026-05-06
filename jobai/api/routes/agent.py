@@ -45,7 +45,7 @@ from jobai.agent.subscription_loop import run_subscription_chat_turn
 from jobai.agent.tools import ToolExecutor
 from jobai.api.dependencies import AnthropicDep, ConnDep, ModelDep
 from jobai.api.models import AgentChatRequest
-from jobai.config import get_settings
+from jobai.api.runtime_settings import get_effective_agent_config
 
 router = APIRouter()
 
@@ -64,8 +64,8 @@ _TITLE_MAX_CHARS = 80
 async def chat(
     body: AgentChatRequest,
     conn: ConnDep,
-    client: AnthropicDep,
-    model: ModelDep,
+    fallback_client: AnthropicDep,
+    fallback_model: ModelDep,
 ) -> EventSourceResponse:
     """Stream one turn through the agent loop as SSE.
 
@@ -75,6 +75,11 @@ async def chat(
     :func:`run_chat_turn`: ``text_delta``, ``thinking_delta``,
     ``tool_use_start``, ``tool_call``, ``tool_result``, ``tool_error``,
     ``pause_turn``, ``done``, or ``error``.
+
+    Backend selection (API key vs subscription) and credentials are
+    resolved per-request from :mod:`jobai.api.runtime_settings`, so a
+    Settings UI update takes effect on the next chat turn without
+    restarting the process.
     """
     conversation = _resolve_conversation(conn, body.conversation_id, body.message)
     append_message(
@@ -87,10 +92,10 @@ async def chat(
     return EventSourceResponse(
         _stream_turn(
             conn=conn,
-            client=client,
-            model=model,
             conversation_id=conversation.id,
             user_message=body.message,
+            fallback_client=fallback_client,
+            fallback_model=fallback_model,
         ),
     )
 
@@ -131,10 +136,10 @@ def _derive_title(message: str) -> str:
 async def _stream_turn(
     *,
     conn: sqlite3.Connection,
-    client: AsyncAnthropic,
-    model: str,
     conversation_id: int,
     user_message: str,
+    fallback_client: AsyncAnthropic,
+    fallback_model: str,
 ) -> AsyncIterator[dict[str, str]]:
     """Drive the agent loop and yield SSE-shaped dicts.
 
@@ -153,19 +158,31 @@ async def _stream_turn(
     history = _load_history(conn, conversation_id)
     executor = ToolExecutor(conn)
     result = TurnResult()
-    backend = get_settings().agent_backend.lower()
+    cfg = get_effective_agent_config(conn)
 
     async def _events() -> AsyncIterator[StreamEvent]:
-        if backend == "subscription":
+        if cfg.agent_backend == "subscription":
             async for ev in run_subscription_chat_turn(
-                model=model or None,
+                model=cfg.anthropic_model or None,
                 user_message=user_message,
                 history=history,
                 tool_executor=executor,
                 result=result,
+                oauth_token=cfg.claude_code_oauth_token,
             ):
                 yield ev
         else:
+            # API mode. If the user set an explicit api_key via the
+            # Settings UI, build a fresh client with that override;
+            # otherwise reuse the dependency-injected client (tests
+            # override this dep with a fake; production uses
+            # AsyncAnthropic() with env-default credentials).
+            client = (
+                AsyncAnthropic(api_key=cfg.anthropic_api_key)
+                if cfg.anthropic_api_key
+                else fallback_client
+            )
+            model = cfg.anthropic_model or fallback_model
             async for ev in run_chat_turn(
                 client=client,
                 model=model,
@@ -180,7 +197,7 @@ async def _stream_turn(
         async for stream_event in _events():
             yield _sse(stream_event.type, stream_event.data)
     except Exception as exc:  # noqa: BLE001 - surface any unexpected failure as an SSE error
-        _log.exception("agent_chat_stream_failed", extra={"backend": backend})
+        _log.exception("agent_chat_stream_failed", extra={"backend": cfg.agent_backend})
         yield _sse(
             "error",
             {"error_class": type(exc).__name__, "error": str(exc)},

@@ -69,6 +69,7 @@ async def run_subscription_chat_turn(
     tool_executor: ToolExecutor,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     result: TurnResult | None = None,
+    oauth_token: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one user turn through the Claude Agent SDK, streaming events.
 
@@ -96,6 +97,14 @@ async def run_subscription_chat_turn(
     )
     allowed = [f"mcp__{_MCP_SERVER_NAME}__{td['name']}" for td in TOOL_DEFINITIONS]
 
+    # The ``claude`` CLI reads its long-lived auth from
+    # ``CLAUDE_CODE_OAUTH_TOKEN``; forwarding it via ``options.env``
+    # keeps the secret off the parent process's environment so the
+    # rest of the API server doesn't see it.
+    cli_env: dict[str, str] = {}
+    if oauth_token:
+        cli_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
         # Disable the SDK's built-in coding tools (Bash, Read, Edit,
@@ -106,12 +115,13 @@ async def run_subscription_chat_turn(
         allowed_tools=allowed,
         model=model,
         max_turns=max_iterations,
-        # ``acceptEdits`` is the closest preset to "no permission
-        # prompts ever" — none of our tools touch the filesystem so
-        # nothing dangerous ever asks. Without this the SDK gates
-        # MCP tool calls behind a prompt the chat UI can't answer.
+        # ``bypassPermissions`` is the only preset that doesn't gate
+        # MCP tool calls behind a prompt the chat UI can't answer —
+        # our tools are read-mostly DB queries so nothing dangerous
+        # ever asks regardless of which preset is in effect.
         permission_mode="bypassPermissions",
         include_partial_messages=True,
+        env=cli_env,
     )
 
     try:

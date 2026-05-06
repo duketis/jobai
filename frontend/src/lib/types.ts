@@ -112,6 +112,14 @@ export interface HealthSnapshot {
   timestamp: string;
 }
 
+/** Effective runtime settings as returned by GET /api/settings. */
+export interface SettingsView {
+  agent_backend: "api" | "subscription";
+  anthropic_model: string;
+  has_anthropic_api_key: boolean;
+  has_claude_code_oauth_token: boolean;
+}
+
 /**
  * Server-Sent Event types emitted by /api/agent/chat. Maps 1:1 to the
  * StreamEvent type values produced by the agent loop in
