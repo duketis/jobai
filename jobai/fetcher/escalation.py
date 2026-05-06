@@ -131,6 +131,18 @@ class EscalatingFetcher:
             wait_for_selector=wait_for_selector,
         )
 
+    async def run_in_page(self, *args: Any, **kwargs: Any) -> Response:
+        """Forward to the fallback's run_in_page if it has one.
+
+        ``run_in_page`` is a browser-tier escape hatch; the primary
+        (HTTP-tier) doesn't expose it. Building the fallback on
+        first call mirrors the lazy-on-block escalation policy.
+        """
+        if self._fallback is None:
+            self._fallback = self._fallback_factory()
+        method = self._fallback.run_in_page  # type: ignore[attr-defined]
+        return await method(*args, **kwargs)  # type: ignore[no-any-return]
+
     async def aclose(self) -> None:
         await self._primary.aclose()
         if self._fallback is not None:

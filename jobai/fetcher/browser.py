@@ -21,14 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Protocol, Self
 
-from playwright.async_api import Browser, Playwright, async_playwright
+from playwright.async_api import Browser, Page, Playwright, async_playwright
 
 from jobai.fetcher.base import Response
+
+#: Sources that need full Playwright control (form fill, click,
+#: multi-step navigation) pass a callable to
+#: :meth:`BrowserFetcher.run_in_page`. The callable receives a
+#: :class:`Page` already navigated to ``url`` and is expected to
+#: drive any extra interactions; on return the fetcher snapshots
+#: ``page.content()`` and packages it as a :class:`Response`.
+PageScript = Callable[["Page"], Awaitable[None]]
 
 #: A Chrome-on-macOS UA suffixed with ``jobai/<version>`` so we keep a
 #: realistic fingerprint without misrepresenting ourselves.
@@ -53,6 +61,14 @@ class _Driver(Protocol):
         headers: Mapping[str, str] | None,
         timeout_ms: float,
         wait_for_selector: str | None = None,
+    ) -> Response: ...
+
+    async def run_in_page(
+        self,
+        url: str,
+        *,
+        timeout_ms: float,
+        page_script: PageScript,
     ) -> Response: ...
 
     async def close(self) -> None: ...
@@ -139,6 +155,42 @@ class PlaywrightDriver:
         finally:
             await context.close()
 
+    async def run_in_page(
+        self,
+        url: str,
+        *,
+        timeout_ms: float,
+        page_script: PageScript,
+    ) -> Response:
+        """Navigate to ``url`` and hand the Page to ``page_script``.
+
+        Used by sources that need full Playwright control — form
+        fills, click chains, multi-step navigation — that the
+        single-shot :meth:`fetch_page` can't express. The script
+        runs against a clean per-call context (same isolation as
+        :meth:`fetch_page`); the fetcher snapshots ``page.content()``
+        when the script returns.
+        """
+        browser = await self._ensure_browser()
+        context = await browser.new_context(user_agent=self._user_agent)
+        try:
+            page = await context.new_page()
+            response = await page.goto(url, timeout=timeout_ms)
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            await page_script(page)
+            html = await page.content()
+            status = response.status if response is not None else 0
+            response_url = response.url if response is not None else url
+            return Response(
+                url=response_url,
+                status_code=status,
+                headers={},
+                body=html.encode("utf-8"),
+                fetched_at=datetime.now(tz=UTC),
+            )
+        finally:
+            await context.close()
+
     async def close(self) -> None:
         if self._browser is not None:
             await self._browser.close()
@@ -192,6 +244,22 @@ class BrowserFetcher:
             timeout_ms=timeout_ms,
             wait_for_selector=wait_for_selector,
         )
+
+    async def run_in_page(
+        self,
+        url: str,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109
+        page_script: PageScript,
+    ) -> Response:
+        """Escape hatch: run a Playwright Page-aware script.
+
+        Sources that need form fills or multi-step navigation drive
+        the page directly via this method. Passes through to the
+        underlying driver; HTTP-tier wrappers don't expose this.
+        """
+        timeout_ms = (timeout if timeout is not None else self._timeout) * 1000
+        return await self._driver.run_in_page(url, timeout_ms=timeout_ms, page_script=page_script)
 
     async def aclose(self) -> None:
         await self._driver.close()

@@ -50,6 +50,19 @@ class _FakeDriver:
         )
         return self._response
 
+    async def run_in_page(
+        self,
+        url: str,
+        *,
+        timeout_ms: float,
+        page_script: Any,
+    ) -> Response:
+        del page_script  # fake driver doesn't run the script
+        self.calls.append(
+            {"url": url, "timeout_ms": timeout_ms, "kind": "run_in_page"},
+        )
+        return self._response
+
     async def close(self) -> None:
         self.closed = True
 

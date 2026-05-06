@@ -63,6 +63,21 @@ class RecordingFetcher:
             self._record(response)
         return response
 
+    async def run_in_page(self, *args: Any, **kwargs: Any) -> Response:
+        """Forward to the inner fetcher's ``run_in_page`` (browser-only).
+
+        Sources that drive Playwright workflows reach for this method;
+        we still record the resulting Response if the inner fetcher
+        implements it. Raises :class:`AttributeError` if the inner
+        fetcher is HTTP-only — same behaviour as calling
+        ``run_in_page`` on plain HttpFetcher.
+        """
+        method = self._inner.run_in_page  # type: ignore[attr-defined]
+        response: Response = await method(*args, **kwargs)
+        if response.is_ok:
+            self._record(response)
+        return response
+
     async def aclose(self) -> None:
         await self._inner.aclose()
 

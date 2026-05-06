@@ -155,6 +155,17 @@ class RetryingFetcher:
         msg = "RetryingFetcher exited the retry loop unexpectedly"
         raise RuntimeError(msg)  # pragma: no cover
 
+    async def run_in_page(self, *args: Any, **kwargs: Any) -> Response:
+        """Forward to the inner fetcher's ``run_in_page`` (if browser-tier).
+
+        Browser workflows go through Playwright, which already has
+        its own waits and exception handling — re-running the script
+        on transient errors would double up. So we forward without
+        retry semantics.
+        """
+        method = self._inner.run_in_page  # type: ignore[attr-defined]
+        return await method(*args, **kwargs)  # type: ignore[no-any-return]
+
     async def aclose(self) -> None:
         await self._inner.aclose()
 
