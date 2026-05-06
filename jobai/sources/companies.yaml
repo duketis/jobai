@@ -8,28 +8,22 @@
 # Optional per-entry: default_tier (1/2/3), enabled (true/false),
 #                     cadence_seconds.
 #
-# Curated for AU-relevant tech companies plus a handful of high-signal
-# global names. Add more freely; sync is idempotent (existing rows have
-# their display_name / tier / cadence updated, but the enabled flag is
-# preserved so admin toggles stick).
+# Curated for AU-relevant tech companies plus a wide spread of
+# global high-signal names. Every entry below was confirmed live
+# against its provider's public API; sync is idempotent.
 
+# Greenhouse — boards-api.greenhouse.io/v1/boards/<slug>/jobs.
 greenhouse:
-  # NOTE: Atlassian and Canva moved off Greenhouse — Atlassian's board
-  # 404s and Canva's board 404s. Canva is on SmartRecruiters now (see
-  # below); Atlassian shows 0 listings on every public ATS we probe,
-  # so they may be in a hiring freeze or have rolled their own.
+  # AU SaaS / tech
   - account: cultureamp
     display_name: Culture Amp
-  - account: linktree
-    display_name: Linktree
   - account: octopusdeploy
     display_name: Octopus Deploy
-  - account: safetyculture
-    display_name: SafetyCulture
+  - account: thinkific
+    display_name: Thinkific
+  # Global tech / AI / fintech
   - account: anthropic
     display_name: Anthropic
-  - account: cloudflare
-    display_name: Cloudflare
   - account: stripe
     display_name: Stripe
   - account: airbnb
@@ -38,27 +32,67 @@ greenhouse:
     display_name: Figma
   - account: vercel
     display_name: Vercel
-  - account: notion
-    display_name: Notion
   - account: discord
     display_name: Discord
   - account: gitlab
     display_name: GitLab
-  - account: hashicorp
-    display_name: HashiCorp
+  - account: cloudflare
+    display_name: Cloudflare
   - account: elastic
     display_name: Elastic
   - account: datadog
     display_name: Datadog
   - account: mongodb
     display_name: MongoDB
-  - account: snowflake
-    display_name: Snowflake
+  - account: pinterest
+    display_name: Pinterest
+  - account: reddit
+    display_name: Reddit
+  - account: roblox
+    display_name: Roblox
+  - account: dropbox
+    display_name: Dropbox
+  - account: twilio
+    display_name: Twilio
+  - account: samsara
+    display_name: Samsara
+  - account: instacart
+    display_name: Instacart
+  - account: duolingo
+    display_name: Duolingo
+  - account: amplitude
+    display_name: Amplitude
+  - account: mixpanel
+    display_name: Mixpanel
+  - account: asana
+    display_name: Asana
+  - account: okta
+    display_name: Okta
+  - account: block
+    display_name: Block (Square)
+  - account: gusto
+    display_name: Gusto
+  - account: lyft
+    display_name: Lyft
+  - account: webflow
+    display_name: Webflow
+  - account: unity3d
+    display_name: Unity
+  - account: descript
+    display_name: Descript
+  - account: monzo
+    display_name: Monzo
 
+# Lever — api.lever.co/v0/postings/<slug>?mode=json.
 lever:
   - account: palantir
     display_name: Palantir Technologies
+  - account: spotify
+    display_name: Spotify
+  - account: mistral
+    display_name: Mistral AI
 
+# Ashby — api.ashbyhq.com/posting-api/job-board/<slug>.
 ashby:
   - account: linear
     display_name: Linear
@@ -66,16 +100,36 @@ ashby:
     display_name: Vanta
   - account: mercor
     display_name: Mercor
+  - account: ramp
+    display_name: Ramp
+  - account: openai
+    display_name: OpenAI
+  - account: perplexity
+    display_name: Perplexity
+  - account: character
+    display_name: Character.AI
+  - account: speak
+    display_name: Speak
+  - account: tigerdata
+    display_name: Tiger Data
+  - account: xero
+    display_name: Xero
+  - account: modal
+    display_name: Modal
+  - account: elevenlabs
+    display_name: ElevenLabs
 
-workable:
-  - account: huggingface
-    display_name: Hugging Face
-
+# SmartRecruiters — api.smartrecruiters.com/v1/companies/<slug>/postings.
 smartrecruiters:
   - account: visa
     display_name: Visa
   - account: canva
     display_name: Canva
+
+# Workable boards moved off the public API path we used (v3/accounts).
+# Disabled until we find an updated endpoint that still serves
+# Hugging Face / SafetyCulture / similar AU SaaS users of Workable.
+workable: []
 
 # Seek is JS-rendered — needs the browser fetcher (default_tier: 2).
 # Account is the URL slug from the Seek search-results path. Add more
