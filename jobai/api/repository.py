@@ -43,6 +43,7 @@ def search_jobs(
     posted_since: str | None = None,
     company: str | None = None,
     source_kind: str | None = None,
+    exclude_title: list[str] | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> JobsListResponse:
@@ -50,6 +51,11 @@ def search_jobs(
 
     When ``q`` is provided, the FTS5 index drives ranking; otherwise
     results are sorted by ``last_seen_at DESC`` (freshest first).
+
+    ``exclude_title`` is a list of substrings; any job whose title
+    contains any of them (case-insensitive) is excluded. Useful for
+    "no senior roles" / "no managers" / etc. without polluting the
+    free-text ``q`` (which is a ranking signal, not a filter).
     """
     limit = max(1, min(limit, MAX_LIMIT))
     offset = max(0, offset)
@@ -62,6 +68,7 @@ def search_jobs(
         posted_since=posted_since,
         company=company,
         source_kind=source_kind,
+        exclude_title=exclude_title,
     )
 
     order_by = "ORDER BY fts.rank" if q else "ORDER BY j.last_seen_at DESC"
@@ -102,6 +109,7 @@ def _build_where(
     posted_since: str | None,
     company: str | None,
     source_kind: str | None,
+    exclude_title: list[str] | None = None,
 ) -> tuple[str, list[Any], str]:
     """Compose WHERE / params / optional FTS join from filter args."""
     clauses: list[str] = []
@@ -146,6 +154,17 @@ def _build_where(
             "JOIN sources s ON s.id = js.source_id WHERE s.kind = ?)"
         )
         params.append(source_kind)
+
+    if exclude_title:
+        # Case-insensitive substring exclusion on the title. Empty
+        # strings get filtered out so a stray comma in user input
+        # doesn't accidentally exclude every row.
+        for token in exclude_title:
+            cleaned = token.strip()
+            if not cleaned:
+                continue
+            clauses.append("j.title NOT LIKE ? COLLATE NOCASE")
+            params.append(f"%{cleaned}%")
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params, fts_join

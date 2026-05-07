@@ -63,6 +63,8 @@ export interface JobsListParams {
   posted_since?: string;
   company?: string;
   source_kind?: string;
+  /** Comma-separated title keywords to exclude (case-insensitive). */
+  exclude_title?: string;
   limit?: number;
   offset?: number;
 }

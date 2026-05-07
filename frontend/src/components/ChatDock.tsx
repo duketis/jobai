@@ -70,6 +70,18 @@ export function ChatDock() {
           next.set(key, value.trim());
         }
       }
+      // exclude_title is an array of strings; flatten to comma-separated
+      // for the URL so the JobsListPage can render the chips.
+      const exclude = input.exclude_title;
+      if (Array.isArray(exclude)) {
+        const tokens = exclude
+          .filter((t): t is string => typeof t === "string")
+          .map((t) => t.trim())
+          .filter(Boolean);
+        if (tokens.length > 0) next.set("exclude_title", tokens.join(","));
+      } else if (typeof exclude === "string" && exclude.trim()) {
+        next.set("exclude_title", exclude.trim());
+      }
       // Preserve the active chat id so navigating doesn't drop the
       // conversation context.
       if (chatParam !== null) next.set("chat", chatParam);
@@ -102,7 +114,16 @@ export function ChatDock() {
     if (!message || streaming) return;
     setInput("");
     setError(null);
-    const turn: StreamingTurn = { text: "", thinking: "", events: [], done: false };
+    // Track the in-flight user message so we render the user's bubble
+    // immediately on Send — without this they stare at an empty dock
+    // until the first SDK event lands.
+    const turn: StreamingTurn = {
+      userMessage: message,
+      text: "",
+      thinking: "",
+      events: [],
+      done: false,
+    };
     setStreaming(turn);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -206,6 +227,7 @@ export function ChatDock() {
 }
 
 interface StreamingTurn {
+  userMessage: string;
   text: string;
   thinking: string;
   events: AgentStreamEvent[];
@@ -270,8 +292,27 @@ function StreamingMessage({ turn }: { turn: StreamingTurn }) {
       ),
     [turn.events],
   );
+  const showWaiting = !turn.done && !turn.text && !turn.thinking && toolEvents.length === 0;
   return (
     <div className="space-y-1.5">
+      {turn.userMessage && <UserBubble>{turn.userMessage}</UserBubble>}
+      {showWaiting && (
+        <div className="flex">
+          <div className="rounded-2xl rounded-bl-sm bg-secondary text-secondary-foreground px-3 py-1.5 text-sm">
+            <span className="inline-flex gap-1 items-center text-muted-foreground">
+              <span className="size-1.5 rounded-full bg-current animate-pulse" />
+              <span
+                className="size-1.5 rounded-full bg-current animate-pulse"
+                style={{ animationDelay: "150ms" }}
+              />
+              <span
+                className="size-1.5 rounded-full bg-current animate-pulse"
+                style={{ animationDelay: "300ms" }}
+              />
+            </span>
+          </div>
+        </div>
+      )}
       {turn.thinking && <ThinkingBlock text={turn.thinking} streaming />}
       {toolEvents.map((e, idx) => {
         if (e.type === "tool_call") {

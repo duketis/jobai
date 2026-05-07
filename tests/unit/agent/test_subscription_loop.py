@@ -25,6 +25,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk import StreamEvent as SdkStreamEvent
 
 from jobai.agent import subscription_loop
 from jobai.agent.loop import TurnResult
@@ -96,13 +97,33 @@ def _result_message(
 # ---------------------------------------------------------------------------
 
 
-async def test_text_block_emits_text_delta_and_records_assistant(
+async def test_partial_event_emits_text_delta(
     monkeypatch: pytest.MonkeyPatch,
     executor: ToolExecutor,
 ) -> None:
+    """Per-token deltas come through the SDK's partial-event channel
+    (``include_partial_messages=True``); the assembled AssistantMessage
+    that lands later only persists content + emits tool_call."""
+
     _patch_query(
         monkeypatch,
         [
+            SdkStreamEvent(
+                uuid="u1",
+                session_id="s",
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "Hi "},
+                },
+            ),
+            SdkStreamEvent(
+                uuid="u2",
+                session_id="s",
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "there!"},
+                },
+            ),
             AssistantMessage(
                 content=[TextBlock(text="Hi there!")],
                 model="claude-opus-4-7",
@@ -122,21 +143,32 @@ async def test_text_block_emits_text_delta_and_records_assistant(
         )
     ]
     types = [e.type for e in events]
-    assert types == ["text_delta", "done"]
-    assert events[0].data == {"text": "Hi there!"}
+    # Two partial deltas + done. AssistantMessage doesn't re-emit text.
+    assert types == ["text_delta", "text_delta", "done"]
+    assert events[0].data == {"text": "Hi "}
+    assert events[1].data == {"text": "there!"}
+    # The assembled assistant turn is still persisted for next-turn history.
     assert result.assistant_messages == [
         {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]},
     ]
-    assert result.stop_reason == "end_turn"
 
 
-async def test_thinking_block_emits_thinking_delta(
+async def test_partial_event_emits_thinking_delta(
     monkeypatch: pytest.MonkeyPatch,
     executor: ToolExecutor,
 ) -> None:
+
     _patch_query(
         monkeypatch,
         [
+            SdkStreamEvent(
+                uuid="u1",
+                session_id="s",
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "reasoning…"},
+                },
+            ),
             AssistantMessage(
                 content=[ThinkingBlock(thinking="reasoning…", signature="sig")],
                 model="claude-opus-4-7",

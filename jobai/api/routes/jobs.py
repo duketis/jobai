@@ -79,6 +79,17 @@ def list_jobs(
         str | None,
         Query(description="Restrict to jobs surfaced by this source kind."),
     ] = None,
+    exclude_title: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated keywords to exclude from the title "
+                "(case-insensitive). Useful for 'no senior roles' / "
+                "'no managers' filters."
+            ),
+            max_length=500,
+        ),
+    ] = None,
     limit: Annotated[
         int,
         Query(ge=1, le=MAX_LIMIT, description=f"Max items per page (1-{MAX_LIMIT})."),
@@ -86,6 +97,7 @@ def list_jobs(
     offset: Annotated[int, Query(ge=0, description="Page offset.")] = 0,
 ) -> JobsListResponse:
     """Return paginated jobs matching the supplied filters."""
+    exclude_list = [tok for tok in (exclude_title or "").split(",") if tok.strip()] or None
     return search_jobs(
         conn,
         q=q,
@@ -95,6 +107,7 @@ def list_jobs(
         posted_since=posted_since,
         company=company,
         source_kind=source_kind,
+        exclude_title=exclude_list,
         limit=limit,
         offset=offset,
     )

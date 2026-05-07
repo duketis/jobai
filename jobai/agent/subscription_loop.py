@@ -45,6 +45,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
+from claude_agent_sdk import StreamEvent as SdkStreamEvent
 
 from jobai.agent.loop import StreamEvent, TurnResult
 from jobai.agent.prompts import SYSTEM_PROMPT
@@ -225,12 +226,18 @@ async def _translate_message(
 ) -> AsyncIterator[StreamEvent]:
     """Map one SDK message to zero or more :class:`StreamEvent`s.
 
-    The SDK delivers ``AssistantMessage`` blocks as a single chunk
-    (no per-token deltas at this level), so we re-emit the text /
-    thinking content as one ``text_delta`` / ``thinking_delta``
-    each. Tool calls and results map cleanly. ``ResultMessage``
-    closes the turn.
+    With ``include_partial_messages=True``, the SDK emits per-token
+    ``SdkStreamEvent`` messages first, then the assembled
+    :class:`AssistantMessage` once a block completes. To avoid
+    double-emitting text, we surface text/thinking deltas ONLY from
+    the partial stream events; the full AssistantMessage is used for
+    persistence and to emit ``tool_call`` events (tool-use blocks
+    land whole, not as deltas, so they need the assembled view).
     """
+    if isinstance(message, SdkStreamEvent):
+        async for event in _translate_partial_event(message):
+            yield event
+        return
     if isinstance(message, AssistantMessage):
         async for event in _translate_assistant(message, result):
             yield event
@@ -261,22 +268,52 @@ async def _translate_message(
     if isinstance(message, SystemMessage):
         # Init / sidecar metadata; the chat UI doesn't need it.
         return
-    # Partial-message stream events, rate-limit notices, etc — no UI
-    # surface yet, but log so they're not silently lost.
+    # Rate-limit notices, etc — no UI surface yet, but log so they're
+    # not silently lost.
     _log.debug("agent_subscription_unhandled_message", extra={"type": type(message).__name__})
+
+
+async def _translate_partial_event(message: SdkStreamEvent) -> AsyncIterator[StreamEvent]:
+    """Emit text/thinking deltas as they arrive on the SDK stream.
+
+    The wrapped ``event`` mirrors the Anthropic API's partial-message
+    shape — same as what :func:`jobai.agent.loop._translate_stream_event`
+    handles for the API-key path. We only forward the deltas users
+    can read incrementally; tool_use block opens come through later
+    as part of the assembled AssistantMessage so we skip them here.
+    """
+    raw = message.event if isinstance(message.event, dict) else {}
+    event_type = raw.get("type")
+    if event_type == "content_block_delta":
+        delta = raw.get("delta") or {}
+        delta_type = delta.get("type")
+        if delta_type == "text_delta":
+            text = delta.get("text", "")
+            if text:
+                yield StreamEvent(type="text_delta", data={"text": text})
+        elif delta_type == "thinking_delta":
+            text = delta.get("thinking", "")
+            if text:
+                yield StreamEvent(type="thinking_delta", data={"text": text})
 
 
 async def _translate_assistant(
     message: AssistantMessage,
     result: TurnResult,
 ) -> AsyncIterator[StreamEvent]:
+    """Emit ``tool_call`` events + persist the assembled assistant turn.
+
+    Text and thinking content was already streamed live via
+    :func:`_translate_partial_event`; we don't re-emit it here or
+    the chat UI would show every reply twice. We do still persist
+    the full assembled blocks so the next turn's history reads back
+    as a valid Anthropic-format message list.
+    """
     blocks: list[dict[str, Any]] = []
     for block in message.content:
         if isinstance(block, TextBlock) and block.text:
-            yield StreamEvent(type="text_delta", data={"text": block.text})
             blocks.append({"type": "text", "text": block.text})
         elif isinstance(block, ThinkingBlock) and block.thinking:
-            yield StreamEvent(type="thinking_delta", data={"text": block.thinking})
             blocks.append(
                 {
                     "type": "thinking",

@@ -44,7 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
 # image stays usable in API-key mode regardless — claude is only
 # invoked when JOBAI_AGENT_BACKEND=subscription.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl tini gnupg \
+      ca-certificates curl tini gnupg util-linux \
       libglib2.0-0 libnss3 libnspr4 libdbus-1-3 libatk1.0-0 \
       libatk-bridge2.0-0 libcups2 libdrm2 libxcomposite1 libxdamage1 \
       libxext6 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 \
@@ -76,12 +76,29 @@ COPY --from=frontend /jobai/api/static /app/jobai/api/static
 # here so it survives container restarts. Compose mounts a named
 # volume to this path.
 RUN mkdir -p /data
+
+# Run as a non-root user. The ``claude`` CLI's
+# ``--dangerously-skip-permissions`` flag (used by the subscription
+# backend) refuses to run as root for security reasons; without this
+# the entire subscription path bombs with "cannot be used with
+# root/sudo privileges for security reasons" before the first
+# message ever streams. The entrypoint stays root just long enough
+# to fix volume ownership, then drops to ``jobai`` for the actual
+# server process.
+RUN useradd --system --create-home --home-dir /home/jobai --shell /bin/bash jobai \
+ && chown -R jobai:jobai /app /home/jobai
+ENV HOME=/home/jobai
+
+COPY docker-entrypoint.sh /usr/local/bin/jobai-entrypoint
+RUN chmod +x /usr/local/bin/jobai-entrypoint
+
 VOLUME ["/data"]
 
 EXPOSE 8421
 
 # tini is PID 1 so signals propagate cleanly to the API + scheduler.
-# Apply migrations before serving so a fresh /data volume bootstraps
-# correctly on first run, then hand off to uvicorn via the CLI.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# The entrypoint script chowns /data to jobai (handles existing
+# volumes from previous root-only image versions) and then exec's
+# the CMD as the unprivileged jobai user.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/jobai-entrypoint"]
 CMD ["sh", "-c", "jobai migrate && jobai serve --host 0.0.0.0 --port 8421"]

@@ -18,7 +18,15 @@ function asRemote(value: string | null): RemoteValue | undefined {
 
 /** Param keys the page understands; everything else stays untouched
  * (e.g. the chat dock's ``?chat=NN`` rides along). */
-const FILTER_KEYS = ["q", "remote", "location", "company", "source_kind", "page"] as const;
+const FILTER_KEYS = [
+  "q",
+  "remote",
+  "location",
+  "company",
+  "source_kind",
+  "exclude_title",
+  "page",
+] as const;
 
 /**
  * Searchable + filterable job list. State lives in the URL so the
@@ -38,6 +46,7 @@ export function JobsListPage() {
   const locationFilter = searchParams.get("location") ?? "";
   const company = searchParams.get("company") ?? "";
   const sourceKind = searchParams.get("source_kind") ?? "";
+  const excludeTitle = searchParams.get("exclude_title") ?? "";
   const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
 
   const [searchInput, setSearchInput] = useState(urlSearch);
@@ -85,10 +94,11 @@ export function JobsListPage() {
       location: locationFilter || undefined,
       company: company || undefined,
       source_kind: sourceKind || undefined,
+      exclude_title: excludeTitle || undefined,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
     }),
-    [urlSearch, remote, locationFilter, company, sourceKind, page],
+    [urlSearch, remote, locationFilter, company, sourceKind, excludeTitle, page],
   );
 
   const { data, isLoading, isError, error } = useQuery({
@@ -110,6 +120,18 @@ export function JobsListPage() {
             : `${total.toLocaleString()} matching${total === 1 ? " job" : " jobs"}`}
         </p>
       </header>
+
+      <ExcludeTitleChips
+        excludeTitle={excludeTitle}
+        onRemove={(token) => {
+          const remaining = excludeTitle
+            .split(",")
+            .map((t) => t.trim())
+            .filter((t) => t && t.toLowerCase() !== token.toLowerCase());
+          setFilter("exclude_title", remaining.length ? remaining.join(",") : undefined);
+        }}
+        onClearAll={() => setFilter("exclude_title", undefined)}
+      />
 
       <div className="grid gap-3 sm:grid-cols-[1fr_180px_180px]">
         <SearchInput value={searchInput} onChange={setSearchInput} />
@@ -311,6 +333,51 @@ function Pagination({
     </div>
   );
 }
+
+function ExcludeTitleChips({
+  excludeTitle,
+  onRemove,
+  onClearAll,
+}: {
+  excludeTitle: string;
+  onRemove: (token: string) => void;
+  onClearAll: () => void;
+}) {
+  const tokens = excludeTitle
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 -mt-2">
+      <span className="text-xs text-muted-foreground">Excluding titles:</span>
+      {tokens.map((token) => (
+        <span
+          key={token}
+          className="inline-flex items-center gap-1 rounded-full bg-secondary text-secondary-foreground text-xs px-2 py-0.5"
+        >
+          {token}
+          <button
+            type="button"
+            onClick={() => onRemove(token)}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label={`Remove exclusion: ${token}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        onClick={onClearAll}
+        className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+      >
+        clear all
+      </button>
+    </div>
+  );
+}
+
 
 function ErrorBanner({ message }: { message: string }) {
   return (

@@ -72,6 +72,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "ISO 8601 date; only jobs posted on or after this date.",
                 },
+                "exclude_title": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Title keywords to exclude (case-insensitive substring "
+                        "match). Use this for 'no seniors', 'no managers', "
+                        "'no leads' style filters — not the free-text 'q' "
+                        "(which is for ranking, not exclusion). Example: "
+                        "['senior', 'staff', 'principal', 'lead', 'manager']."
+                    ),
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum results (1-100, default 20).",
@@ -191,6 +202,7 @@ class ToolExecutor:
             posted_since=_opt_str(args.get("posted_since")),
             company=_opt_str(args.get("company")),
             source_kind=_opt_str(args.get("source_kind")),
+            exclude_title=_opt_str_list(args.get("exclude_title")),
             limit=int(args.get("limit", 20)),
             offset=int(args.get("offset", 0)),
         )
@@ -325,3 +337,23 @@ def _opt_str(v: Any) -> str | None:
 
 def _opt_int(v: Any) -> int | None:
     return None if v is None else int(v)
+
+
+def _opt_str_list(v: Any) -> list[str] | None:
+    """Coerce the agent's ``exclude_title`` argument into a list[str].
+
+    Accepts a JSON array (the schema's preferred shape) or — defensively
+    — a comma-separated string when the model abbreviates. Empty
+    tokens are dropped so a stray comma can't accidentally exclude
+    every row.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        tokens = [t.strip() for t in v.split(",")]
+    elif isinstance(v, list):
+        tokens = [str(t).strip() for t in v]
+    else:
+        return None
+    cleaned = [t for t in tokens if t]
+    return cleaned or None
