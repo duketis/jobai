@@ -26,9 +26,12 @@ from jobai.api.models import (
 from jobai.api.repository import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
+    VALID_SORTS,
     get_job_detail,
     search_jobs,
 )
+
+_SORT_PATTERN = "^(" + "|".join(sorted(VALID_SORTS)) + ")$"
 
 router = APIRouter()
 
@@ -90,6 +93,24 @@ def list_jobs(
             max_length=500,
         ),
     ] = None,
+    min_salary: Annotated[
+        int | None,
+        Query(ge=0, description="Lower bound on salary (compared against salary_max)."),
+    ] = None,
+    has_salary: Annotated[
+        bool,
+        Query(description="Restrict to jobs that publish a salary."),
+    ] = False,
+    sort: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Sort order: relevance (default with q), newest, oldest, "
+                "posted_newest, posted_oldest, salary_high, salary_low."
+            ),
+            pattern=_SORT_PATTERN,
+        ),
+    ] = None,
     limit: Annotated[
         int,
         Query(ge=1, le=MAX_LIMIT, description=f"Max items per page (1-{MAX_LIMIT})."),
@@ -108,6 +129,9 @@ def list_jobs(
         company=company,
         source_kind=source_kind,
         exclude_title=exclude_list,
+        min_salary=min_salary,
+        has_salary=has_salary,
+        sort=sort,
         limit=limit,
         offset=offset,
     )

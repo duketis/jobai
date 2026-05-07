@@ -189,6 +189,86 @@ def test_list_jobs_filter_posted_since(client: TestClient, seeded_db: Path) -> N
     assert "Data Engineer" not in titles
 
 
+def test_list_jobs_filter_exclude_title(client: TestClient, seeded_db: Path) -> None:
+    """Comma-separated keywords filter out matching titles."""
+    body = client.get("/api/jobs", params={"exclude_title": "senior,lead"}).json()
+    titles = [item["title"] for item in body["items"]]
+    assert "Senior Frontend Engineer (Remote)" not in titles
+    assert "Python Backend Engineer" in titles
+    assert "Data Engineer" in titles
+
+
+def test_list_jobs_filter_has_salary(client: TestClient, seeded_db: Path) -> None:
+    body = client.get("/api/jobs", params={"has_salary": "true"}).json()
+    titles = [item["title"] for item in body["items"]]
+    # Only the Python Backend Engineer in the seed has salary info.
+    assert titles == ["Python Backend Engineer"]
+
+
+def test_list_jobs_filter_min_salary_clears_threshold(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    body = client.get("/api/jobs", params={"min_salary": 150000}).json()
+    titles = [item["title"] for item in body["items"]]
+    # Python role has salary_max=190k → clears 150k. Others lack
+    # salary so they don't satisfy the filter.
+    assert titles == ["Python Backend Engineer"]
+
+
+def test_list_jobs_filter_min_salary_excludes_below_band(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    body = client.get("/api/jobs", params={"min_salary": 250000}).json()
+    titles = [item["title"] for item in body["items"]]
+    assert titles == []
+
+
+def test_list_jobs_sort_newest_then_oldest_inverts_order(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """``sort=newest`` and ``sort=oldest`` should produce reversed orderings
+    of the same result set."""
+    newest = client.get("/api/jobs", params={"sort": "newest"}).json()
+    oldest = client.get("/api/jobs", params={"sort": "oldest"}).json()
+    newest_ids = [item["id"] for item in newest["items"]]
+    oldest_ids = [item["id"] for item in oldest["items"]]
+    assert newest_ids == list(reversed(oldest_ids))
+
+
+def test_list_jobs_sort_posted_newest_uses_posted_at(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    body = client.get("/api/jobs", params={"sort": "posted_newest"}).json()
+    titles = [item["title"] for item in body["items"]]
+    # Frontend (posted 04-20) > Python (04-15) > Data (03-10).
+    assert titles == [
+        "Senior Frontend Engineer (Remote)",
+        "Python Backend Engineer",
+        "Data Engineer",
+    ]
+
+
+def test_list_jobs_sort_salary_high_first(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    body = client.get("/api/jobs", params={"sort": "salary_high"}).json()
+    # Python has salary_max=190k; the others have NULL salary → tail.
+    assert body["items"][0]["title"] == "Python Backend Engineer"
+
+
+def test_list_jobs_sort_invalid_returns_422(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    response = client.get("/api/jobs", params={"sort": "by_vibes"})
+    assert response.status_code == 422
+
+
 def test_list_jobs_pagination(client: TestClient, seeded_db: Path) -> None:
     page_one = client.get("/api/jobs", params={"limit": 2, "offset": 0}).json()
     page_two = client.get("/api/jobs", params={"limit": 2, "offset": 2}).json()

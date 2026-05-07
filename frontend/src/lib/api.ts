@@ -55,6 +55,15 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+export type JobSort =
+  | "relevance"
+  | "newest"
+  | "oldest"
+  | "posted_newest"
+  | "posted_oldest"
+  | "salary_high"
+  | "salary_low";
+
 export interface JobsListParams {
   q?: string;
   location?: string;
@@ -65,6 +74,9 @@ export interface JobsListParams {
   source_kind?: string;
   /** Comma-separated title keywords to exclude (case-insensitive). */
   exclude_title?: string;
+  min_salary?: number;
+  has_salary?: boolean;
+  sort?: JobSort;
   limit?: number;
   offset?: number;
 }

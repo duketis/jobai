@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, ExternalLink, MapPin, Search } from "lucide-
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import { listJobs, type JobsListParams } from "@/lib/api";
+import { listJobs, type JobSort, type JobsListParams } from "@/lib/api";
 import type { JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +16,43 @@ function asRemote(value: string | null): RemoteValue | undefined {
   return REMOTE_VALUES.includes(value as RemoteValue) ? (value as RemoteValue) : undefined;
 }
 
+const SORT_VALUES = [
+  "relevance",
+  "newest",
+  "oldest",
+  "posted_newest",
+  "posted_oldest",
+  "salary_high",
+  "salary_low",
+] as const;
+
+function asSort(value: string | null): JobSort | undefined {
+  return SORT_VALUES.includes(value as JobSort) ? (value as JobSort) : undefined;
+}
+
+/** ISO-date strings the "Posted within" dropdown writes to the URL. */
+const POSTED_PRESETS: { label: string; days: number | null }[] = [
+  { label: "Any time", days: null },
+  { label: "Last 24h", days: 1 },
+  { label: "Last 7 days", days: 7 },
+  { label: "Last 30 days", days: 30 },
+  { label: "Last 90 days", days: 90 },
+];
+
+function isoNDaysAgo(days: number): string {
+  const d = new Date(Date.now() - days * 86_400_000);
+  return d.toISOString().slice(0, 10);
+}
+
+function postedSinceLabel(value: string): string {
+  // Match the URL value back to the closest preset for the dropdown.
+  for (const p of POSTED_PRESETS) {
+    if (p.days === null) continue;
+    if (value === isoNDaysAgo(p.days)) return p.label;
+  }
+  return "Any time";
+}
+
 /** Param keys the page understands; everything else stays untouched
  * (e.g. the chat dock's ``?chat=NN`` rides along). */
 const FILTER_KEYS = [
@@ -25,6 +62,10 @@ const FILTER_KEYS = [
   "company",
   "source_kind",
   "exclude_title",
+  "min_salary",
+  "has_salary",
+  "posted_since",
+  "sort",
   "page",
 ] as const;
 
@@ -47,6 +88,11 @@ export function JobsListPage() {
   const company = searchParams.get("company") ?? "";
   const sourceKind = searchParams.get("source_kind") ?? "";
   const excludeTitle = searchParams.get("exclude_title") ?? "";
+  const minSalary = Number.parseInt(searchParams.get("min_salary") ?? "", 10);
+  const minSalaryStr = Number.isFinite(minSalary) && minSalary > 0 ? String(minSalary) : "";
+  const hasSalary = searchParams.get("has_salary") === "true";
+  const postedSince = searchParams.get("posted_since") ?? "";
+  const sort = asSort(searchParams.get("sort")) ?? "";
   const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
 
   const [searchInput, setSearchInput] = useState(urlSearch);
@@ -95,10 +141,26 @@ export function JobsListPage() {
       company: company || undefined,
       source_kind: sourceKind || undefined,
       exclude_title: excludeTitle || undefined,
+      min_salary: minSalaryStr ? Number(minSalaryStr) : undefined,
+      has_salary: hasSalary || undefined,
+      posted_since: postedSince || undefined,
+      sort: sort || undefined,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
     }),
-    [urlSearch, remote, locationFilter, company, sourceKind, excludeTitle, page],
+    [
+      urlSearch,
+      remote,
+      locationFilter,
+      company,
+      sourceKind,
+      excludeTitle,
+      minSalaryStr,
+      hasSalary,
+      postedSince,
+      sort,
+      page,
+    ],
   );
 
   const { data, isLoading, isError, error } = useQuery({
@@ -133,25 +195,85 @@ export function JobsListPage() {
         onClearAll={() => setFilter("exclude_title", undefined)}
       />
 
-      <div className="grid gap-3 sm:grid-cols-[1fr_180px_180px]">
-        <SearchInput value={searchInput} onChange={setSearchInput} />
-        <select
-          value={remote ?? ""}
-          onChange={(e) => setFilter("remote", e.target.value || undefined)}
-          className="h-10 px-3 rounded-md border border-input bg-background text-sm"
-        >
-          <option value="">Any remote type</option>
-          <option value="remote">Remote</option>
-          <option value="hybrid">Hybrid</option>
-          <option value="onsite">Onsite</option>
-        </select>
-        <input
-          type="text"
-          value={locationFilter}
-          onChange={(e) => setFilter("location", e.target.value || undefined)}
-          placeholder="Location contains…"
-          className="h-10 px-3 rounded-md border border-input bg-background text-sm"
-        />
+      <div className="space-y-2">
+        <div className="grid gap-3 sm:grid-cols-[1fr_180px_180px]">
+          <SearchInput value={searchInput} onChange={setSearchInput} />
+          <select
+            value={remote ?? ""}
+            onChange={(e) => setFilter("remote", e.target.value || undefined)}
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm"
+          >
+            <option value="">Any remote type</option>
+            <option value="remote">Remote</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="onsite">Onsite</option>
+          </select>
+          <input
+            type="text"
+            value={locationFilter}
+            onChange={(e) => setFilter("location", e.target.value || undefined)}
+            placeholder="Location contains…"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm"
+          />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[1fr_180px_180px_180px]">
+          <select
+            value={sort || ""}
+            onChange={(e) => setFilter("sort", e.target.value || undefined)}
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm"
+            title="Sort"
+          >
+            <option value="">
+              Sort: {urlSearch ? "Relevance (default)" : "Newest seen (default)"}
+            </option>
+            <option value="relevance">Relevance</option>
+            <option value="newest">Newest seen</option>
+            <option value="oldest">Oldest seen</option>
+            <option value="posted_newest">Newest posted</option>
+            <option value="posted_oldest">Oldest posted</option>
+            <option value="salary_high">Salary: high → low</option>
+            <option value="salary_low">Salary: low → high</option>
+          </select>
+          <select
+            value={postedSinceLabel(postedSince)}
+            onChange={(e) => {
+              const preset = POSTED_PRESETS.find((p) => p.label === e.target.value);
+              if (!preset || preset.days === null) {
+                setFilter("posted_since", undefined);
+              } else {
+                setFilter("posted_since", isoNDaysAgo(preset.days));
+              }
+            }}
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm"
+            title="Posted within"
+          >
+            {POSTED_PRESETS.map((p) => (
+              <option key={p.label} value={p.label}>
+                Posted: {p.label}
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            step={5000}
+            value={minSalaryStr}
+            onChange={(e) => setFilter("min_salary", e.target.value || undefined)}
+            placeholder="Min salary $"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm"
+          />
+          <label className="h-10 inline-flex items-center gap-2 px-3 rounded-md border border-input bg-background text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={hasSalary}
+              onChange={(e) => setFilter("has_salary", e.target.checked ? "true" : undefined)}
+              className="size-4"
+            />
+            Salary listed only
+          </label>
+        </div>
       </div>
 
       {isError ? (

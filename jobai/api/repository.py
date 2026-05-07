@@ -32,6 +32,21 @@ _VALID_REMOTE_TYPES = {"remote", "hybrid", "onsite"}
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 20
 
+#: Sort options the API + UI both speak. Map of value → ORDER BY clause.
+#: "relevance" is meaningful only when ``q`` is set; the resolver below
+#: silently falls back to "newest" when q is empty so a user picking
+#: relevance on a no-query view still gets fresh-first results.
+_SORT_CLAUSES: dict[str, str] = {
+    "relevance": "fts.rank",
+    "newest": "j.last_seen_at DESC",
+    "oldest": "j.last_seen_at ASC",
+    "posted_newest": "j.posted_at DESC NULLS LAST, j.last_seen_at DESC",
+    "posted_oldest": "j.posted_at ASC NULLS LAST, j.last_seen_at DESC",
+    "salary_high": "j.salary_max DESC NULLS LAST, j.salary_min DESC NULLS LAST",
+    "salary_low": "j.salary_min ASC NULLS LAST, j.salary_max ASC NULLS LAST",
+}
+VALID_SORTS: frozenset[str] = frozenset(_SORT_CLAUSES.keys())
+
 
 def search_jobs(
     conn: sqlite3.Connection,
@@ -44,18 +59,26 @@ def search_jobs(
     company: str | None = None,
     source_kind: str | None = None,
     exclude_title: list[str] | None = None,
+    min_salary: int | None = None,
+    has_salary: bool = False,
+    sort: str | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> JobsListResponse:
     """Filter / search canonical jobs and return a paginated list.
 
-    When ``q`` is provided, the FTS5 index drives ranking; otherwise
-    results are sorted by ``last_seen_at DESC`` (freshest first).
+    Default ordering: ``relevance`` (FTS rank) when ``q`` is set,
+    otherwise ``newest`` (last_seen_at DESC). Override via the
+    ``sort`` arg — see :data:`VALID_SORTS` for the full list.
 
     ``exclude_title`` is a list of substrings; any job whose title
     contains any of them (case-insensitive) is excluded. Useful for
     "no senior roles" / "no managers" / etc. without polluting the
     free-text ``q`` (which is a ranking signal, not a filter).
+
+    ``min_salary`` filters out jobs whose ``salary_max`` (or
+    ``salary_min`` if no max) falls below the threshold; ``has_salary``
+    further restricts to jobs that publish a salary at all.
     """
     limit = max(1, min(limit, MAX_LIMIT))
     offset = max(0, offset)
@@ -69,15 +92,17 @@ def search_jobs(
         company=company,
         source_kind=source_kind,
         exclude_title=exclude_title,
+        min_salary=min_salary,
+        has_salary=has_salary,
     )
 
-    order_by = "ORDER BY fts.rank" if q else "ORDER BY j.last_seen_at DESC"
+    order_by = _resolve_sort(sort, has_q=bool(q))
 
     base_query = f"FROM jobs j {fts_join} {where}"
     total = int(conn.execute(f"SELECT COUNT(DISTINCT j.id) {base_query}", params).fetchone()[0])
 
     rows = conn.execute(
-        f"SELECT DISTINCT {_SUMMARY_COLUMNS} {base_query} {order_by} LIMIT ? OFFSET ?",
+        f"SELECT DISTINCT {_SUMMARY_COLUMNS} {base_query} ORDER BY {order_by} LIMIT ? OFFSET ?",
         (*params, limit, offset),
     ).fetchall()
 
@@ -100,7 +125,22 @@ def get_job_detail(conn: sqlite3.Connection, job_id: int) -> JobDetail | None:
     return _row_to_detail(row, source_links)
 
 
-def _build_where(
+def _resolve_sort(sort: str | None, *, has_q: bool) -> str:
+    """Return the ORDER BY suffix for the requested sort.
+
+    Unknown / unset sort defaults to ``relevance`` when ``q`` is set
+    and ``newest`` otherwise — matches the behaviour callers had
+    before this argument existed. ``relevance`` without ``q`` would
+    fail (no FTS join) so we silently substitute ``newest``.
+    """
+    if sort and sort in _SORT_CLAUSES:
+        if sort == "relevance" and not has_q:
+            return _SORT_CLAUSES["newest"]
+        return _SORT_CLAUSES[sort]
+    return _SORT_CLAUSES["relevance"] if has_q else _SORT_CLAUSES["newest"]
+
+
+def _build_where(  # noqa: PLR0912 - clauses are flat per filter; one branch each
     *,
     q: str | None,
     location: str | None,
@@ -110,6 +150,8 @@ def _build_where(
     company: str | None,
     source_kind: str | None,
     exclude_title: list[str] | None = None,
+    min_salary: int | None = None,
+    has_salary: bool = False,
 ) -> tuple[str, list[Any], str]:
     """Compose WHERE / params / optional FTS join from filter args."""
     clauses: list[str] = []
@@ -165,6 +207,16 @@ def _build_where(
                 continue
             clauses.append("j.title NOT LIKE ? COLLATE NOCASE")
             params.append(f"%{cleaned}%")
+
+    if has_salary:
+        clauses.append("(j.salary_min IS NOT NULL OR j.salary_max IS NOT NULL)")
+
+    if min_salary is not None and min_salary > 0:
+        # Compare against the upper end of the band (or the only end
+        # we have): a job that says "$80k-$120k" satisfies a
+        # min=$100k filter because the high end clears it.
+        clauses.append("COALESCE(j.salary_max, j.salary_min) >= ?")
+        params.append(int(min_salary))
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params, fts_join

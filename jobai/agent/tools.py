@@ -83,6 +83,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "['senior', 'staff', 'principal', 'lead', 'manager']."
                     ),
                 },
+                "min_salary": {
+                    "type": "integer",
+                    "description": (
+                        "Minimum salary (the upper end of the band must clear "
+                        "this). Use when the user specifies a salary floor."
+                    ),
+                },
+                "has_salary": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, restrict to jobs that publish a salary. "
+                        "Use when the user asks for 'roles with salary listed'."
+                    ),
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": [
+                        "relevance",
+                        "newest",
+                        "oldest",
+                        "posted_newest",
+                        "posted_oldest",
+                        "salary_high",
+                        "salary_low",
+                    ],
+                    "description": (
+                        "Sort order. Default: 'relevance' when q is set, "
+                        "otherwise 'newest'. Pick 'posted_newest' when the "
+                        "user wants 'most recently posted', 'salary_high' "
+                        "for 'highest paid first', etc."
+                    ),
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum results (1-100, default 20).",
@@ -203,6 +235,9 @@ class ToolExecutor:
             company=_opt_str(args.get("company")),
             source_kind=_opt_str(args.get("source_kind")),
             exclude_title=_opt_str_list(args.get("exclude_title")),
+            min_salary=_opt_int(args.get("min_salary")),
+            has_salary=bool(args.get("has_salary", False)),
+            sort=_opt_str(args.get("sort")),
             limit=int(args.get("limit", 20)),
             offset=int(args.get("offset", 0)),
         )
