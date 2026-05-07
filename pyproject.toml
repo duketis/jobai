@@ -102,6 +102,12 @@ ignore = [
   "PLR0913",  # too many args (sometimes intentional)
   "TRY003",   # long exception messages
   "PLR2004",  # magic numbers (handled per-file in tests)
+  # En-dash/em-dash unicode chars are intentional throughout this
+  # repo - in prose (CLAUDE.md style), in scraped job listings, and
+  # in regex patterns that have to accept what real boards write.
+  "RUF001",   # ambiguous unicode in string literals
+  "RUF002",   # ambiguous unicode in docstrings
+  "RUF003",   # ambiguous unicode in comments
 ]
 
 [tool.ruff.lint.per-file-ignores]
