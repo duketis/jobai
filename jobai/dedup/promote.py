@@ -25,6 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from jobai.dedup.best_of import merge_canonical_fields, mergeable_fields
 from jobai.dedup.hashing import (
     compute_dedup_key,
     normalize_company,
@@ -198,40 +199,40 @@ def _update_existing_canonical_job(
 ) -> None:
     """Refresh mutable fields on a previously-seen canonical job.
 
-    We update last_seen_at on every encounter and refresh fields that
-    can change between postings (salary, description, location). The
-    title and company are immutable (they're part of the dedup key).
+    Reads the existing row, computes the best-of merge against the
+    incoming ``NormalizedJob``, and writes the merged fields back.
+    ``last_seen_at`` always advances; the merger handles every other
+    mutable field (see :mod:`jobai.dedup.best_of` for the per-field
+    rules). title / company / company_norm are immutable — they're
+    part of the dedup key.
     """
+    fields = mergeable_fields()
+    # ruff S608: column names come from the static `_MERGEABLE_FIELDS`
+    # tuple in best_of.py — never user input — so the f-string SQL is safe.
+    select_sql = f"SELECT {', '.join(fields)} FROM jobs WHERE id = ?"  # noqa: S608
+    existing_row = conn.execute(select_sql, (job_id,)).fetchone()
+    existing: dict[str, object | None] = dict(zip(fields, existing_row, strict=True))
+    incoming: dict[str, object | None] = {
+        "location_raw": job.location_raw,
+        "location_country": job.location_country,
+        "location_city": job.location_city,
+        "remote_type": job.remote_type,
+        "employment_type": job.employment_type,
+        "posted_at": job.posted_at,
+        "salary_min": job.salary_min,
+        "salary_max": job.salary_max,
+        "salary_currency": job.salary_currency,
+        "description_text": job.description_text,
+        "description_html": job.description_html,
+        "apply_url": job.apply_url or None,
+    }
+    merged = merge_canonical_fields(existing, incoming)
+
+    set_clause = ", ".join(f"{f} = ?" for f in fields)
+    # ruff S608: see select_sql comment above — fields are static.
     conn.execute(
-        "UPDATE jobs SET "
-        "  last_seen_at = ?, "
-        "  location_raw = COALESCE(?, location_raw), "
-        "  location_city = COALESCE(?, location_city), "
-        "  remote_type = COALESCE(?, remote_type), "
-        "  employment_type = COALESCE(?, employment_type), "
-        "  posted_at = COALESCE(?, posted_at), "
-        "  salary_min = COALESCE(?, salary_min), "
-        "  salary_max = COALESCE(?, salary_max), "
-        "  salary_currency = COALESCE(?, salary_currency), "
-        "  description_text = COALESCE(?, description_text), "
-        "  description_html = COALESCE(?, description_html), "
-        "  apply_url = COALESCE(?, apply_url) "
-        "WHERE id = ?",
-        (
-            now,
-            job.location_raw,
-            job.location_city,
-            job.remote_type,
-            job.employment_type,
-            job.posted_at,
-            job.salary_min,
-            job.salary_max,
-            job.salary_currency,
-            job.description_text,
-            job.description_html,
-            job.apply_url or None,
-            job_id,
-        ),
+        f"UPDATE jobs SET last_seen_at = ?, {set_clause} WHERE id = ?",  # noqa: S608
+        (now, *(merged[f] for f in fields), job_id),
     )
 
 

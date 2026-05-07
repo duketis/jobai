@@ -295,6 +295,110 @@ def test_reconcile_skips_jobs_outside_window(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Best-of field merging during reconcile
+#
+# The pre-merger reconcile pass kept the survivor's field values verbatim and
+# threw away the duplicate's data on every merge. That meant a salary the
+# duplicate uniquely had — but the survivor lacked — was lost forever. The
+# tests below pin the new contract: the merger picks the best value per
+# field across both rows before deleting the duplicate.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_fills_in_missing_salary_from_duplicate(
+    conn: sqlite3.Connection,
+    source_id: int,
+    alt_source_id: int,
+) -> None:
+    """Survivor has no salary; the fuzzy duplicate does. Merge must
+    promote the duplicate's salary onto the survivor before deletion."""
+    _seed_canonical_job(
+        conn,
+        source_id=source_id,
+        ext_id="1",
+        title="Senior Backend Engineer",
+    )
+    _seed_canonical_job(
+        conn,
+        source_id=alt_source_id,
+        ext_id="2",
+        title="Sr. Backend Engineer",
+        salary_min=150000,
+        salary_max=180000,
+        salary_currency="AUD",
+    )
+
+    reconcile_fuzzy_duplicates(conn)
+
+    rows = conn.execute("SELECT salary_min, salary_max, salary_currency FROM jobs").fetchall()
+    assert len(rows) == 1
+    survivor = rows[0]
+    assert survivor["salary_min"] == 150000
+    assert survivor["salary_max"] == 180000
+    assert survivor["salary_currency"] == "AUD"
+
+
+def test_reconcile_keeps_richer_description_from_duplicate(
+    conn: sqlite3.Connection,
+    source_id: int,
+    alt_source_id: int,
+) -> None:
+    """If the duplicate carries the full description and the survivor
+    only has a teaser, reconcile must keep the longer text."""
+    teaser = "Senior Python role at Atlassian. Apply now."
+    full = "Senior Python Engineer at Atlassian working on async services. " * 10
+
+    _seed_canonical_job(
+        conn,
+        source_id=source_id,
+        ext_id="1",
+        title="Senior Backend Engineer",
+        description_text=teaser,
+    )
+    _seed_canonical_job(
+        conn,
+        source_id=alt_source_id,
+        ext_id="2",
+        title="Sr. Backend Engineer",
+        description_text=full,
+    )
+
+    reconcile_fuzzy_duplicates(conn)
+
+    row = conn.execute("SELECT description_text FROM jobs").fetchone()
+    assert row["description_text"] == full
+
+
+def test_reconcile_keeps_earliest_posted_at_from_duplicate(
+    conn: sqlite3.Connection,
+    source_id: int,
+    alt_source_id: int,
+) -> None:
+    """When the duplicate carries an earlier posted_at than the survivor
+    (e.g. the original posting that the survivor was a re-list of),
+    reconcile must keep the earlier date."""
+    _seed_canonical_job(
+        conn,
+        source_id=source_id,
+        ext_id="1",
+        title="Senior Backend Engineer",
+        posted_at="2026-05-07T00:00:00+00:00",
+    )
+    _seed_canonical_job(
+        conn,
+        source_id=alt_source_id,
+        ext_id="2",
+        title="Sr. Backend Engineer",
+        posted_at="2026-05-01T00:00:00+00:00",
+    )
+
+    reconcile_fuzzy_duplicates(conn)
+
+    row = conn.execute("SELECT posted_at FROM jobs").fetchone()
+    assert row["posted_at"] == "2026-05-01T00:00:00+00:00"
+
+
 def test_reconcile_keeps_fts_index_consistent_after_merge(
     conn: sqlite3.Connection,
     source_id: int,

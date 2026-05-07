@@ -86,6 +86,48 @@ def _make_job(**overrides: Any) -> NormalizedJob:
 # ---------------------------------------------------------------------------
 
 
+def test_promote_raises_when_insert_returns_no_lastrowid(
+    conn: sqlite3.Connection,
+    source_id: int,
+) -> None:
+    """sqlite is contractually required to set ``lastrowid`` after a
+    successful INSERT, but the defensive check guards against a future
+    sqlite-driver replacement (or a wrapping cursor) that omits it. We
+    drive the path by wrapping the connection in a proxy whose INSERT-
+    INTO-jobs cursor reports ``lastrowid = None``."""
+    raw_id = _insert_jobs_raw(conn, source_id, "1")
+
+    class _NoLastRowIdCursor:
+        def __init__(self, real: sqlite3.Cursor) -> None:
+            self._real = real
+            self.lastrowid: int | None = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    class _ConnProxy:
+        def __init__(self, real: sqlite3.Connection) -> None:
+            self._real = real
+
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+            cursor = self._real.execute(sql, *args, **kwargs)
+            if sql.startswith("INSERT INTO jobs ("):
+                return _NoLastRowIdCursor(cursor)
+            return cursor
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    proxy = _ConnProxy(conn)
+    with pytest.raises(RuntimeError, match="returned no lastrowid"):
+        promote_to_canonical_jobs(
+            proxy,  # type: ignore[arg-type]
+            source_id=source_id,
+            jobs_raw_id=raw_id,
+            job=_make_job(),
+        )
+
+
 def test_promote_inserts_new_canonical_job(
     conn: sqlite3.Connection,
     source_id: int,
@@ -335,6 +377,93 @@ def test_promote_refreshes_salary_when_newly_disclosed(
     assert row["salary_currency"] == "AUD"
 
 
+def test_promote_does_not_override_existing_salary_with_a_different_one(
+    conn: sqlite3.Connection,
+    alt_source_id: int,
+    source_id: int,
+) -> None:
+    """Once we've recorded a salary, a later scrape with a *different*
+    non-null value must not silently override it. We don't have signal
+    to judge which is right, so we trust the original."""
+    raw_id_a = _insert_jobs_raw(conn, source_id, "1")
+    raw_id_b = _insert_jobs_raw(conn, alt_source_id, "2")
+
+    promote_to_canonical_jobs(
+        conn,
+        source_id=source_id,
+        jobs_raw_id=raw_id_a,
+        job=_make_job(salary_min=150000, salary_max=180000, salary_currency="AUD"),
+    )
+    promote_to_canonical_jobs(
+        conn,
+        source_id=alt_source_id,
+        jobs_raw_id=raw_id_b,
+        job=_make_job(salary_min=130000, salary_max=160000, salary_currency="USD"),
+    )
+
+    row = conn.execute(
+        "SELECT salary_min, salary_max, salary_currency FROM jobs",
+    ).fetchone()
+    assert row["salary_min"] == 150000
+    assert row["salary_max"] == 180000
+    assert row["salary_currency"] == "AUD"
+
+
+def test_promote_keeps_earliest_posted_at_across_sources(
+    conn: sqlite3.Connection,
+    alt_source_id: int,
+    source_id: int,
+) -> None:
+    """Boards re-list a role with a fresh posted_at to push it back to the
+    top — the original posting date is the truth we want to preserve."""
+    raw_id_a = _insert_jobs_raw(conn, source_id, "1")
+    raw_id_b = _insert_jobs_raw(conn, alt_source_id, "2")
+
+    promote_to_canonical_jobs(
+        conn,
+        source_id=source_id,
+        jobs_raw_id=raw_id_a,
+        job=_make_job(posted_at="2026-05-01T00:00:00+00:00"),
+    )
+    promote_to_canonical_jobs(
+        conn,
+        source_id=alt_source_id,
+        jobs_raw_id=raw_id_b,
+        job=_make_job(posted_at="2026-05-07T00:00:00+00:00"),
+    )
+
+    row = conn.execute("SELECT posted_at FROM jobs").fetchone()
+    assert row["posted_at"] == "2026-05-01T00:00:00+00:00"
+
+
+def test_promote_keeps_richer_location_raw(
+    conn: sqlite3.Connection,
+    alt_source_id: int,
+    source_id: int,
+) -> None:
+    """Source A has bare ``"Sydney"``, source B has the full
+    ``"Sydney NSW 2000, Australia"``. Keep the richer string regardless
+    of scrape order."""
+    raw_id_a = _insert_jobs_raw(conn, source_id, "1")
+    raw_id_b = _insert_jobs_raw(conn, alt_source_id, "2")
+
+    promote_to_canonical_jobs(
+        conn,
+        source_id=source_id,
+        jobs_raw_id=raw_id_a,
+        job=_make_job(location_raw="Sydney"),
+    )
+    promote_to_canonical_jobs(
+        conn,
+        source_id=alt_source_id,
+        jobs_raw_id=raw_id_b,
+        job=_make_job(location_raw="Sydney NSW 2000, Australia"),
+    )
+
+    row = conn.execute("SELECT location_raw FROM jobs").fetchone()
+    assert row["location_raw"] == "Sydney NSW 2000, Australia"
+
+
 # ---------------------------------------------------------------------------
 # FTS5 sync (verifies the schema's triggers fire on inserts/updates)
 # ---------------------------------------------------------------------------
@@ -366,27 +495,70 @@ def test_promote_inserts_into_fts_index(
     assert matches[0]["title"] == "Python Backend Engineer"
 
 
-def test_promote_updates_fts_index_when_description_changes(
+def test_promote_updates_fts_index_when_richer_description_arrives(
     conn: sqlite3.Connection,
     source_id: int,
 ) -> None:
+    """When a later scrape brings a *richer* description, the canonical
+    row swaps in the longer text and FTS re-indexes accordingly. Pairs
+    with ``test_promote_does_not_truncate_richer_description_with_a_leaner_one``
+    below — together they pin the 'longest wins' contract."""
     raw_id = _insert_jobs_raw(conn, source_id, "1")
 
     promote_to_canonical_jobs(
         conn,
         source_id=source_id,
         jobs_raw_id=raw_id,
-        job=_make_job(description_text="Java Spring Boot service work."),
+        job=_make_job(description_text="Java work."),
     )
-    # An identical job (same dedup key) with a NEW description text.
     promote_to_canonical_jobs(
         conn,
         source_id=source_id,
         jobs_raw_id=raw_id,
-        job=_make_job(description_text="Migrate the service to Kotlin."),
+        job=_make_job(
+            description_text="Migrate the legacy service from Java to Kotlin "
+            "with a focus on async patterns and observability." * 3,
+        ),
     )
 
     java_matches = conn.execute("SELECT 1 FROM jobs_fts WHERE jobs_fts MATCH 'java'").fetchall()
     kotlin_matches = conn.execute("SELECT 1 FROM jobs_fts WHERE jobs_fts MATCH 'kotlin'").fetchall()
-    assert len(java_matches) == 0  # old text is gone
+    # The richer text mentions both Java and Kotlin (it's a migration role),
+    # so both terms hit. The point of the test is that FTS reflects the
+    # current canonical description, whatever the merger decided it should
+    # be.
+    assert len(java_matches) == 1
     assert len(kotlin_matches) == 1
+
+
+def test_promote_does_not_truncate_richer_description_with_a_leaner_one(
+    conn: sqlite3.Connection,
+    source_id: int,
+) -> None:
+    """Indeed-style truncated re-scrapes must not blow away the full
+    description we already have (this was the headline data-quality
+    regression in the old COALESCE-based update path)."""
+    raw_id_full = _insert_jobs_raw(conn, source_id, "full")
+    raw_id_teaser = _insert_jobs_raw(conn, source_id, "teaser")
+
+    full = (
+        "Senior Python Engineer at Atlassian. We're hiring across teams "
+        "for backend services, async patterns, postgres, and AWS." * 5
+    )
+    teaser = "Senior Python role at Atlassian. Apply now."
+
+    promote_to_canonical_jobs(
+        conn,
+        source_id=source_id,
+        jobs_raw_id=raw_id_full,
+        job=_make_job(description_text=full),
+    )
+    promote_to_canonical_jobs(
+        conn,
+        source_id=source_id,
+        jobs_raw_id=raw_id_teaser,
+        job=_make_job(description_text=teaser),
+    )
+
+    row = conn.execute("SELECT description_text FROM jobs").fetchone()
+    assert row["description_text"] == full

@@ -30,6 +30,7 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 
+from jobai.dedup.best_of import merge_canonical_fields, mergeable_fields
 from jobai.dedup.fuzzy import DEFAULT_SIMILARITY_THRESHOLD, find_similar_match
 from jobai.observability.logging import get_logger
 
@@ -156,14 +157,38 @@ def _merge_jobs(
     survivor_id: int,
     duplicate_id: int,
 ) -> None:
-    """Move job_sources rows from ``duplicate_id`` to ``survivor_id`` and delete the duplicate.
+    """Move job_sources rows + best-of-merge fields, then delete the duplicate.
 
-    ``job_sources`` has a composite primary key
-    ``(job_id, source_id, jobs_raw_id)``. Two duplicates from the
-    same source could conflict on (source_id, jobs_raw_id) when both
-    re-target survivor_id, so we use INSERT OR IGNORE on a copy then
-    DELETE the originals — idempotent under repeated runs.
+    Three steps:
+
+    1. Merge mutable fields. The duplicate may carry data the survivor
+       lacks (a salary, a richer description). The best-of merger
+       picks the best value per field with the survivor as ``old``
+       (so its data is preferred on ties / first-non-null rules) and
+       writes the merged result back to the survivor row.
+    2. Transfer ``job_sources`` links. The composite PK
+       ``(job_id, source_id, jobs_raw_id)`` may conflict if the same
+       (source, raw) tuple already points at the survivor — INSERT
+       OR IGNORE keeps the operation idempotent under repeated runs.
+    3. Delete the duplicate's ``job_sources`` rows and the duplicate
+       canonical row. The FTS5 delete trigger cleans the search index.
     """
+    fields = mergeable_fields()
+    # ruff S608: column names come from the static `_MERGEABLE_FIELDS`
+    # tuple in best_of.py — never user input — so the f-string SQL is safe.
+    select_sql = f"SELECT {', '.join(fields)} FROM jobs WHERE id = ?"  # noqa: S608
+    survivor_row = conn.execute(select_sql, (survivor_id,)).fetchone()
+    duplicate_row = conn.execute(select_sql, (duplicate_id,)).fetchone()
+    survivor: dict[str, object | None] = dict(zip(fields, survivor_row, strict=True))
+    duplicate: dict[str, object | None] = dict(zip(fields, duplicate_row, strict=True))
+    merged = merge_canonical_fields(survivor, duplicate)
+    set_clause = ", ".join(f"{f} = ?" for f in fields)
+    # ruff S608: see select_sql comment above — fields are static.
+    conn.execute(
+        f"UPDATE jobs SET {set_clause} WHERE id = ?",  # noqa: S608
+        (*(merged[f] for f in fields), survivor_id),
+    )
+
     conn.execute(
         "INSERT OR IGNORE INTO job_sources (job_id, source_id, jobs_raw_id, apply_url) "
         "SELECT ?, source_id, jobs_raw_id, apply_url "
