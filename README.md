@@ -13,9 +13,9 @@ A local-first AI job-hunting agent for the Australian market. One process scrape
 ## What it does
 
 - **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, all 5 AU state government boards (NSW / VIC / QLD / SA / WA), and the federal APS Jobs board.
-- **Deduplicates** the same role posted to multiple boards into one canonical row, with all source links preserved.
+- **Deduplicates and best-of-merges** the same role across boards into one canonical row, with all source links preserved. When sources disagree (one has salary and one doesn't, one has a full description and one a teaser), per-field rules pick the richest value: longest description, earliest `posted_at`, first non-null salary.
 - **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
-- **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
+- **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The Jobs header surfaces a live "updated X mins ago" freshness chip so you can see the data is current at a glance. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
 
 ## Quick start (Docker)
 
@@ -109,7 +109,7 @@ Full OpenAPI spec at <http://localhost:8421/docs>. The headline endpoints:
 │  ├─ browser.py          tier 2 (Playwright + run_in_page escape hatch)
 │  ├─ stealth.py          tier 3 (Patchright)
 │  └─ escalation.py       transparent tier promotion on 403
-├─ jobai/dedup/           deterministic SHA256 + fuzzy rapidfuzz reconciliation
+├─ jobai/dedup/           deterministic SHA256 + fuzzy rapidfuzz + per-field best-of merger
 ├─ jobai/pipeline/        scrape runner, schema-change detection, description backfill
 ├─ jobai/agent/           Anthropic SDK agent — 5 tools, manual loop, SSE streaming
 ├─ jobai/api/             FastAPI app: /api/* + the React SPA mounted at /
@@ -127,7 +127,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 530+ tests
+pytest -q                       # 640+ tests
 pytest --cov=jobai --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
@@ -135,7 +135,7 @@ ruff check . && ruff format --check .
 (cd frontend && npm run build)  # TypeScript strict, Vite production build
 ```
 
-CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed.
+CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. New code lands at 100% coverage on the modules it touches — no exceptions, no `# pragma: no cover`.
 
 ## License
 
