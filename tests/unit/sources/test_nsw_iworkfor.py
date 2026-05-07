@@ -16,10 +16,12 @@ from selectolax.parser import HTMLParser
 
 from jobai.fetcher.http import HttpFetcher
 from jobai.sources.nsw_iworkfor import (
+    NSWIWorkForBlockedError,
     NSWIWorkForFetchError,
     NSWIWorkForSource,
     _extract_job_id,
     _first_segment,
+    _is_cloudflare_challenge,
     _page_url,
     _parse_card,
     _parse_info_dl,
@@ -102,6 +104,108 @@ async def test_discover_returns_empty_on_page_with_no_cards() -> None:
 async def test_max_pages_validation() -> None:
     with pytest.raises(ValueError, match="max_pages"):
         NSWIWorkForSource(account=_SLUG, max_pages=0)
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare challenge detection
+# ---------------------------------------------------------------------------
+
+_CF_CHALLENGE_HTML = (
+    "<!DOCTYPE html><html><head>"
+    "<title>Just a moment...</title>"
+    '<meta http-equiv="content-security-policy" content="...challenge-platform...">'
+    "</head><body>"
+    '<script src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/orchestrate/jsch/v1"></script>'
+    "<noscript>cf-mitigated</noscript>"
+    "</body></html>"
+)
+
+
+def test_is_cloudflare_challenge_recognises_real_interstitial() -> None:
+    assert _is_cloudflare_challenge(_CF_CHALLENGE_HTML) is True
+
+
+def test_is_cloudflare_challenge_does_not_false_positive_on_normal_page() -> None:
+    """Body copy that happens to contain 'Just a moment' must not trip
+    detection - the title alone isn't enough; we require a CF asset
+    marker too."""
+    benign = (
+        "<!DOCTYPE html><html><head><title>Junior Engineer</title></head>"
+        "<body><p>Please wait, just a moment as we load the form.</p></body></html>"
+    )
+    assert _is_cloudflare_challenge(benign) is False
+
+
+def test_is_cloudflare_challenge_returns_false_for_empty_input() -> None:
+    assert _is_cloudflare_challenge("") is False
+
+
+async def test_discover_raises_blocked_error_on_cloudflare_challenge() -> None:
+    """A 200 OK with the Cloudflare interstitial body must surface as a
+    failure, not a silent zero-card success - the old behaviour hid
+    the regression for weeks."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_URL).mock(return_value=httpx.Response(200, text=_CF_CHALLENGE_HTML))
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(NSWIWorkForBlockedError) as excinfo:
+                async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
+                    pass
+    assert excinfo.value.slug == _SLUG
+
+
+async def test_discover_loop_completes_at_max_pages_when_every_page_has_cards() -> None:
+    """If every page within ``max_pages`` keeps yielding new cards, the
+    walker exits the for-loop naturally rather than via the early-exit
+    paths. Pins the loop-completion branch so a future refactor that
+    removes the natural exit gets caught."""
+    page_count = {"n": 0}
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        page_count["n"] += 1
+        # Each page has the SAME 3 cards in the fixture; the source's
+        # ``seen_ids`` set would dedup pages 2+ to zero new yields and
+        # trip the empty-page early-exit. To force the loop to run to
+        # completion we mutate the numeric job IDs per page so each
+        # page's cards get unique source_external_ids.
+        text = _FIXTURE
+        for original in ("576439", "575973", "576521"):
+            text = text.replace(original, f"{original}{page_count['n']}")
+        return httpx.Response(200, text=text)
+
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        router.get(host="iworkfor.nsw.gov.au").mock(side_effect=respond)
+        async with HttpFetcher() as fetcher:
+            jobs = [
+                j async for j in NSWIWorkForSource(account=_SLUG, max_pages=2).discover(fetcher)
+            ]
+
+    # Two pages of 3 cards each, all distinct ids => loop ran to completion.
+    assert len(jobs) == 6
+
+
+async def test_discover_terminates_silently_when_cf_challenge_hits_later_page() -> None:
+    """Mid-walk CF block stops the walker but doesn't lose results
+    already yielded. Same shape as the existing 'later-page non-2xx'
+    test - both are graceful-stop conditions."""
+    fixture = _FIXTURE
+    page_count = {"n": 0}
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        page_count["n"] += 1
+        if page_count["n"] == 1:
+            return httpx.Response(200, text=fixture)
+        return httpx.Response(200, text=_CF_CHALLENGE_HTML)
+
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        router.get(host="iworkfor.nsw.gov.au").mock(side_effect=respond)
+        async with HttpFetcher() as fetcher:
+            jobs = [
+                j async for j in NSWIWorkForSource(account=_SLUG, max_pages=3).discover(fetcher)
+            ]
+
+    # Page 1 fixture has 3 cards; the walk stops on the page-2 CF block
+    # rather than raising, so we keep what page 1 yielded.
+    assert len(jobs) == 3
 
 
 async def test_discover_terminates_when_later_page_returns_non_2xx() -> None:
