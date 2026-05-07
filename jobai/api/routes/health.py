@@ -30,6 +30,11 @@ class HealthResponse(BaseModel):
     sources_failing: int = Field(
         description="Sources whose most recent attempt failed within 24h.",
     )
+    last_scrape_at: str | None = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp of the most recent successful scrape run, "
+        "or null if no run has succeeded yet.",
+    )
     timestamp: str = Field(description="ISO 8601 UTC timestamp of this snapshot.")
 
 
@@ -58,6 +63,10 @@ def get_health(conn: ConnDep) -> HealthResponse:
         "AND last_error_at > COALESCE(last_success_at, '1970-01-01') "
         "AND last_error_at >= datetime('now', '-1 day')",
     )
+    last_scrape_at = _scalar_str(
+        conn,
+        "SELECT MAX(finished_at) FROM scrape_runs WHERE status = 'success'",
+    )
 
     status = "ok" if sources_failing == 0 else "degraded"
 
@@ -68,6 +77,7 @@ def get_health(conn: ConnDep) -> HealthResponse:
         sources_total=sources_total,
         sources_enabled=sources_enabled,
         sources_failing=sources_failing,
+        last_scrape_at=last_scrape_at,
         timestamp=datetime.now(tz=UTC).isoformat(),
     )
 
@@ -75,3 +85,10 @@ def get_health(conn: ConnDep) -> HealthResponse:
 def _scalar_int(conn: ConnDep, sql: str) -> int:
     row = conn.execute(sql).fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def _scalar_str(conn: ConnDep, sql: str) -> str | None:
+    row = conn.execute(sql).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])

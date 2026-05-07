@@ -22,7 +22,70 @@ def test_health_returns_200_on_empty_db(client: TestClient) -> None:
     assert body["sources_total"] == 0
     assert body["sources_enabled"] == 0
     assert body["sources_failing"] == 0
+    assert body["last_scrape_at"] is None
     assert "timestamp" in body
+
+
+def test_health_reports_last_successful_scrape(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    """``last_scrape_at`` reflects the most recent successful scrape_run."""
+    conn = sqlite3.connect(db_path)
+    try:
+        row = upsert_source(conn, kind="greenhouse", account="atlassian", display_name="A")
+        conn.execute(
+            "INSERT INTO scrape_runs (source_id, started_at, finished_at, status, "
+            "items_seen, items_new, items_updated, tier_used) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                row.id,
+                "2026-05-07T05:00:00+00:00",
+                "2026-05-07T05:00:30+00:00",
+                "success",
+                10,
+                10,
+                0,
+                1,
+            ),
+        )
+        # Newer one — this is what last_scrape_at should report.
+        conn.execute(
+            "INSERT INTO scrape_runs (source_id, started_at, finished_at, status, "
+            "items_seen, items_new, items_updated, tier_used) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                row.id,
+                "2026-05-07T06:00:00+00:00",
+                "2026-05-07T06:00:42+00:00",
+                "success",
+                12,
+                0,
+                12,
+                1,
+            ),
+        )
+        # A failed run with a later finished_at must NOT be selected.
+        conn.execute(
+            "INSERT INTO scrape_runs (source_id, started_at, finished_at, status, "
+            "items_seen, items_new, items_updated, tier_used, error_summary) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                row.id,
+                "2026-05-07T07:00:00+00:00",
+                "2026-05-07T07:00:05+00:00",
+                "failed",
+                0,
+                0,
+                0,
+                1,
+                "boom",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    body = client.get("/api/health").json()
+    assert body["last_scrape_at"] == "2026-05-07T06:00:42+00:00"
 
 
 def test_health_counts_jobs_and_sources(

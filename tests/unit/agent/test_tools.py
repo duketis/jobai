@@ -314,6 +314,8 @@ def test_get_health_aggregates_counts(seeded_conn: sqlite3.Connection) -> None:
     assert result["sources_total"] == 2
     assert result["sources_enabled"] == 2
     assert result["sources_failing"] == 1
+    # No scrape_runs in the seed → last_scrape_at is None.
+    assert result["last_scrape_at"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -173,8 +173,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "get_health",
         "description": (
             "Aggregate snapshot of the data layer: total jobs, jobs added in "
-            "the last 24h, source counts, source failures. Use to answer 'how "
-            "is the system doing?' or 'how fresh is the data?'"
+            "the last 24h, source counts, source failures, and the timestamp "
+            "of the last successful scrape run. Use to answer 'how is the "
+            "system doing?' or 'how fresh is the data?'"
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -326,6 +327,14 @@ class ToolExecutor:
         return {"items": items}
 
     def _get_health(self, _args: Mapping[str, Any]) -> dict[str, Any]:
+        last_scrape_row = self._conn.execute(
+            "SELECT MAX(finished_at) FROM scrape_runs WHERE status = 'success'"
+        ).fetchone()
+        last_scrape_at = (
+            str(last_scrape_row[0])
+            if last_scrape_row is not None and last_scrape_row[0] is not None
+            else None
+        )
         return {
             "jobs_total": _scalar(self._conn, "SELECT COUNT(*) FROM jobs"),
             "jobs_added_24h": _scalar(
@@ -343,6 +352,7 @@ class ToolExecutor:
                 "AND last_error_at > COALESCE(last_success_at, '1970-01-01') "
                 "AND last_error_at >= datetime('now', '-1 day')",
             ),
+            "last_scrape_at": last_scrape_at,
         }
 
 
