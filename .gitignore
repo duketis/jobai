@@ -87,3 +87,6 @@ frontend/dist/
 # Built SPA emitted by `npm run build` in frontend/. CI rebuilds on
 # every push so the source of truth stays in `frontend/src`.
 jobai/api/static/
+
+# Session-context anchor — local-only, never committed.
+CLAUDE.md

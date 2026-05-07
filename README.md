@@ -8,7 +8,7 @@
 
 A local-first AI job-hunting agent for the Australian market. One process scrapes 70+ AU and global job boards on a schedule into a SQLite database, exposes a REST + SSE API, and runs an Anthropic-powered chat agent that uses tools to search and triage roles. The whole thing ships as a single container.
 
-> **Status:** v0.5.x — data layer, agent layer, and frontend all live. Tracking towards `v1.0.0`.
+> **Status:** v1.0.x — data layer, agent layer, frontend, and Docker deploy all live. Generic catalogue (no role bias).
 
 ## What it does
 

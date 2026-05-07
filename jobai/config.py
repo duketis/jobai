@@ -23,6 +23,14 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from jobai import __version__
+
+#: Single source of truth for the User-Agent string. Built from
+#: ``jobai.__version__`` so a version bump in one place propagates
+#: everywhere — Settings.user_agent, the browser-tier UA, and the
+#: stealth-tier UA all interpolate this constant.
+DEFAULT_USER_AGENT = f"jobai/{__version__} (+https://github.com/duketis/jobai)"
+
 
 class Settings(BaseSettings):
     """Top-level runtime configuration for jobai."""
@@ -76,7 +84,7 @@ class Settings(BaseSettings):
         description="Default cadence for sources that do not declare one.",
     )
     user_agent: str = Field(
-        default="jobai/0.0.1 (+https://github.com/duketis/jobai)",
+        default=DEFAULT_USER_AGENT,
         description="Default HTTP User-Agent header for the tier-1 fetcher.",
     )
     anthropic_api_key: str | None = Field(

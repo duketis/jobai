@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from patchright.async_api import async_playwright as patchright_playwright
 
+from jobai import __version__
 from jobai.fetcher.browser import BrowserFetcher, PlaywrightDriver
 
 #: Suffixed with ``patchright`` so traffic logs distinguish stealth
@@ -25,7 +26,7 @@ from jobai.fetcher.browser import BrowserFetcher, PlaywrightDriver
 _STEALTH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36 jobai/0.0.1 (patchright)"
+    f"Chrome/120.0.0.0 Safari/537.36 jobai/{__version__} (patchright)"
 )
 
 

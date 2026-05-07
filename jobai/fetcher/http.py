@@ -20,7 +20,12 @@ from typing import Any, Self
 
 import httpx
 
+from jobai import __version__
 from jobai.fetcher.base import Response
+
+#: Default UA — versioned via ``jobai.__version__`` so a single bump
+#: propagates here, the browser fetcher, and the stealth fetcher.
+_DEFAULT_USER_AGENT = f"jobai/{__version__} (+https://github.com/duketis/jobai)"
 
 
 class HttpFetcher:
@@ -29,7 +34,7 @@ class HttpFetcher:
     def __init__(
         self,
         *,
-        user_agent: str = "jobai/0.0.1 (+https://github.com/duketis/jobai)",
+        user_agent: str = _DEFAULT_USER_AGENT,
         timeout: float = 30.0,
         follow_redirects: bool = True,
     ) -> None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobai"
-version = "0.0.1"
+version = "1.0.5"
 description = "Local-first AI job-hunting agent: multi-source ingestion, deduplication, search API, and a conversational AI layer."
 readme = "README.md"
 license = { file = "LICENSE" }

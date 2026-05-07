@@ -28,6 +28,7 @@ from typing import Any, Protocol, Self
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
+from jobai import __version__
 from jobai.fetcher.base import Response
 
 #: Sources that need full Playwright control (form fill, click,
@@ -39,11 +40,13 @@ from jobai.fetcher.base import Response
 PageScript = Callable[["Page"], Awaitable[None]]
 
 #: A Chrome-on-macOS UA suffixed with ``jobai/<version>`` so we keep a
-#: realistic fingerprint without misrepresenting ourselves.
+#: realistic fingerprint without misrepresenting ourselves. The version
+#: is interpolated from ``jobai.__version__`` so a single bump
+#: propagates everywhere.
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36 jobai/0.0.1"
+    f"Chrome/120.0.0.0 Safari/537.36 jobai/{__version__}"
 )
 
 
