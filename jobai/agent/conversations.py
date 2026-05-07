@@ -89,6 +89,31 @@ def delete_conversation(conn: sqlite3.Connection, conversation_id: int) -> None:
     conn.commit()
 
 
+def rename_conversation(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    *,
+    title: str,
+) -> Conversation:
+    """Update the conversation's title and bump ``updated_at``.
+
+    Raises :class:`ConversationNotFoundError` if the row doesn't
+    exist; that surfaces as a 404 in the HTTP layer.
+    """
+    cleaned = title.strip()
+    if not cleaned:
+        msg = "title must not be empty"
+        raise ValueError(msg)
+    cursor = conn.execute(
+        "UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?",
+        (cleaned, conversation_id),
+    )
+    if cursor.rowcount == 0:
+        raise ConversationNotFoundError(conversation_id)
+    conn.commit()
+    return get_conversation(conn, conversation_id)
+
+
 def append_message(
     conn: sqlite3.Connection,
     *,

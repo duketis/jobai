@@ -109,6 +109,16 @@ export async function deleteConversation(id: number): Promise<void> {
   }
 }
 
+export async function renameConversation(
+  id: number,
+  title: string,
+): Promise<{ id: number; title: string }> {
+  return fetchJson<{ id: number; title: string }>(`/conversations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
 export async function getHealth(): Promise<HealthSnapshot> {
   return fetchJson<HealthSnapshot>("/health");
 }

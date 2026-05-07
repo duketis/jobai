@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Briefcase, MessageSquarePlus, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
 
 import { ChatDock } from "@/components/ChatDock";
@@ -10,30 +11,133 @@ import { cn } from "@/lib/utils";
  * Persistent app shell:
  *
  *   ┌──────────┬─────────────────────────────┐
- *   │ sidebar  │  current route (top 2/3)    │
- *   │          │                             │
- *   │          ├─────────────────────────────┤
- *   │          │  chat dock (bottom 1/3)     │
+ *   │ sidebar  │  current route (top)        │
+ *   │          │   ━━━━━━━━━━━━━━━━━━━━━━    │  ← drag handle
+ *   │          │  chat dock (resizable)      │
  *   └──────────┴─────────────────────────────┘
  *
  * The chat dock is always mounted so the active conversation survives
  * navigation between /jobs and /jobs/:id, and so the agent's tool
  * calls (search_jobs, get_job_detail, …) can drive the upper view.
  *
+ * Dock height is user-tunable via a horizontal drag handle on the
+ * top edge of the dock; the value persists in localStorage so the
+ * preference rides across reloads.
+ *
  * The active conversation id is carried in the URL as ``?chat=<id>``
  * (preserved across route changes by the dock's nav handlers); a
  * missing param means "fresh chat".
  */
 export function Shell() {
+  const [dockHeight, setDockHeight] = useResizableDock();
   return (
     <div className="flex h-full bg-background text-foreground">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
-        <main className="flex-[2] overflow-y-auto min-h-0 border-b border-border">
+        <main className="flex-1 overflow-y-auto min-h-0">
           <Outlet />
         </main>
-        <ChatDock />
+        <DockResizeHandle dockHeight={dockHeight} setDockHeight={setDockHeight} />
+        <div
+          className="shrink-0 flex flex-col min-h-0 border-t border-border"
+          style={{ height: `${dockHeight}px` }}
+        >
+          <ChatDock />
+        </div>
       </div>
+    </div>
+  );
+}
+
+const DOCK_HEIGHT_KEY = "jobai:dockHeight";
+const DOCK_MIN_PX = 140;
+const DOCK_MAX_FRACTION = 0.85;
+const DOCK_DEFAULT_PX = 320;
+
+/**
+ * Persists the dock height across reloads and clamps it to a sane
+ * range relative to the current viewport.
+ */
+function useResizableDock(): [number, (next: number) => void] {
+  const [height, setHeight] = useState<number>(() => {
+    if (typeof window === "undefined") return DOCK_DEFAULT_PX;
+    const saved = window.localStorage.getItem(DOCK_HEIGHT_KEY);
+    const parsed = saved ? Number.parseInt(saved, 10) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : DOCK_DEFAULT_PX;
+  });
+
+  const setBounded = useCallback((next: number) => {
+    if (typeof window === "undefined") {
+      setHeight(next);
+      return;
+    }
+    const max = Math.max(DOCK_MIN_PX, window.innerHeight * DOCK_MAX_FRACTION);
+    const clamped = Math.min(Math.max(next, DOCK_MIN_PX), max);
+    setHeight(clamped);
+    window.localStorage.setItem(DOCK_HEIGHT_KEY, String(Math.round(clamped)));
+  }, []);
+
+  // Clamp again on viewport resize so the dock can't end up taller
+  // than the window after a screen change.
+  useEffect(() => {
+    function onResize() {
+      setBounded(height);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [height, setBounded]);
+
+  return [height, setBounded];
+}
+
+function DockResizeHandle({
+  dockHeight,
+  setDockHeight,
+}: {
+  dockHeight: number;
+  setDockHeight: (next: number) => void;
+}) {
+  const dragging = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  function startDrag(e: React.PointerEvent<HTMLDivElement>) {
+    dragging.current = { startY: e.clientY, startHeight: dockHeight };
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  function onDrag(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    // Drag up = grow dock; cursor moves up so deltaY is negative.
+    const delta = dragging.current.startY - e.clientY;
+    setDockHeight(dragging.current.startHeight + delta);
+  }
+
+  function endDrag(e: React.PointerEvent<HTMLDivElement>) {
+    dragging.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize chat dock"
+      className={cn(
+        "h-1 cursor-row-resize bg-border hover:bg-foreground/30 transition-colors",
+        "relative group",
+      )}
+      onPointerDown={startDrag}
+      onPointerMove={onDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    >
+      {/* Wider invisible hit area so the user doesn't have to nail
+          the 1px line — touch + mouse both feel right at 8px. */}
+      <div className="absolute inset-x-0 -top-1.5 -bottom-1.5" />
+      <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 w-10 h-0.5 rounded-full bg-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
     </div>
   );
 }

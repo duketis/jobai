@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from jobai.agent.conversations import (
     ConversationNotFoundError,
@@ -20,6 +21,7 @@ from jobai.agent.conversations import (
     get_conversation,
     list_conversations,
     list_messages,
+    rename_conversation,
 )
 from jobai.api.dependencies import ConnDep
 from jobai.api.models import (
@@ -28,6 +30,13 @@ from jobai.api.models import (
     ConversationMessageItem,
     ConversationsListResponse,
 )
+
+
+class ConversationRenameRequest(BaseModel):
+    """Body of PATCH /api/conversations/:id."""
+
+    title: str = Field(min_length=1, max_length=200)
+
 
 router = APIRouter()
 
@@ -92,6 +101,34 @@ def detail(conn: ConnDep, conversation_id: int) -> ConversationDetailResponse:
             )
             for m in messages
         ],
+    )
+
+
+@router.patch(
+    "/{conversation_id}",
+    response_model=ConversationItem,
+    summary="Rename a conversation (set its title)",
+)
+def rename(
+    conn: ConnDep,
+    conversation_id: int,
+    body: ConversationRenameRequest,
+) -> ConversationItem:
+    """Rename one conversation; returns the updated row."""
+    try:
+        updated = rename_conversation(conn, conversation_id, title=body.title)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"conversation {conversation_id} not found",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ConversationItem(
+        id=updated.id,
+        title=updated.title,
+        created_at=updated.created_at,
+        updated_at=updated.updated_at,
     )
 
 
