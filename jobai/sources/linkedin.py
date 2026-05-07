@@ -32,10 +32,11 @@ _BASE_URL = "https://www.linkedin.com"
 _SEARCH_PATH = "/jobs/search"
 
 #: Cap on pages walked per scrape cycle. LinkedIn returns ~25 cards
-#: per page; four pages = ~100 results. Beyond that we'd hit
-#: increasingly redundant tail listings and risk longer rate-limit
-#: backoffs, so the cap is intentionally tight.
-DEFAULT_MAX_PAGES = 4
+#: per page. The ``page_yielded == 0`` early-exit short-circuits when
+#: LinkedIn stops serving new cards (the guest-mode tail caps around
+#: 1,000 results per query), so a high cap walks to that natural
+#: ceiling instead of stopping after only 100.
+DEFAULT_MAX_PAGES = 40
 
 #: LinkedIn's offset-style pagination — ``start`` is a 0-indexed
 #: position into the result set, advancing by ``_PAGE_SIZE`` per page.

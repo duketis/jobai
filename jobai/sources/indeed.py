@@ -24,10 +24,12 @@ _BASE_URL = "https://au.indeed.com"
 _SEARCH_PATH = "/jobs"
 
 #: Cap on pages walked per scrape cycle. Indeed serves 10 cards per
-#: page so a 5-page walk yields ~50 results — enough for a freshness
-#: signal while staying under any per-IP rate limits we'd otherwise
-#: hit on the browser tier.
-DEFAULT_MAX_PAGES = 5
+#: page; a generous 100-page cap walks ~1,000 results per slug. The
+#: ``page_yielded == 0`` early-exit short-circuits when the site
+#: stops serving new jobs (or starts cloaking past a ceiling), so a
+#: high cap doesn't waste cycles - it just gives the walker headroom
+#: to reach whatever Indeed's actual cap is for that query.
+DEFAULT_MAX_PAGES = 100
 
 #: Indeed's ``start`` query param is a 0-indexed offset into the
 #: result set, advancing by ``_PAGE_SIZE`` per page.

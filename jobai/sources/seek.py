@@ -32,10 +32,13 @@ from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://www.seek.com.au"
 
-#: Hard cap on pages walked per scrape cycle. Five pages of ~22 jobs
-#: each gives ~100 results per slug, which is plenty of depth without
-#: burning half an hour against the browser tier per cadence tick.
-DEFAULT_MAX_PAGES = 5
+#: Hard cap on pages walked per scrape cycle. Seek caps anonymous
+#: search at roughly 100 pages of ~22 jobs (~2,200 results). The
+#: ``page_yielded == 0`` early-exit below short-circuits when the
+#: site stops serving new jobs, so a generous cap doesn't burn
+#: cycles on empty pages — it just gives the walker room to reach
+#: the natural ceiling on big national slugs.
+DEFAULT_MAX_PAGES = 100
 
 
 class SeekSource(BaseSource):

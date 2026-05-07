@@ -1,23 +1,27 @@
 """NSW Government — iworkfor.nsw.gov.au source.
 
-NSW's central government job board is a Next.js SPA: the SSR'd HTML
-shell loads, then JS calls an internal API and populates the result
-list client-side. Plain HTTP gets the shell with no jobs in it; we
-need to wait for the rendered DOM via the browser tier's
-``wait_for_selector`` knob.
+**Status: blocked by Cloudflare strict challenge mode (2026-05).**
 
-Per-card structure (stable across the deployment we tested against):
+The NSW board moved its old HTML-render pipeline behind Cloudflare's
+strict challenge interstitial — every plain-HTTP request gets a
+``Just a moment...`` page, and our browser tier (Patchright) gets
+the same 403 the bare client does. Bypassing CF reliably needs paid
+proxy services or residential IPs, which the project rules out.
+
+The discover loop now detects the CF challenge HTML and raises
+:class:`NSWIWorkForBlockedError` so the run is recorded as failed
+(instead of silently succeeding with zero jobs, which is what the
+old code did and which hid the regression for weeks). The expected
+operator response is to disable the NSW source rows in the DB until
+the situation changes.
+
+Old card-structure notes (kept for when we can fetch again):
 
 * root: ``article.search-job-card`` with ``aria-labelledby="job-title-{id}"``
 * title: ``.search-job-card__title``
 * organization (employer agency): ``.search-job-card__organization``
-* occupation level: ``.search-job-card__occupation``
-* apply URL: ``a[href^="/job/"]`` containing the slug-id pair
-* metadata (salary, location, closing date, work type, employment
-  type) in a ``dl.job-card-info`` table keyed by ``<dt>`` labels
-
-Each search-results page renders ~15 cards. Pagination is ``?page=N``;
-walking is bounded the same way as Seek (DEFAULT_MAX_PAGES=5).
+* apply URL: ``a[href^="/job/"]``
+* metadata in ``dl.job-card-info`` keyed by ``<dt>`` labels
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ _WAIT_SELECTOR = "article.search-job-card"
 
 #: NSW iworkfor renders ~15 results per page; five pages is enough
 #: depth without burning the browser fetcher on a long tail.
-DEFAULT_MAX_PAGES = 5
+DEFAULT_MAX_PAGES = 100
 
 #: Pull the trailing numeric id off ``/job/{slug}-{id}`` URLs.
 _JOB_ID_RE = re.compile(r"-(\d+)$")
@@ -56,6 +60,45 @@ class NSWIWorkForFetchError(RuntimeError):
         super().__init__(f"nsw_iworkfor:{slug} returned HTTP {status_code}")
         self.slug = slug
         self.status_code = status_code
+
+
+class NSWIWorkForBlockedError(RuntimeError):
+    """Raised when iworkfor.nsw.gov.au serves the Cloudflare challenge.
+
+    A 200 response with the ``Just a moment...`` interstitial is the
+    site's way of saying "I refused you" while still using a 200 status
+    code. Treating it as a successful 0-card scrape silently masks the
+    block; raising surfaces it as a real failure on the run.
+    """
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(
+            f"nsw_iworkfor:{slug} blocked by Cloudflare challenge "
+            "(no jobs accessible without paid CF bypass)"
+        )
+        self.slug = slug
+
+
+# Markers that identify the Cloudflare interstitial. We check the
+# title and a CF-specific challenge-platform CSS class so a normal
+# page that happens to contain the phrase "Just a moment" in body copy
+# doesn't trigger.
+_CLOUDFLARE_CHALLENGE_MARKERS: tuple[str, ...] = (
+    "<title>Just a moment...</title>",
+    "challenge-platform",
+    "cf-mitigated",
+)
+
+
+def _is_cloudflare_challenge(text: str) -> bool:
+    """True if ``text`` is the Cloudflare 'Just a moment...' interstitial.
+
+    Two markers must hit (the title alone matches some legitimate
+    pages with the phrase in copy; combining title + CF-specific
+    asset path is unambiguous).
+    """
+    hits = sum(1 for marker in _CLOUDFLARE_CHALLENGE_MARKERS if marker in text)
+    return hits >= 2
 
 
 class NSWIWorkForSource(BaseSource):
@@ -86,6 +129,15 @@ class NSWIWorkForSource(BaseSource):
             if not response.is_ok:
                 if page == 1:
                     raise NSWIWorkForFetchError(self.account, response.status_code)
+                return
+            # Cloudflare returns the challenge page with HTTP 200 - we
+            # have to inspect the body to know we were actually blocked.
+            # On page 1 raise so the run fails loudly; on later pages
+            # the source has already yielded earlier results, so just
+            # stop walking.
+            if _is_cloudflare_challenge(response.text):
+                if page == 1:
+                    raise NSWIWorkForBlockedError(self.account)
                 return
 
             tree = HTMLParser(response.text)
