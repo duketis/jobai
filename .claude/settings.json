@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ruff check *)",
+      "Bash(ruff format --check *)",
+      "Bash(/tmp/jobai-tools/bin/ruff check *)",
+      "Bash(/tmp/jobai-tools/bin/ruff format --check *)",
+      "Bash(pytest *)",
+      "Bash(/tmp/jobai-tools/bin/pytest *)",
+      "Bash(mypy *)",
+      "Bash(/tmp/jobai-tools/bin/mypy *)",
+      "Bash(docker compose logs *)",
+      "Bash(docker compose ps *)",
+      "Bash(docker compose ps)",
+      "Bash(docker compose exec -T jobai jobai source list*)",
+      "Bash(docker compose exec -T jobai jobai source --help*)",
+      "Bash(docker compose exec -T jobai jobai run --help*)",
+      "Bash(docker compose exec -T jobai jobai --help*)",
+      "Bash(curl -sS http://localhost:8421/*)",
+      "Bash(curl -sf -o /dev/null --max-time * http://localhost:8421/*)",
+      "Bash(curl -sS --max-time * http://localhost:8421/*)",
+      "Bash(npm run build)",
+      "Bash(npm run lint)"
+    ]
+  }
+}
