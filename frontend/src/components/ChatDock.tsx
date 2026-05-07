@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Check,
   ChevronDown,
   ChevronRight,
   MessageSquarePlus,
@@ -215,6 +214,7 @@ export function ChatDock() {
       <ChatTabsBar
         conversations={conversations}
         activeId={conversationId}
+        activeTitle={history?.title ?? null}
         onSelect={selectChat}
         onDelete={async (id) => {
           await deleteConversation(id);
@@ -223,11 +223,6 @@ export function ChatDock() {
         }}
         onOpenSettings={() => setSettingsOpen(true)}
       />
-      <ChatTitleHeader
-        conversationId={conversationId}
-        title={history?.title ?? null}
-      />
-
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
         {persistedMessages.map((m) => (
@@ -266,72 +261,180 @@ export function ChatDock() {
 
 const TAB_LIMIT = 8;
 
+/**
+ * Single-row chat header.
+ *
+ * Layout: [tabs…] [+ new] [⚙ settings]. Each tab is the conversation
+ * title + a × close button. The active tab's title is double-click
+ * editable inline (or click the pencil that appears on hover); Enter
+ * saves, Esc cancels. Inactive tabs only show their × on hover.
+ */
 function ChatTabsBar({
   conversations,
   activeId,
+  activeTitle,
   onSelect,
   onDelete,
   onOpenSettings,
 }: {
   conversations: ConversationItem[];
   activeId: number | null;
+  activeTitle: string | null;
   onSelect: (id: number | null) => void;
   onDelete: (id: number) => void | Promise<void>;
   onOpenSettings: () => void;
 }) {
-  // Show the most-recent N conversations as inline tabs. The full
-  // list still lives in the sidebar — the tabs are a quick-switch
-  // affordance for the dock itself.
+  const queryClient = useQueryClient();
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const renameMutation = useMutation({
+    mutationFn: async ({ id, value }: { id: number; value: string }) =>
+      renameConversation(id, value),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      void queryClient.invalidateQueries({ queryKey: ["conversation", variables.id] });
+      setEditingId(null);
+    },
+  });
+
+  function startEdit(id: number, currentTitle: string) {
+    setDraft(currentTitle);
+    setEditingId(id);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }
+
+  function commit(id: number, originalTitle: string) {
+    const value = draft.trim();
+    if (!value || value === originalTitle) {
+      setEditingId(null);
+      return;
+    }
+    renameMutation.mutate({ id, value });
+  }
+
+  // The most-recent N conversations show as inline tabs; the full
+  // list still lives in the sidebar.
   const visible = conversations.slice(0, TAB_LIMIT);
-  const isNew = activeId === null;
+  const isNewChat = activeId === null;
 
   return (
-    <div className="flex items-stretch border-b border-border bg-card/60">
+    <div className="flex items-stretch border-b border-border bg-card/60 min-h-[2.25rem]">
       <div className="flex-1 flex items-stretch overflow-x-auto">
         {visible.map((c) => {
           const isActive = c.id === activeId;
+          const isEditing = editingId === c.id;
+          // For the active tab, prefer the freshest title (the
+          // ``conversations`` list can be a tick stale relative to the
+          // detail query).
+          const title = (isActive ? activeTitle : null) ?? c.title ?? "Untitled";
+
           return (
             <div
               key={c.id}
               className={cn(
-                "group flex items-center gap-1.5 px-3 border-r border-border text-xs whitespace-nowrap",
-                "cursor-pointer transition-colors",
+                "group flex items-center gap-1 px-3 border-r border-border text-xs whitespace-nowrap transition-colors",
                 isActive
                   ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                  : "text-muted-foreground hover:bg-accent/40 hover:text-foreground cursor-pointer",
               )}
-              onClick={() => onSelect(c.id)}
+              onClick={() => {
+                if (!isActive && !isEditing) onSelect(c.id);
+              }}
               role="tab"
               aria-selected={isActive}
-              tabIndex={0}
+              tabIndex={isActive ? -1 : 0}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+                if (!isActive && (e.key === "Enter" || e.key === " ")) {
                   e.preventDefault();
                   onSelect(c.id);
                 }
               }}
             >
-              <span className="truncate max-w-[180px]">{c.title || "Untitled"}</span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void onDelete(c.id);
-                }}
-                className={cn(
-                  "rounded-sm p-0.5 transition-opacity",
-                  isActive ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-100",
-                  "hover:text-destructive",
-                )}
-                title="Close conversation"
-                aria-label="Close conversation"
-              >
-                <XIcon className="size-3" />
-              </button>
+              {isEditing ? (
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commit(c.id, title);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      setEditingId(null);
+                    }
+                  }}
+                  onBlur={() => commit(c.id, title)}
+                  disabled={renameMutation.isPending}
+                  className="h-6 px-1.5 rounded border border-input bg-background text-xs min-w-[140px]"
+                  placeholder="Conversation title"
+                />
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isActive) {
+                        startEdit(c.id, title);
+                      } else {
+                        onSelect(c.id);
+                      }
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      startEdit(c.id, title);
+                    }}
+                    className={cn(
+                      "truncate max-w-[200px] text-left",
+                      isActive && "hover:underline-offset-2 hover:underline cursor-text",
+                    )}
+                    title={isActive ? "Click to rename" : "Switch to this chat"}
+                  >
+                    {title}
+                  </button>
+                  {isActive && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEdit(c.id, title);
+                      }}
+                      className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Rename"
+                      aria-label="Rename conversation"
+                    >
+                      <Pencil className="size-3" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onDelete(c.id);
+                    }}
+                    className={cn(
+                      "rounded-sm p-0.5 hover:text-destructive transition-opacity",
+                      isActive ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-100",
+                    )}
+                    title="Close conversation"
+                    aria-label="Close conversation"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </>
+              )}
             </div>
           );
         })}
-        {isNew && (
+        {isNewChat && (
           <div
             className="flex items-center gap-1.5 px-3 border-r border-border text-xs bg-background text-foreground"
             role="tab"
@@ -360,122 +463,6 @@ function ChatTabsBar({
         <Settings className="size-4" />
       </button>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Editable conversation title
-// ---------------------------------------------------------------------------
-
-function ChatTitleHeader({
-  conversationId,
-  title,
-}: {
-  conversationId: number | null;
-  title: string | null;
-}) {
-  const queryClient = useQueryClient();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const mutation = useMutation({
-    mutationFn: async ({ id, value }: { id: number; value: string }) =>
-      renameConversation(id, value),
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation", variables.id] });
-      setEditing(false);
-    },
-  });
-
-  function startEdit() {
-    if (conversationId === null) return;
-    setDraft(title ?? "");
-    setEditing(true);
-    // Focus + select on next tick so the input has mounted.
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    });
-  }
-
-  function commit() {
-    if (conversationId === null) return;
-    const value = draft.trim();
-    if (!value || value === title) {
-      setEditing(false);
-      return;
-    }
-    mutation.mutate({ id: conversationId, value });
-  }
-
-  if (conversationId === null) {
-    return (
-      <header className="px-4 py-1.5 border-b border-border flex items-center gap-2">
-        <span className="text-xs text-muted-foreground italic">
-          New chat — type below to start.
-        </span>
-      </header>
-    );
-  }
-
-  return (
-    <header className="px-4 py-1.5 border-b border-border flex items-center gap-2">
-      {editing ? (
-        <div className="flex-1 flex items-center gap-1">
-          <input
-            ref={inputRef}
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                setEditing(false);
-              }
-            }}
-            className="flex-1 h-7 px-2 rounded-md border border-input bg-background text-sm"
-            placeholder="Conversation title"
-            disabled={mutation.isPending}
-          />
-          <button
-            type="button"
-            onClick={commit}
-            disabled={mutation.isPending || !draft.trim()}
-            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/50 disabled:opacity-40"
-            title="Save"
-            aria-label="Save title"
-          >
-            <Check className="size-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditing(false)}
-            disabled={mutation.isPending}
-            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/50"
-            title="Cancel"
-            aria-label="Cancel rename"
-          >
-            <XIcon className="size-4" />
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={startEdit}
-          className="flex-1 flex items-center gap-1.5 text-left rounded-md px-1.5 py-0.5 -mx-1.5 text-sm font-medium hover:bg-accent/40 transition-colors group"
-          title="Click to rename"
-        >
-          <span className="truncate">{title ?? "Loading…"}</span>
-          <Pencil className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-        </button>
-      )}
-      <span className="text-[11px] text-muted-foreground shrink-0">#{conversationId}</span>
-    </header>
   );
 }
 
