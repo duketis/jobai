@@ -132,60 +132,65 @@ smartrecruiters:
 workable: []
 
 # Seek is JS-rendered — needs the browser fetcher (default_tier: 2).
-# Account is the URL slug from the Seek search-results path. Add more
-# slugs to broaden coverage; each one runs as its own source row.
+# Account is the URL slug from the Seek search-results path. The
+# default seeds below are LOCATION-only (no role keyword) so the app
+# is generic across job categories — add narrower slugs (e.g.
+# `python-jobs/in-All-Australia`) per-deployment if you want a
+# specific feed alongside the broad ones.
 seek:
-  - account: python-jobs/in-All-Australia
-    display_name: Seek — Python (Australia)
+  - account: jobs/in-All-Australia
+    display_name: Seek — All jobs (Australia)
     default_tier: 2
     cadence_seconds: 3600
-  - account: software-engineer-jobs/in-All-Melbourne-VIC
-    display_name: Seek — Software Engineer (Melbourne)
+  - account: jobs/in-All-Melbourne-VIC
+    display_name: Seek — All jobs (Melbourne)
     default_tier: 2
     cadence_seconds: 3600
-  - account: software-engineer-jobs/in-All-Sydney-NSW
-    display_name: Seek — Software Engineer (Sydney)
+  - account: jobs/in-All-Sydney-NSW
+    display_name: Seek — All jobs (Sydney)
     default_tier: 2
     cadence_seconds: 3600
-  - account: backend-developer-jobs/in-All-Australia
-    display_name: Seek — Backend (Australia)
+  - account: jobs/in-All-Brisbane-QLD
+    display_name: Seek — All jobs (Brisbane)
     default_tier: 2
     cadence_seconds: 3600
-  - account: full-stack-developer-jobs/in-All-Australia
-    display_name: Seek — Full Stack (Australia)
+  - account: jobs/in-All-Perth-WA
+    display_name: Seek — All jobs (Perth)
     default_tier: 2
     cadence_seconds: 3600
 
 # LinkedIn fingerprints aggressively — needs the stealth (Patchright)
 # fetcher (default_tier: 3). Account is the URL-encoded query string
-# for /jobs/search.
+# for /jobs/search. Default seeds are LOCATION-only (no `keywords`)
+# so the app is generic across job categories.
 linkedin:
-  - account: keywords=python&location=Australia
-    display_name: LinkedIn — Python (Australia)
+  - account: location=Australia
+    display_name: LinkedIn — All jobs (Australia)
     default_tier: 3
     cadence_seconds: 7200
-  - account: keywords=software%20engineer&location=Australia
-    display_name: LinkedIn — Software Engineer (Australia)
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia
+    display_name: LinkedIn — All jobs (Melbourne)
     default_tier: 3
     cadence_seconds: 7200
-  - account: keywords=backend%20engineer&location=Australia
-    display_name: LinkedIn — Backend Engineer (Australia)
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia
+    display_name: LinkedIn — All jobs (Sydney)
     default_tier: 3
     cadence_seconds: 7200
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
+# Default seeds are LOCATION-only (no `q`).
 indeed:
-  - account: q=python&l=Australia&fromage=7
-    display_name: Indeed — Python (Australia, last 7d)
+  - account: l=Australia&fromage=7
+    display_name: Indeed — All jobs (Australia, last 7d)
     default_tier: 2
     cadence_seconds: 3600
-  - account: q=software+engineer&l=Australia&fromage=7
-    display_name: Indeed — Software Engineer (Australia, last 7d)
+  - account: l=Melbourne+VIC&fromage=7
+    display_name: Indeed — All jobs (Melbourne, last 7d)
     default_tier: 2
     cadence_seconds: 3600
-  - account: q=python&l=Melbourne+VIC&fromage=7
-    display_name: Indeed — Python (Melbourne, last 7d)
+  - account: l=Sydney+NSW&fromage=7
+    display_name: Indeed — All jobs (Sydney, last 7d)
     default_tier: 2
     cadence_seconds: 3600
 
@@ -247,19 +252,11 @@ wa_jobs:
 
 # APS Jobs (federal AU public service). The Salesforce Lightning
 # rewrite replays the retrieveJobListings Apex action over plain
-# HTTP — see jobai/sources/apsjobs.py. The "All" feed surfaces the
-# whole open-positions catalogue (~500 listings); narrower searches
-# pass the keyword as the account string (mapped to filter.searchString).
+# HTTP — see jobai/sources/apsjobs.py. Default is the unfiltered
+# "All" feed; ``account`` accepts a free-text search string mapped
+# to filter.searchString if you want a narrower per-deployment feed.
 apsjobs:
   - account: ""
     display_name: APS Jobs — All open positions
-    default_tier: 1
-    cadence_seconds: 7200
-  - account: software
-    display_name: APS Jobs — Software
-    default_tier: 1
-    cadence_seconds: 7200
-  - account: data
-    display_name: APS Jobs — Data
     default_tier: 1
     cadence_seconds: 7200
