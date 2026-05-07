@@ -12,9 +12,9 @@ A local-first AI job-hunting agent for the Australian market. One process scrape
 
 ## What it does
 
-- **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, all 5 AU state government boards (NSW / VIC / QLD / SA / WA), and the federal APS Jobs board.
+- **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, 4 AU state government boards (VIC / QLD / SA / WA), and the federal APS Jobs board. The big-board walkers (Seek, Indeed, LinkedIn) walk to each site's natural ceiling (~1,000-2,200 results per query) rather than stopping at an artificial page cap.
 - **Deduplicates and best-of-merges** the same role across boards into one canonical row, with all source links preserved. When sources disagree (one has salary and one doesn't, one has a full description and one a teaser), per-field rules pick the richest value: longest description, earliest `posted_at`, first non-null salary.
-- **Infers salary from description text** when the structured field is null. AU listings notoriously bury comp in the body — `Band 8 - $123,558 to $138,752 + super` on council jobs, `$120k - $160k + super` from recruiters, `Salary: $100,066 - $108,372 per annum`. The regex parser anchors on salary keywords (Salary:, Compensation:, per annum, + super, Band N -), rejects fundraising/AUM/revenue context, and refuses hourly/daily contractor rates to avoid mis-extrapolation.
+- **Infers salary from description text** when the structured field is null. AU listings notoriously bury comp in the body — `Band 8 - $123,558 to $138,752 + super` on council jobs, `$120k - $160k + super` from recruiters, `Salary: $100,066 - $108,372 per annum`. The regex parser anchors on salary keywords (Salary:, Compensation:, per annum, + super, Band N -), rejects fundraising/AUM/revenue context, and refuses hourly/daily contractor rates to avoid mis-extrapolation. Falls back to a stripped version of `description_html` when sources (Greenhouse, SmartRecruiters, APS Jobs) populate only HTML.
 - **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
 - **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The Jobs header surfaces a live "updated X mins ago" freshness chip so you can see the data is current at a glance. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
 
@@ -130,7 +130,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 680+ tests
+pytest -q                       # 695+ tests
 pytest --cov=jobai --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
@@ -139,6 +139,11 @@ ruff check . && ruff format --check .
 ```
 
 CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. New code lands at 100% coverage on the modules it touches — no exceptions, no `# pragma: no cover`.
+
+## Known limitations
+
+- **NSW Government (`iworkfor.nsw.gov.au`) is currently disabled.** The site moved behind Cloudflare's strict challenge mode in May 2026 and our browser tier (Patchright) doesn't bypass it reliably without paid proxy services. The source detects the `Just a moment...` interstitial and raises `NSWIWorkForBlockedError` instead of silently succeeding with zero jobs (the previous behaviour). Re-enable the rows in the `sources` table if/when CF backs off, or wire a proxy.
+- **Anonymous pagination caps.** Seek caps unauthenticated search at ~2,200 results per query, LinkedIn at ~1,000, Indeed varies. The walkers stop on the first empty page so we get whatever the site is willing to serve.
 
 ## License
 
