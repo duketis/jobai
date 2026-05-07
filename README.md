@@ -14,6 +14,7 @@ A local-first AI job-hunting agent for the Australian market. One process scrape
 
 - **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, all 5 AU state government boards (NSW / VIC / QLD / SA / WA), and the federal APS Jobs board.
 - **Deduplicates and best-of-merges** the same role across boards into one canonical row, with all source links preserved. When sources disagree (one has salary and one doesn't, one has a full description and one a teaser), per-field rules pick the richest value: longest description, earliest `posted_at`, first non-null salary.
+- **Infers salary from description text** when the structured field is null. AU listings notoriously bury comp in the body — `Band 8 - $123,558 to $138,752 + super` on council jobs, `$120k - $160k + super` from recruiters, `Salary: $100,066 - $108,372 per annum`. The regex parser anchors on salary keywords (Salary:, Compensation:, per annum, + super, Band N -), rejects fundraising/AUM/revenue context, and refuses hourly/daily contractor rates to avoid mis-extrapolation.
 - **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
 - **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The Jobs header surfaces a live "updated X mins ago" freshness chip so you can see the data is current at a glance. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
 
@@ -74,6 +75,8 @@ jobai serve                         Start the scheduler + HTTP API + agent.
 jobai run --source <kind>:<acct>    Run one source ad hoc.
 jobai run --enabled                 Run every enabled source sequentially.
 jobai reconcile                     Re-run cross-source fuzzy reconciliation.
+jobai infer-remote                  Backfill remote_type for jobs missing one.
+jobai infer-salary                  Backfill salary fields from description text.
 jobai source sync                   Upsert source rows from companies.yaml.
 jobai source list                   List configured sources.
 jobai source enable <name>          Re-enable a disabled source.
@@ -127,7 +130,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 640+ tests
+pytest -q                       # 680+ tests
 pytest --cov=jobai --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
