@@ -167,15 +167,15 @@ linkedin:
   - account: location=Australia
     display_name: LinkedIn — All jobs (Australia)
     default_tier: 3
-    cadence_seconds: 7200
+    cadence_seconds: 3600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia
     display_name: LinkedIn — All jobs (Melbourne)
     default_tier: 3
-    cadence_seconds: 7200
+    cadence_seconds: 3600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia
     display_name: LinkedIn — All jobs (Sydney)
     default_tier: 3
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
@@ -201,15 +201,15 @@ nsw_iworkfor:
   - account: jobs/all-keywords/all-agencies/all-organisations-entities/all-categories/all-locations/all-worktypes
     display_name: NSW Government — All open positions
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
   - account: jobs/all-keywords/health/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=1
     display_name: NSW Government — Health
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
   - account: jobs/all-keywords/education/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=7
     display_name: NSW Government — Education
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # QLD Government — smartjobs.qld.gov.au, an NGA Talent Solutions
 # board. The default unfiltered search-results URL is plain HTTP
@@ -218,7 +218,7 @@ qld_smartjobs:
   - account: "14904"
     display_name: QLD Government — All open positions
     default_tier: 1
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # VIC Government — jobs.careers.vic.gov.au, also an NGA Talent
 # Solutions board but its deployment requires submitting the search
@@ -230,7 +230,7 @@ vic_careers:
   - account: "14123"
     display_name: VIC Government — All open positions
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # SA Government — iworkfor.sa.gov.au. Behind a search form whose
 # submit button is #brsSearchBtn; results render into a
@@ -240,7 +240,7 @@ sa_iworkfor:
   - account: jb/list/all
     display_name: SA Government — All open positions
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # WA Government — search.jobs.wa.gov.au, same Report-table pattern
 # as SA after a form submit. Driven via run_in_page() form-fill.
@@ -248,7 +248,7 @@ wa_jobs:
   - account: page.php?pageID=215
     display_name: WA Government — All open positions
     default_tier: 2
-    cadence_seconds: 7200
+    cadence_seconds: 3600
 
 # APS Jobs (federal AU public service). The Salesforce Lightning
 # rewrite replays the retrieveJobListings Apex action over plain
@@ -259,4 +259,4 @@ apsjobs:
   - account: ""
     display_name: APS Jobs — All open positions
     default_tier: 1
-    cadence_seconds: 7200
+    cadence_seconds: 3600
