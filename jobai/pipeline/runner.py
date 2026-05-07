@@ -33,7 +33,7 @@ from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
 from jobai.pipeline.remote_inference import infer_remote_type
-from jobai.pipeline.salary_inference import infer_salary
+from jobai.pipeline.salary_inference import infer_salary, text_from_html
 from jobai.pipeline.schema_change import (
     FieldChange,
     FieldStats,
@@ -198,9 +198,15 @@ def _ensure_salary(job: NormalizedJob) -> NormalizedJob:
     """
     if job.salary_min is not None or job.salary_max is not None:
         return job
+    # Fall back to stripped description_html when the source only
+    # populates one description column (Greenhouse, SmartRecruiters,
+    # APS Jobs all hand us HTML-only).
+    description = job.description_text
+    if not description and job.description_html:
+        description = text_from_html(job.description_html)
     salary_min, salary_max, currency = infer_salary(
         title=job.title,
-        description=job.description_text,
+        description=description,
     )
     if salary_min is None and salary_max is None:
         return job

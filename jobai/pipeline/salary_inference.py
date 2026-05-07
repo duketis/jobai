@@ -34,6 +34,9 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
+from typing import cast
+
+from selectolax.parser import HTMLParser, Node
 
 _log = logging.getLogger(__name__)
 
@@ -293,6 +296,42 @@ def _slice(haystack: str, match: re.Match[str], radius: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# HTML -> text fallback
+#
+# Most ATS sources (Greenhouse, SmartRecruiters, APS Jobs) emit only
+# ``description_html`` and leave ``description_text`` null. Stripping
+# tags lets the parser scan their bodies the same way it scans the
+# text-only sources (Ashby, Seek, LinkedIn, Indeed). The strip is
+# selectolax-based - same dependency the source parsers use - so we
+# don't pull in BeautifulSoup just for this.
+# ---------------------------------------------------------------------------
+
+
+def text_from_html(html: str) -> str:
+    """Return a plain-text rendering of ``html`` for the salary parser.
+
+    Drops script/style content (it's never copy a candidate would
+    read), then takes the rest of the body's text. selectolax's
+    ``Node.text(deep=True, separator=' ')`` collapses whitespace
+    well enough for our regex; we don't need to preserve formatting.
+    """
+    if not html:
+        return ""
+    tree = HTMLParser(html)
+    for tag in tree.css("script, style"):
+        tag.decompose()
+    # selectolax always sets ``tree.root`` after parsing a non-empty
+    # input; ``tree.body`` is None for fragments without a ``<body>``
+    # tag (rare but possible for stripped ATS payloads), in which case
+    # we fall back to the document root. The type stubs widen ``root``
+    # to ``Node | None`` for completeness, but the early-return on
+    # empty input above guarantees we never see None here, so we cast
+    # rather than carry an untestable branch through the parser.
+    node = cast("Node", tree.body or tree.root)
+    return node.text(deep=True, separator=" ").strip()
+
+
+# ---------------------------------------------------------------------------
 # Backfill
 # ---------------------------------------------------------------------------
 
@@ -317,7 +356,7 @@ def backfill_salaries(
     Pass ``limit`` to bound a single pass.
     """
     sql = (
-        "SELECT id, title, description_text "
+        "SELECT id, title, description_text, description_html "
         "FROM jobs "
         "WHERE salary_min IS NULL AND salary_max IS NULL "
         "ORDER BY last_seen_at DESC"
@@ -329,9 +368,17 @@ def backfill_salaries(
     updated = 0
     for row in rows:
         job_id = int(row[0])
+        title = row[1]
+        text = row[2] or ""
+        html = row[3] or ""
+        # Fall back to a stripped version of description_html when the
+        # plain-text column is empty - covers Greenhouse / SmartRecruiters /
+        # APS Jobs rows whose source only populates one description column.
+        if not text and html:
+            text = text_from_html(html)
         salary_min, salary_max, currency = infer_salary(
-            title=row[1],
-            description=row[2],
+            title=title,
+            description=text,
         )
         if salary_min is None and salary_max is None:
             continue

@@ -397,3 +397,40 @@ async def test_run_source_leaves_salary_null_when_description_has_no_signal(
     row = conn.execute("SELECT salary_min, salary_max FROM jobs").fetchone()
     assert row["salary_min"] is None
     assert row["salary_max"] is None
+
+
+async def test_run_source_falls_back_to_html_when_text_description_is_null(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """Greenhouse / SmartRecruiters / APS Jobs all populate
+    ``description_html`` but leave ``description_text`` null. The
+    runner must strip the HTML before handing it to the salary
+    parser, otherwise the inference misses every job from these
+    sources."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Atlassian",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        description_text=None,
+        description_html=(
+            "<div><h2>About the role</h2>"
+            "<p>Compensation: $130,000 - $170,000 per annum + super.</p>"
+            "</div>"
+        ),
+    )
+    source = _FixedSource("atlassian", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    row = conn.execute("SELECT salary_min, salary_max, salary_currency FROM jobs").fetchone()
+    assert row["salary_min"] == 130_000
+    assert row["salary_max"] == 170_000
+    assert row["salary_currency"] == "AUD"

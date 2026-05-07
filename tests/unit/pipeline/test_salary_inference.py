@@ -19,6 +19,7 @@ from jobai.db.migrations import apply_pending
 from jobai.pipeline.salary_inference import (
     backfill_salaries,
     infer_salary,
+    text_from_html,
 )
 from jobai.sources.repository import upsert_source
 
@@ -333,6 +334,121 @@ def test_infer_salary_rejects_range_without_salary_context() -> None:
         description="Cost: $50,000 - $100,000 for the renovation budget.",
     )
     assert result == (None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# HTML -> text helper
+#
+# Greenhouse / SmartRecruiters / APS Jobs all populate description_html
+# but leave description_text null. The salary parser only reads text,
+# so we have to strip tags before we can scan for a salary marker.
+# ---------------------------------------------------------------------------
+
+
+def test_text_from_html_returns_empty_for_empty_input() -> None:
+    assert text_from_html("") == ""
+
+
+def test_text_from_html_strips_tags_and_collapses_whitespace() -> None:
+    html = (
+        "<div><p>Senior Python Engineer at Atlassian.</p>"
+        "<p>Salary: <strong>$120,000 - $160,000</strong> per annum.</p></div>"
+    )
+    text = text_from_html(html)
+    assert "Senior Python Engineer at Atlassian." in text
+    assert "Salary:" in text
+    assert "$120,000 - $160,000" in text
+
+
+def test_text_from_html_handles_fragment_without_body_tag() -> None:
+    """ATS payloads sometimes ship raw HTML fragments without a
+    ``<body>`` wrapper. selectolax returns ``None`` for ``tree.body``
+    on these, so we fall back to ``tree.root`` instead of crashing or
+    silently returning empty."""
+    fragment = "<p>Compensation: $90,000 per annum.</p><p>Sydney based.</p>"
+    text = text_from_html(fragment)
+    assert "Compensation: $90,000 per annum." in text
+    assert "Sydney based." in text
+
+
+def test_text_from_html_drops_script_and_style_content() -> None:
+    """``<script>`` content occasionally contains JSON with $-amounts
+    (analytics payloads, schema.org). Stripping the tag wholesale
+    avoids the parser misreading those numbers as salary."""
+    html = (
+        "<html><head><style>.salary{color:red;}</style></head>"
+        "<body><script>var price = '$50000';</script>"
+        "<p>Salary: $90,000 per annum.</p></body></html>"
+    )
+    text = text_from_html(html)
+    assert "$50000" not in text
+    assert ".salary{color:red;}" not in text
+    assert "Salary: $90,000 per annum." in text
+
+
+def test_backfill_falls_back_to_description_html_when_text_is_null(
+    conn: sqlite3.Connection,
+    source_id: int,
+) -> None:
+    """Greenhouse / SmartRecruiters / APS rows have HTML-only
+    descriptions. The backfill must strip the HTML and feed the
+    parser, otherwise the parser misses every job from these
+    sources."""
+    job_id = _seed(
+        conn,
+        dedup_key="a",
+        description_text=None,
+        # Bypassing the kwarg list since _seed's signature doesn't
+        # take description_html - inserting via direct SQL update.
+    )
+    conn.execute(
+        "UPDATE jobs SET description_html = ? WHERE id = ?",
+        (
+            "<div><h2>Engineer</h2><p>Compensation: $130,000 - $170,000 per annum.</p></div>",
+            job_id,
+        ),
+    )
+    conn.commit()
+
+    result = backfill_salaries(conn)
+
+    assert result.updated == 1
+    row = conn.execute(
+        "SELECT salary_min, salary_max, salary_currency FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row["salary_min"] == 130_000
+    assert row["salary_max"] == 170_000
+    assert row["salary_currency"] == "AUD"
+
+
+def test_backfill_prefers_description_text_when_present_alongside_html(
+    conn: sqlite3.Connection,
+    source_id: int,
+) -> None:
+    """If both columns are populated, ``description_text`` is the
+    authoritative copy - no point round-tripping through HTML strip
+    when we already have the plain text."""
+    job_id = _seed(
+        conn,
+        dedup_key="a",
+        description_text="Salary: $100,000 - $120,000 per annum.",
+    )
+    conn.execute(
+        "UPDATE jobs SET description_html = ? WHERE id = ?",
+        # Different numbers in the HTML so we can prove text won
+        ("<p>Salary: $999,999 per annum.</p>", job_id),
+    )
+    conn.commit()
+
+    backfill_salaries(conn)
+
+    row = conn.execute(
+        "SELECT salary_min, salary_max FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row["salary_min"] == 100_000
+    assert row["salary_max"] == 120_000
 
 
 # ---------------------------------------------------------------------------
