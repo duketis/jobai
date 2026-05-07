@@ -301,3 +301,99 @@ async def test_run_source_records_raw_responses_via_recording_fetcher(
         (result.run_id,),
     ).fetchone()[0]
     assert raw_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Inference: ``_ensure_salary`` integration in the run loop
+# ---------------------------------------------------------------------------
+
+
+async def test_run_source_fills_in_salary_from_description_when_source_omits_it(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """If the source emits a job with no structured salary but the
+    description carries one, the runner must persist the parsed salary
+    on the canonical row."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Atlassian",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        description_text="Salary: $140,000 - $180,000 per annum + super.",
+    )
+    source = _FixedSource("atlassian", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    row = conn.execute("SELECT salary_min, salary_max, salary_currency FROM jobs").fetchone()
+    assert row["salary_min"] == 140_000
+    assert row["salary_max"] == 180_000
+    assert row["salary_currency"] == "AUD"
+
+
+async def test_run_source_preserves_structured_salary_from_source(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """Sources that DO surface a structured salary (Ashby, APS Jobs)
+    must pass through untouched — the inference is a fallback, not an
+    override."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Atlassian",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        salary_min=200_000,
+        salary_max=250_000,
+        salary_currency="USD",
+        description_text="Salary: $140,000 - $180,000 per annum + super.",
+    )
+    source = _FixedSource("atlassian", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    row = conn.execute("SELECT salary_min, salary_max, salary_currency FROM jobs").fetchone()
+    assert row["salary_min"] == 200_000
+    assert row["salary_max"] == 250_000
+    assert row["salary_currency"] == "USD"
+
+
+async def test_run_source_leaves_salary_null_when_description_has_no_signal(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """No salary on source + no parseable signal in description → null
+    stays null. The pass must not invent numbers to fill the schema."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Atlassian",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        description_text="Great team, fully remote, lots of ownership.",
+    )
+    source = _FixedSource("atlassian", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    row = conn.execute("SELECT salary_min, salary_max FROM jobs").fetchone()
+    assert row["salary_min"] is None
+    assert row["salary_max"] is None

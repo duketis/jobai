@@ -33,6 +33,7 @@ from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
 from jobai.pipeline.remote_inference import infer_remote_type
+from jobai.pipeline.salary_inference import infer_salary
 from jobai.pipeline.schema_change import (
     FieldChange,
     FieldStats,
@@ -106,6 +107,10 @@ async def run_source(
             # else gets the heuristic over title + description +
             # location, defaulting to onsite when nothing matches.
             promotable = _ensure_remote_type(job)
+            # Mirror the same pattern for salary: if the source already
+            # surfaced a structured salary, leave it alone; otherwise
+            # try to infer one from the title + description text.
+            promotable = _ensure_salary(promotable)
             promote_to_canonical_jobs(
                 conn,
                 source_id=source_row.id,
@@ -180,6 +185,31 @@ def _ensure_remote_type(job: NormalizedJob) -> NormalizedJob:
         location=job.location_raw,
     )
     return dataclasses.replace(job, remote_type=inferred)
+
+
+def _ensure_salary(job: NormalizedJob) -> NormalizedJob:
+    """Return ``job`` with salary fields filled from text when absent.
+
+    Sources that surface a structured salary (Ashby's ``compensation``
+    block, APS Jobs' ``jobSalaryFrom`` / ``jobSalaryTo``, vic_careers'
+    salary cell) pass through untouched. Everyone else gets the
+    regex inference over title + description; rejection (no signal,
+    funding mention, hourly rate) leaves the fields null.
+    """
+    if job.salary_min is not None or job.salary_max is not None:
+        return job
+    salary_min, salary_max, currency = infer_salary(
+        title=job.title,
+        description=job.description_text,
+    )
+    if salary_min is None and salary_max is None:
+        return job
+    return dataclasses.replace(
+        job,
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_currency=currency,
+    )
 
 
 def _start_run(conn: sqlite3.Connection, *, source_id: int, tier: int) -> int:

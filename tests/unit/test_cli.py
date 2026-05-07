@@ -178,6 +178,56 @@ def test_reconcile_command_accepts_threshold_and_window_options(
     assert result.exit_code == 0, result.output
 
 
+def test_infer_salary_command_runs_against_empty_db(_isolated_db: Path) -> None:
+    """``jobai infer-salary`` on an empty DB reports zero updates, not a crash."""
+    runner.invoke(app, ["migrate"])
+
+    result = runner.invoke(app, ["infer-salary"])
+
+    assert result.exit_code == 0, result.output
+    assert "infer-salary: inspected 0, updated 0" in result.output
+
+
+def test_infer_salary_command_fills_in_salary_from_description(
+    _isolated_db: Path,
+) -> None:
+    """End-to-end CLI smoke: seed a row with a description that carries
+    a salary marker, run ``jobai infer-salary``, confirm the row
+    landed with the parsed numbers."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        conn.execute(
+            "INSERT INTO jobs ("
+            "  dedup_key, title, company, company_norm, apply_url, "
+            "  description_text, first_seen_at, last_seen_at, fingerprint_json"
+            ") VALUES ('k1', 'Engineer', 'Atlassian', 'atlassian', "
+            "'https://e.example/1', "
+            "'Salary: $120,000 - $160,000 per annum + super', "
+            "datetime('now'), datetime('now'), '{}')",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["infer-salary"])
+    assert result.exit_code == 0, result.output
+    assert "updated 1" in result.output
+
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        row = conn.execute("SELECT salary_min, salary_max, salary_currency FROM jobs").fetchone()
+        assert row == (120_000, 160_000, "AUD")
+    finally:
+        conn.close()
+
+
+def test_infer_salary_command_accepts_limit_option(_isolated_db: Path) -> None:
+    runner.invoke(app, ["migrate"])
+    result = runner.invoke(app, ["infer-salary", "--limit", "10"])
+    assert result.exit_code == 0, result.output
+
+
 def test_run_unknown_source_fails_cleanly(_isolated_db: Path) -> None:
     runner.invoke(app, ["migrate"])
 

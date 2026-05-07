@@ -31,6 +31,7 @@ from jobai.fetcher.dispatch import build_fetcher
 from jobai.observability.logging import configure_logging, get_logger
 from jobai.pipeline.remote_inference import backfill_remote_types
 from jobai.pipeline.runner import RunResult, run_source
+from jobai.pipeline.salary_inference import backfill_salaries
 from jobai.sources.base import BaseSource
 from jobai.sources.loader import DEFAULT_COMPANIES_YAML, sync_companies_yaml
 from jobai.sources.registry import get_source_class
@@ -150,6 +151,31 @@ def infer_remote(
         f"→ remote={result.by_value['remote']} "
         f"hybrid={result.by_value['hybrid']} "
         f"onsite={result.by_value['onsite']}",
+    )
+
+
+@app.command(name="infer-salary")
+def infer_salary_cmd(
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Cap the pass at N rows (default: all jobs lacking a salary).",
+    ),
+) -> None:
+    """Fill salary fields for every job whose source didn't surface one.
+
+    Walks ``jobs`` rows where both ``salary_min`` and ``salary_max``
+    are null, runs the regex parser over title + description, and
+    writes back ``(salary_min, salary_max, salary_currency)`` when
+    confident. Rows with no parseable signal stay null. Future
+    scrapes get the same treatment automatically inside the runner.
+    """
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    with connect(settings.db_path) as conn:
+        result = backfill_salaries(conn, limit=limit)
+    typer.echo(
+        f"infer-salary: inspected {result.inspected}, updated {result.updated}",
     )
 
 
