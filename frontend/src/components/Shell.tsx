@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Briefcase, MessageSquarePlus, Plus, Trash2 } from "lucide-react";
+import { Briefcase, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
 
@@ -161,6 +161,14 @@ function Sidebar() {
     navigate({ search: next.toString() ? `?${next.toString()}` : "" });
   }
 
+  /** Start a fresh chat AND focus the dock composer so the click feels alive. */
+  function newChat() {
+    selectChat(null);
+    // The chat dock listens for this and focuses its textarea. Custom
+    // event keeps Sidebar/ChatDock decoupled — no shared ref/context.
+    window.dispatchEvent(new Event("jobai:focus-composer"));
+  }
+
   return (
     <aside className="w-72 shrink-0 border-r border-border bg-card flex flex-col">
       <div className="p-4 border-b border-border">
@@ -170,19 +178,6 @@ function Sidebar() {
 
       <nav className="p-2 space-y-1">
         <SidebarLink to="/jobs" icon={<Briefcase className="size-4" />} label="Jobs" />
-        <button
-          type="button"
-          onClick={() => selectChat(null)}
-          className={cn(
-            "w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-            activeChatId === null
-              ? "bg-accent text-accent-foreground"
-              : "text-foreground/80 hover:bg-accent/50",
-          )}
-        >
-          <MessageSquarePlus className="size-4" />
-          New chat
-        </button>
       </nav>
 
       <div className="px-3 py-2 flex items-center justify-between">
@@ -191,9 +186,10 @@ function Sidebar() {
         </span>
         <button
           type="button"
-          onClick={() => selectChat(null)}
+          onClick={newChat}
           className="text-muted-foreground hover:text-foreground transition-colors"
           title="New conversation"
+          aria-label="Start a new conversation"
         >
           <Plus className="size-4" />
         </button>

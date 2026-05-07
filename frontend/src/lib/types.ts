@@ -109,6 +109,7 @@ export interface HealthSnapshot {
   sources_total: number;
   sources_enabled: number;
   sources_failing: number;
+  last_scrape_at: string | null;
   timestamp: string;
 }
 

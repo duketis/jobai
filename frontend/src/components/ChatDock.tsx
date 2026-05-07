@@ -65,6 +65,7 @@ export function ChatDock() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-scroll on new content (each token nudges the viewport).
   useEffect(() => {
@@ -76,6 +77,17 @@ export function ChatDock() {
   // Cancel an in-flight stream if the dock unmounts.
   useEffect(() => {
     return () => abortRef.current?.abort();
+  }, []);
+
+  // The Sidebar's "+" button dispatches this event when the user starts a
+  // new chat. Focusing the composer makes the click feel responsive — the
+  // URL change alone is invisible if the dock is already empty.
+  useEffect(() => {
+    function focusComposer() {
+      composerRef.current?.focus();
+    }
+    window.addEventListener("jobai:focus-composer", focusComposer);
+    return () => window.removeEventListener("jobai:focus-composer", focusComposer);
   }, []);
 
   /** Apply an agent tool call to the upper view. */
@@ -193,7 +205,27 @@ export function ChatDock() {
     }
   }
 
-  const persistedMessages = history?.messages ?? [];
+  // While a turn is streaming we render an optimistic user bubble inside
+  // ``StreamingMessage`` (so the dock doesn't sit empty between Send and the
+  // first SDK token). The backend persists the user message eagerly, so by
+  // the time history refetches mid-stream the same text can appear in
+  // ``history.messages`` *and* ``streaming.userMessage`` — which renders as
+  // a duplicate bubble. Strip the trailing persisted user message when its
+  // text matches the in-flight one to keep exactly one bubble on screen.
+  const persistedMessages = useMemo(() => {
+    const msgs = history?.messages ?? [];
+    if (!streaming) return msgs;
+    const last = msgs[msgs.length - 1];
+    if (!last || last.role !== "user") return msgs;
+    const lastText =
+      typeof last.content === "string"
+        ? last.content
+        : last.content
+            .filter((b) => b.type === "text")
+            .map((b) => (b.type === "text" ? b.text : ""))
+            .join("");
+    return lastText === streaming.userMessage ? msgs.slice(0, -1) : msgs;
+  }, [history?.messages, streaming]);
   const showEmptyHint = persistedMessages.length === 0 && !streaming && !error;
 
   /** Switch the active conversation while preserving non-chat URL params. */
@@ -248,6 +280,7 @@ export function ChatDock() {
         onChange={setInput}
         onSend={send}
         disabled={streaming !== null}
+        textareaRef={composerRef}
       />
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
@@ -664,16 +697,19 @@ function Composer({
   onChange,
   onSend,
   disabled,
+  textareaRef,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
   disabled: boolean;
+  textareaRef?: React.Ref<HTMLTextAreaElement>;
 }) {
   return (
     <div className="border-t border-border p-2.5">
       <div className="max-w-3xl mx-auto flex items-end gap-2">
         <textarea
+          ref={textareaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {

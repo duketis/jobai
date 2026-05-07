@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, ExternalLink, MapPin, Search } from "lucide-
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import { listJobs, type JobSort, type JobsListParams } from "@/lib/api";
+import { getHealth, listJobs, type JobSort, type JobsListParams } from "@/lib/api";
 import type { JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -169,6 +169,15 @@ export function JobsListPage() {
     placeholderData: keepPreviousData,
   });
 
+  // Surface "updated X mins ago" next to the count. Refetched every 30s so
+  // the freshness indicator advances without a full page reload.
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: getHealth,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
   const total = data?.total ?? 0;
   const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
 
@@ -180,6 +189,12 @@ export function JobsListPage() {
           {isLoading
             ? "Loading…"
             : `${total.toLocaleString()} matching${total === 1 ? " job" : " jobs"}`}
+          {!isLoading && health?.last_scrape_at && (
+            <span title={health.last_scrape_at}>
+              {" "}
+              (updated {formatRelative(health.last_scrape_at)})
+            </span>
+          )}
         </p>
       </header>
 
@@ -519,4 +534,25 @@ function formatPosted(iso: string): string {
   if (days < 30) return `${days}d ago`;
   if (days < 365) return `${Math.floor(days / 30)}mo ago`;
   return date.toLocaleDateString();
+}
+
+/**
+ * Minute/hour granularity for the "updated X mins ago" freshness chip on
+ * the Jobs header. Distinct from formatPosted (which floors to whole
+ * days) because scrape cadence is hourly, not daily.
+ */
+function formatRelative(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes === 1) return "1 min ago";
+  if (minutes < 60) return `${minutes} mins ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
 }
