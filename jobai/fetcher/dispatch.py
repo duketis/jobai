@@ -31,11 +31,17 @@ from jobai.fetcher.retry import RetryingFetcher
 from jobai.fetcher.stealth import build_stealth_fetcher
 
 
-def build_fetcher(*, tier: int) -> Fetcher:
+def build_fetcher(*, tier: int, persistent_session: bool = False) -> Fetcher:
     """Return a configured :class:`Fetcher` for ``tier``.
 
     Caller is responsible for closing the returned fetcher (call
     ``await fetcher.aclose()`` or use it as an async context manager).
+
+    ``persistent_session=True`` is only meaningful for tier 3
+    (stealth) and tells the underlying browser to keep one context
+    alive across all fetches in this fetcher's lifetime - required
+    for Cloudflare-protected sources where the ``cf_clearance``
+    cookie is tied to the TLS handshake of the issuing context.
     """
     if tier == 1:
         return RetryingFetcher(HttpFetcher())
@@ -46,6 +52,6 @@ def build_fetcher(*, tier: int) -> Fetcher:
             fallback_factory=BrowserFetcher,
         )
     if tier == 3:
-        return RetryingFetcher(build_stealth_fetcher())
+        return RetryingFetcher(build_stealth_fetcher(persistent_session=persistent_session))
     msg = f"unknown fetcher tier: {tier} (expected 1, 2, or 3)"
     raise ValueError(msg)

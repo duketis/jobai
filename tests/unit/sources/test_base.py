@@ -73,3 +73,37 @@ def test_base_source_cannot_be_instantiated_without_discover() -> None:
 
     with pytest.raises(TypeError, match="abstract"):
         _Incomplete()  # type: ignore[abstract]
+
+
+def test_base_source_needs_persistent_session_defaults_to_false() -> None:
+    """Most sources don't need session persistence - the runner should
+    build per-fetch contexts (cheap, isolated) by default."""
+
+    class _Boring(BaseSource):
+        kind = "boring"
+        account = ""
+
+        def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
+            del fetcher
+            raise NotImplementedError
+
+    assert _Boring.needs_persistent_session is False
+    assert _Boring().needs_persistent_session is False
+
+
+def test_base_source_subclass_can_opt_in_to_persistent_session() -> None:
+    """Cloudflare-protected sources opt in via the class attribute so
+    the runner picks the long-lived browser context tier when
+    constructing the fetcher."""
+
+    class _CloudflareFronted(BaseSource):
+        kind = "cf_fronted"
+        account = ""
+        needs_persistent_session = True
+
+        def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
+            del fetcher
+            raise NotImplementedError
+
+    assert _CloudflareFronted.needs_persistent_session is True
+    assert _CloudflareFronted().needs_persistent_session is True

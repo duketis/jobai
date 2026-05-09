@@ -21,13 +21,17 @@ from patchright.async_api import async_playwright as patchright_playwright
 from jobai import __version__
 from jobai.fetcher.browser import BrowserFetcher, PlaywrightDriver
 
-#: Suffixed with ``patchright`` so traffic logs distinguish stealth
-#: traffic from vanilla browser-tier traffic during incident triage.
+#: A vanilla Chrome User-Agent string. **Critical:** do NOT append
+#: ``jobai/...`` or ``(patchright)`` here - any non-browser token
+#: makes Cloudflare's strict-mode bot detection fire instantly. We
+#: identify our traffic via the ``raw_responses`` table (which
+#: records every fetch with the source/tier metadata) instead.
 _STEALTH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    f"Chrome/120.0.0.0 Safari/537.36 jobai/{__version__} (patchright)"
+    "Chrome/127.0.0.0 Safari/537.36"
 )
+_ = __version__  # keep the import; deliberately unused in the UA
 
 
 def build_stealth_fetcher(
@@ -35,6 +39,7 @@ def build_stealth_fetcher(
     timeout: float = 30.0,
     headless: bool = True,
     user_agent: str = _STEALTH_USER_AGENT,
+    persistent_session: bool = False,
 ) -> BrowserFetcher:
     """Construct a :class:`BrowserFetcher` driven by Patchright.
 
@@ -42,10 +47,17 @@ def build_stealth_fetcher(
     accepts the :class:`Fetcher` Protocol works unchanged. The only
     difference from the tier-2 ``BrowserFetcher()`` constructor is
     the underlying playwright-compatible runtime.
+
+    ``persistent_session=True`` keeps a single browser context alive
+    across all fetches via the same fetcher instance - required for
+    Cloudflare-protected sources where the ``cf_clearance`` cookie
+    is tied to the TLS handshake of the context that obtained it.
+    See :class:`PlaywrightDriver` for details.
     """
     driver = PlaywrightDriver(
         user_agent=user_agent,
         headless=headless,
         playwright_factory=patchright_playwright,
+        persistent_session=persistent_session,
     )
     return BrowserFetcher(timeout=timeout, driver=driver)

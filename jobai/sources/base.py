@@ -72,6 +72,14 @@ class BaseSource(ABC):
 
     kind: str
 
+    #: Whether the runner should build the fetcher with a single
+    #: long-lived browser context shared across all fetches in this
+    #: source's run. Required for Cloudflare-protected sources where
+    #: the ``cf_clearance`` cookie is bound to the TLS handshake of
+    #: the issuing context. Per-source default: False (per-fetch
+    #: contexts are right for everyone except CF-fronted sources).
+    needs_persistent_session: bool = False
+
     def __init__(self, account: str = "") -> None:
         self.account = account
 

@@ -36,12 +36,21 @@ def test_build_stealth_fetcher_uses_patchright_factory() -> None:
         assert factory is mock_factory
 
 
-def test_build_stealth_fetcher_default_user_agent_marks_patchright() -> None:
-    """The UA includes 'patchright' so traffic logs can distinguish tiers."""
+def test_build_stealth_fetcher_default_user_agent_is_clean_browser_string() -> None:
+    """The default UA must NOT carry any bot-identifying tokens
+    (``jobai/...``, ``patchright``, ``bot``, etc.) - Cloudflare's
+    strict-mode detection fires on any non-browser string. Tier
+    distinction lives in the ``raw_responses`` table now, not the UA."""
     fetcher = build_stealth_fetcher()
     _, driver = _peek(fetcher)
     user_agent, _, _ = _driver_internals(driver)
-    assert "patchright" in user_agent.lower()
+    lowered = user_agent.lower()
+    for forbidden in ("patchright", "jobai", "bot", "scraper", "crawler", "spider"):
+        assert forbidden not in lowered, f"UA must not include {forbidden!r}: {user_agent!r}"
+    # Must look like a real Chrome on macOS.
+    assert "mozilla" in lowered
+    assert "chrome" in lowered
+    assert "applewebkit" in lowered
 
 
 def test_build_stealth_fetcher_accepts_overrides() -> None:
@@ -55,3 +64,21 @@ def test_build_stealth_fetcher_accepts_overrides() -> None:
     assert timeout == 45.0
     assert user_agent == "custom-ua"
     assert headless is False
+
+
+def test_build_stealth_fetcher_persistent_session_off_by_default() -> None:
+    """Per-fetch contexts are right for the common case - sharing a
+    context across unrelated sources risks cookie/auth pollution.
+    Persistent mode must be opt-in."""
+    fetcher = build_stealth_fetcher()
+    _, driver = _peek(fetcher)
+    assert driver._persistent_session is False
+
+
+def test_build_stealth_fetcher_propagates_persistent_session_flag() -> None:
+    """``persistent_session=True`` must reach the underlying driver so
+    Cloudflare-protected sources (NSW iworkfor) get a long-lived
+    context that holds the cleared TLS handshake state."""
+    fetcher = build_stealth_fetcher(persistent_session=True)
+    _, driver = _peek(fetcher)
+    assert driver._persistent_session is True

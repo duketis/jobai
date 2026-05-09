@@ -82,9 +82,21 @@ class PlaywrightDriver:
 
     Lazy launch keeps the fetcher cheap to construct (no Playwright
     process started until the first fetch). A single :class:`Browser`
-    is reused across requests; each call gets a fresh
-    :class:`BrowserContext` so cookies / localStorage do not leak
-    between sources.
+    is reused across requests.
+
+    Two context modes:
+
+    * **Per-fetch (default)** — each call gets a fresh
+      :class:`BrowserContext` so cookies / localStorage do not leak
+      between sources. Right for the common case.
+    * **Session-persistent** (``persistent_session=True``) — one
+      context lives for the lifetime of the driver. All fetches
+      share cookies, localStorage, and (importantly) the TLS
+      handshake state Cloudflare ties its ``cf_clearance`` cookie
+      to. Solves CF once at the start of a scrape run instead of
+      hitting the challenge interstitial on every request. Use for
+      CF-protected sources only - sharing state across unrelated
+      sources risks cookie pollution.
     """
 
     def __init__(
@@ -93,12 +105,15 @@ class PlaywrightDriver:
         user_agent: str = _DEFAULT_USER_AGENT,
         headless: bool = True,
         playwright_factory: Any = async_playwright,
+        persistent_session: bool = False,
     ) -> None:
         self._user_agent = user_agent
         self._headless = headless
         self._factory = playwright_factory
+        self._persistent_session = persistent_session
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._persistent_context: Any = None  # BrowserContext when persistent_session
         self._init_lock = asyncio.Lock()
 
     async def _ensure_browser(self) -> Browser:
@@ -110,6 +125,27 @@ class PlaywrightDriver:
                 )
             return self._browser
 
+    async def _get_context(self) -> Any:
+        """Return a context for the next fetch.
+
+        In per-fetch mode (default) this is a fresh context the caller
+        is responsible for closing. In session-persistent mode it's
+        the long-lived shared context that lives until ``close()``;
+        the caller MUST NOT close it.
+        """
+        browser = await self._ensure_browser()
+        if not self._persistent_session:
+            return await browser.new_context(user_agent=self._user_agent)
+        # Persistent: lazily construct once, reuse on every call.
+        if self._persistent_context is None:
+            async with self._init_lock:
+                if self._persistent_context is None:
+                    self._persistent_context = await browser.new_context(
+                        user_agent=self._user_agent,
+                        viewport={"width": 1280, "height": 800},
+                    )
+        return self._persistent_context
+
     async def fetch_page(
         self,
         url: str,
@@ -118,14 +154,23 @@ class PlaywrightDriver:
         timeout_ms: float,
         wait_for_selector: str | None = None,
     ) -> Response:
-        browser = await self._ensure_browser()
-        context = await browser.new_context(user_agent=self._user_agent)
+        context = await self._get_context()
+        # In persistent mode the context is shared - never close it
+        # here; close() takes care of it on driver shutdown.
+        close_context = not self._persistent_session
         try:
             page = await context.new_page()
             if headers:
                 await page.set_extra_http_headers(dict(headers))
-            response = await page.goto(url, timeout=timeout_ms)
-            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            # ``wait_until='networkidle'`` BLOCKS goto until the network
+            # is idle for 500ms, which forces SPA initial XHRs to
+            # complete BEFORE we proceed. Doing it as a separate
+            # ``wait_for_load_state('networkidle')`` after a default
+            # goto returns immediately when the empty shell DOM
+            # reaches idle - missing the SPA's data fetch entirely.
+            # Also gives Cloudflare's challenge JS time to solve and
+            # redirect on protected sources.
+            response = await page.goto(url, timeout=timeout_ms, wait_until="networkidle")
             if wait_for_selector is not None:
                 # Wait for the SPA to populate the requested selector
                 # (Next.js / Salesforce Lightning / React lazy-load
@@ -134,6 +179,13 @@ class PlaywrightDriver:
                 # raising — better than zero data on the first cycle.
                 with contextlib.suppress(Exception):
                     await page.wait_for_selector(wait_for_selector, timeout=timeout_ms)
+            # Post-load grace period: some SPAs (NSW iworkfor's Angular
+            # app, ad-core04 backed) authenticate-then-fetch-then-render
+            # after networkidle reports settled. Wait an extra beat so
+            # we snapshot the fully-rendered DOM, not a transient state.
+            # 2s is short enough not to hurt fast sources but covers
+            # the "render right after the auth XHR returns" window.
+            await page.wait_for_timeout(2000)
             html = await page.content()
 
             if response is None:
@@ -156,7 +208,13 @@ class PlaywrightDriver:
                 fetched_at=datetime.now(tz=UTC),
             )
         finally:
-            await context.close()
+            if close_context:
+                await context.close()
+            else:
+                # Persistent mode: leave context alive but free the
+                # page so we don't leak tabs across fetches.
+                with contextlib.suppress(Exception):
+                    await page.close()
 
     async def run_in_page(
         self,
@@ -174,12 +232,12 @@ class PlaywrightDriver:
         :meth:`fetch_page`); the fetcher snapshots ``page.content()``
         when the script returns.
         """
-        browser = await self._ensure_browser()
-        context = await browser.new_context(user_agent=self._user_agent)
+        context = await self._get_context()
+        close_context = not self._persistent_session
         try:
             page = await context.new_page()
             response = await page.goto(url, timeout=timeout_ms)
-            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            await page.wait_for_load_state("networkidle", timeout=timeout_ms)
             await page_script(page)
             html = await page.content()
             status = response.status if response is not None else 0
@@ -192,9 +250,17 @@ class PlaywrightDriver:
                 fetched_at=datetime.now(tz=UTC),
             )
         finally:
-            await context.close()
+            if close_context:
+                await context.close()
+            else:
+                with contextlib.suppress(Exception):
+                    await page.close()
 
     async def close(self) -> None:
+        if self._persistent_context is not None:
+            with contextlib.suppress(Exception):
+                await self._persistent_context.close()
+            self._persistent_context = None
         if self._browser is not None:
             await self._browser.close()
             self._browser = None
