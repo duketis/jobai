@@ -208,7 +208,10 @@ async def run_source_by_id(source_id: int, db_path: Path) -> RunResult | None:
             return None
 
         source = source_class(account=row.account)
-        fetcher = build_fetcher(tier=row.default_tier)
+        fetcher = build_fetcher(
+            tier=row.default_tier,
+            persistent_session=getattr(source, "needs_persistent_session", False),
+        )
         try:
             return await run_source(
                 conn=conn,

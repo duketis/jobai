@@ -38,12 +38,12 @@ from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://iworkfor.nsw.gov.au"
 
-#: CSS selector the browser tier waits for after navigation. Picking
-#: ``article.search-job-card`` over a generic ``a[href^="/job/"]``
-#: means the wait completes only when the card list has actually
-#: rendered (the Next.js app sometimes paints a loading spinner with
-#: ``/job/`` links visible in skeleton state).
-_WAIT_SELECTOR = "article.search-job-card"
+#: CSS selector the browser tier waits for after navigation. The
+#: Next.js SPA renders job links as ``a[href^="/job/"]`` once the
+#: backing API call completes; we wait on the link rather than the
+#: old ``article.search-job-card`` selector (the post-CF redesign
+#: dropped that wrapper).
+_WAIT_SELECTOR = 'a[href^="/job/"]'
 
 #: NSW iworkfor renders ~15 results per page; five pages is enough
 #: depth without burning the browser fetcher on a long tail.
@@ -113,6 +113,14 @@ class NSWIWorkForSource(BaseSource):
     """
 
     kind = "nsw_iworkfor"
+    # iworkfor.nsw.gov.au is fronted by Cloudflare's strict challenge
+    # mode. The challenge resolves on a real browser context and
+    # binds ``cf_clearance`` to that context's TLS handshake; a
+    # per-fetch context would re-trigger the challenge on every
+    # request. ``needs_persistent_session=True`` keeps one context
+    # alive across all NSW fetches so we solve CF once per scrape
+    # cycle and ride it through pagination.
+    needs_persistent_session = True
 
     def __init__(self, account: str = "", *, max_pages: int = DEFAULT_MAX_PAGES) -> None:
         super().__init__(account)

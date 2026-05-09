@@ -194,21 +194,17 @@ indeed:
     default_tier: 2
     cadence_seconds: 3600
 
-# NSW Government — iworkfor.nsw.gov.au, a Next.js SPA. Browser
-# tier with wait_for_selector lands the rendered job-card list. Each
-# slug below is the URL path fragment after iworkfor.nsw.gov.au/.
+# NSW Government — iworkfor.nsw.gov.au, a Next.js SPA fronted by
+# Cloudflare strict-challenge mode (May 2026 onward). The source
+# class declares ``needs_persistent_session = True`` so the runner
+# builds a tier-3 fetcher with one long-lived browser context;
+# Cloudflare's challenge resolves once at the start of each scrape
+# cycle and the cleared session walks every paginated request.
+# Account is the URL path fragment after iworkfor.nsw.gov.au/.
 nsw_iworkfor:
-  - account: jobs/all-keywords/all-agencies/all-organisations-entities/all-categories/all-locations/all-worktypes
+  - account: jobs
     display_name: NSW Government — All open positions
-    default_tier: 2
-    cadence_seconds: 3600
-  - account: jobs/all-keywords/health/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=1
-    display_name: NSW Government — Health
-    default_tier: 2
-    cadence_seconds: 3600
-  - account: jobs/all-keywords/education/all-organisations-entities/all-categories/all-locations/all-worktypes?divisionid=7
-    display_name: NSW Government — Education
-    default_tier: 2
+    default_tier: 3
     cadence_seconds: 3600
 
 # QLD Government — smartjobs.qld.gov.au, an NGA Talent Solutions

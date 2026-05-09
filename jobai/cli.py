@@ -312,7 +312,10 @@ async def _run_one_by_name(db_path: Path, *, name: str) -> RunResult:
     with connect(db_path) as conn:
         source_row = get_source_by_name(conn, kind=kind, account=account)
         source = _instantiate_source(source_row)
-        fetcher = build_fetcher(tier=source_row.default_tier)
+        fetcher = build_fetcher(
+            tier=source_row.default_tier,
+            persistent_session=getattr(source, "needs_persistent_session", False),
+        )
         try:
             result = await run_source(
                 conn=conn,
@@ -334,7 +337,10 @@ async def _run_all_enabled(db_path: Path) -> list[tuple[str, RunResult]]:
 
     for source_row in rows:
         source = _instantiate_source(source_row)
-        fetcher = build_fetcher(tier=source_row.default_tier)
+        fetcher = build_fetcher(
+            tier=source_row.default_tier,
+            persistent_session=getattr(source, "needs_persistent_session", False),
+        )
         try:
             with connect(db_path) as conn:
                 result = await run_source(

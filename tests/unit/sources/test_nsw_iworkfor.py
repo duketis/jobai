@@ -307,3 +307,13 @@ def test_parse_salary_handles_unit_dollars() -> None:
 def test_parse_salary_returns_none_when_no_digits() -> None:
     assert _parse_salary("Negotiable") == (None, None, None)
     assert _parse_salary(None) == (None, None, None)
+
+
+def test_nsw_iworkfor_source_declares_needs_persistent_session() -> None:
+    """NSW iworkfor.nsw.gov.au is fronted by Cloudflare strict-challenge
+    mode. The cleared ``cf_clearance`` cookie is bound to the TLS
+    handshake of the issuing context, so the runner MUST build a
+    long-lived shared context. Pin this so a refactor that drops the
+    flag gets caught immediately."""
+    assert NSWIWorkForSource.needs_persistent_session is True
+    assert NSWIWorkForSource(account="jobs").needs_persistent_session is True
