@@ -30,6 +30,14 @@ from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://iworkfor.sa.gov.au"
 _DEFAULT_PATH = "/jb/list/all"
+#: Results per page on the SA iworkfor portal. The site's pagination
+#: control (``Next`` link) jumps the offset by 20 per click via the
+#: ``jnext_prev(N)`` JS function.
+_PAGE_SIZE = 20
+#: Hard cap on pagination hops per scrape. The walker stops on the
+#: first page that yields no new ids; the cap is just a guard
+#: against runaway loops on a UI change.
+_DEFAULT_MAX_PAGES = 100
 
 
 class SAIWorkForFetchError(RuntimeError):
@@ -51,8 +59,17 @@ class SAIWorkForSource(BaseSource):
 
     kind = "sa_iworkfor"
 
-    def __init__(self, account: str = "") -> None:
+    def __init__(
+        self,
+        account: str = "",
+        *,
+        max_pages: int = _DEFAULT_MAX_PAGES,
+    ) -> None:
         super().__init__(account or _DEFAULT_PATH.lstrip("/"))
+        if max_pages < 1:
+            msg = f"max_pages must be >= 1, got {max_pages}"
+            raise ValueError(msg)
+        self._max_pages = max_pages
 
     async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
         run_in_page = getattr(fetcher, "run_in_page", None)
@@ -63,7 +80,8 @@ class SAIWorkForSource(BaseSource):
             )
             raise TypeError(msg)
         url = f"{_BASE_URL}/{self.account.lstrip('/')}"
-        response = await run_in_page(url, page_script=_submit_search_form)
+        page_script = _walk_all_pages(self._max_pages)
+        response = await run_in_page(url, page_script=page_script)
         if not response.is_ok:
             raise SAIWorkForFetchError(self.account, response.status_code)
 
@@ -77,14 +95,88 @@ class SAIWorkForSource(BaseSource):
             yield job
 
 
-async def _submit_search_form(page: Page) -> None:
-    """Click SA's ``#brsSearchBtn`` button to trigger the search."""
-    with contextlib.suppress(Exception):
-        await page.click("#brsSearchBtn", timeout=15_000)
-    with contextlib.suppress(Exception):
-        await page.wait_for_selector(
-            "table.Report tr.oddrow, table.Report tr.evenrow", timeout=20_000
-        )
+def _walk_all_pages(max_pages: int) -> PageScript:
+    """Build a Playwright page-script that walks every paginated page.
+
+    Returns a coroutine that drives SA's iworkfor pagination control:
+    click Search to get page 1, then loop calling ``jnext_prev(N)``
+    (the site's own pagination JS function) for each subsequent
+    offset. Each page's ``<tr>`` rows are appended into the current
+    DOM so the final ``page.content()`` snapshot contains every row
+    across all pages.
+    """
+
+    async def script(page: Page) -> None:
+        # Step 1: click Search to get to page 1 of results.
+        with contextlib.suppress(Exception):
+            await page.click("#brsSearchBtn", timeout=15_000)
+        with contextlib.suppress(Exception):
+            await page.wait_for_selector(
+                "table.Report tr.oddrow, table.Report tr.evenrow",
+                timeout=20_000,
+            )
+
+        # Step 2: walk every page, accumulating row HTML in Python.
+        # Append once at the end so we don't pollute the current DOM
+        # mid-walk (which would break the seen-ids early-exit check).
+        all_chunks: list[str] = []
+        seen_ids: set[str] = set()
+        for hop in range(max_pages):
+            current_ids = await page.eval_on_selector_all(
+                'td[data-fieldname="Reference No"]',
+                "xs => xs.map(x => x.textContent.trim())",
+            )
+            new_ids = {str(x) for x in current_ids if x and x not in seen_ids}
+            if not new_ids:
+                # Current page has no new ids - exhausted or looped.
+                break
+            seen_ids |= new_ids
+
+            chunk = await page.eval_on_selector_all(
+                "tr.oddrow, tr.evenrow",
+                "xs => xs.map(x => x.outerHTML).join('')",
+            )
+            if chunk:
+                all_chunks.append(chunk)
+
+            # Navigate to the NEXT page if we haven't hit the cap.
+            if hop + 1 < max_pages:
+                offset = (hop + 1) * _PAGE_SIZE
+                try:
+                    await page.evaluate(f"jnext_prev({offset})")
+                except Exception:  # noqa: BLE001 - end of pagination
+                    break
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(
+                        "table.Report tr.oddrow, table.Report tr.evenrow",
+                        timeout=20_000,
+                    )
+
+        # Step 3: append everything captured into the final DOM so
+        # ``page.content()`` snapshots all rows.
+        if all_chunks:
+            with contextlib.suppress(Exception):
+                await _append_rows_to_first_table(page, "".join(all_chunks))
+
+    return script
+
+
+async def _append_rows_to_first_table(page: Page, row_html: str) -> None:
+    """Append captured ``<tr>`` HTML to the current page's results tbody."""
+    if not row_html:
+        return
+    await page.evaluate(
+        "rowHtml => {"
+        "  const tbody = document.querySelector('tr.oddrow, tr.evenrow')?.parentElement;"
+        "  if (tbody) tbody.insertAdjacentHTML('beforeend', rowHtml);"
+        "}",
+        row_html,
+    )
+
+
+# Re-export for type hint - imported at module bottom to avoid the
+# fetcher -> source -> fetcher circular import on module load.
+from jobai.fetcher.browser import PageScript  # noqa: E402
 
 
 def _parse_row(row: Node) -> NormalizedJob | None:

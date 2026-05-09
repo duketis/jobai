@@ -12,7 +12,7 @@ from jobai.sources.sa_iworkfor import (
     SAIWorkForFetchError,
     SAIWorkForSource,
     _parse_row,
-    _submit_search_form,
+    _walk_all_pages,
 )
 from tests.unit.sources._browser_fakes import FakeBrowserFetcher, html_response
 
@@ -71,10 +71,12 @@ async def test_discover_raises_on_non_2xx() -> None:
     assert excinfo.value.status_code == 503
 
 
-async def test_submit_search_form_swallows_missing_button() -> None:
-    """``_submit_search_form`` is best-effort — if the search button or
-    result selector isn't present, the script returns rather than
-    raising so the caller still gets the partially-rendered DOM."""
+async def test_walk_all_pages_swallows_missing_button_and_selector() -> None:
+    """The walker is best-effort — if the search button or result
+    selector isn't present (e.g. site UI redesign) the script must
+    return rather than raise, so the caller still gets the partially-
+    rendered DOM. Same as the previous _submit_search_form contract,
+    just on the new pagination-walker entrypoint."""
 
     class _DeadPage:
         async def click(self, *_args: object, **_kwargs: object) -> None:
@@ -85,5 +87,13 @@ async def test_submit_search_form_swallows_missing_button() -> None:
             msg = "timed out"
             raise RuntimeError(msg)
 
+        async def eval_on_selector_all(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> list[str]:
+            return []
+
     # Should not raise.
-    await _submit_search_form(_DeadPage())  # type: ignore[arg-type]
+    script = _walk_all_pages(max_pages=3)
+    await script(_DeadPage())  # type: ignore[arg-type]

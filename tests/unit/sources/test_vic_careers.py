@@ -20,7 +20,7 @@ from jobai.sources.vic_careers import (
     VICCareersSource,
     _parse_row,
     _parse_salary,
-    _submit_search_form,
+    _walk_all_pages,
 )
 from tests.unit.sources._browser_fakes import FakeBrowserFetcher, html_response
 
@@ -101,9 +101,11 @@ async def test_discover_raises_on_non_2xx() -> None:
     assert excinfo.value.status_code == 502
 
 
-async def test_submit_search_form_returns_when_button_missing() -> None:
-    """If the Search button isn't on the page, ``_submit_search_form``
-    returns early so the caller still gets the rendered DOM."""
+async def test_walk_all_pages_returns_when_button_missing() -> None:
+    """If the Search button isn't on the page, the walker returns
+    early via the bare ``except`` after page.click — the caller still
+    gets the partially-rendered DOM. Same contract as the previous
+    _submit_search_form smoke; just on the new walker entrypoint."""
 
     class _NoButtonPage:
         async def click(self, *_args: object, **_kwargs: object) -> None:
@@ -115,4 +117,5 @@ async def test_submit_search_form_returns_when_button_missing() -> None:
         ) -> None:  # pragma: no cover - never reached
             return
 
-    await _submit_search_form(_NoButtonPage())  # type: ignore[arg-type]
+    script = _walk_all_pages(max_pages=3)
+    await script(_NoButtonPage())  # type: ignore[arg-type]

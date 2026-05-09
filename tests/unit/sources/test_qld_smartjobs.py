@@ -15,7 +15,15 @@ from jobai.sources.qld_smartjobs import (
 )
 
 _FIXTURE = (Path(__file__).parent / "fixtures" / "qld_smartjobs.html").read_text(encoding="utf-8")
-_URL = "https://smartjobs.qld.gov.au/jobtools/jncustomsearch.searchResults?in_organid=14904"
+_URL_PAGE_1 = (
+    "https://smartjobs.qld.gov.au/jobtools/jncustomsearch.searchResults?in_organid=14904&in_pg=0"
+)
+# Pagination beyond page 1 returns the empty results template; the
+# walker stops on the first zero-yield page.
+_EMPTY_RESPONSE = httpx.Response(
+    200,
+    text="<html><body><p>no more results</p></body></html>",
+)
 
 
 def test_source_uses_default_orgid_when_account_blank() -> None:
@@ -28,9 +36,20 @@ def test_source_name_includes_orgid() -> None:
     assert source.name == "qld_smartjobs:14904"
 
 
+def _qld_paged_router(router: respx.Router) -> None:
+    """Wire the QLD smartjobs host so page 1 returns the fixture and
+    page 2+ returns the empty-results body. The walker stops on the
+    first zero-yield page."""
+    router.get(host="smartjobs.qld.gov.au").mock(
+        side_effect=lambda req: (
+            httpx.Response(200, text=_FIXTURE) if "in_pg=0" in str(req.url) else _EMPTY_RESPONSE
+        ),
+    )
+
+
 async def test_discover_yields_one_job_per_li() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        _qld_paged_router(router)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in QLDSmartJobsSource(account="14904").discover(fetcher)]
 
@@ -40,8 +59,8 @@ async def test_discover_yields_one_job_per_li() -> None:
 
 
 async def test_discover_maps_core_fields() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_FIXTURE))
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        _qld_paged_router(router)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in QLDSmartJobsSource(account="14904").discover(fetcher)]
 
@@ -62,7 +81,7 @@ async def test_discover_maps_core_fields() -> None:
 
 async def test_discover_raises_on_non_2xx() -> None:
     with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(503))
+        router.get(_URL_PAGE_1).mock(return_value=httpx.Response(503))
         async with HttpFetcher() as fetcher:
             with pytest.raises(QLDSmartJobsFetchError) as excinfo:
                 async for _ in QLDSmartJobsSource(account="14904").discover(fetcher):
@@ -71,10 +90,32 @@ async def test_discover_raises_on_non_2xx() -> None:
 
 
 async def test_discover_returns_empty_on_no_cards() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        router.get(host="smartjobs.qld.gov.au").mock(
             return_value=httpx.Response(200, text="<html><body><p>nothing</p></body></html>")
         )
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in QLDSmartJobsSource(account="14904").discover(fetcher)]
     assert jobs == []
+
+
+async def test_discover_walks_pages_and_dedups() -> None:
+    """Pagination is wired: page 1 yields fixture cards, page 2
+    re-serves the same fixture (all dupes), so the walker exits
+    without duplicating the per-cycle output."""
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        # Both pages return the SAME fixture; the walker should detect
+        # zero new IDs on page 2 and exit cleanly.
+        router.get(host="smartjobs.qld.gov.au").mock(
+            return_value=httpx.Response(200, text=_FIXTURE)
+        )
+        async with HttpFetcher() as fetcher:
+            jobs = [
+                j async for j in QLDSmartJobsSource(account="14904", max_pages=5).discover(fetcher)
+            ]
+    assert len(jobs) == 3  # 3 unique from fixture, page 2's repeats deduped
+
+
+async def test_max_pages_validation() -> None:
+    with pytest.raises(ValueError, match="max_pages"):
+        QLDSmartJobsSource(account="14904", max_pages=0)

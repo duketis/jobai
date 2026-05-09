@@ -41,6 +41,15 @@ from jobai.sources.base import BaseSource, NormalizedJob
 _BASE_URL = "https://smartjobs.qld.gov.au"
 _SEARCH_PATH = "/jobtools/jncustomsearch.searchResults"
 _DEFAULT_ORGID = "14904"
+#: Results per page on jncustomsearch. The JS pagination control
+#: advances the form's ``in_pg`` field by 20 per click.
+_PAGE_SIZE = 20
+#: Hard cap on pages walked per scrape cycle. The early-exit on a
+#: zero-yield page short-circuits when smartjobs runs out of unique
+#: cards, so a generous cap doesn't waste cycles - it just gives the
+#: walker headroom for the natural ceiling (currently ~27 pages /
+#: ~540 QLD Government roles, but other org-ids vary widely).
+_DEFAULT_MAX_PAGES = 100
 
 #: Match the ID portion of ``/jobs/QLD-{id}[-{year}]`` URLs.
 _JOB_ID_RE = re.compile(r"/jobs/QLD-(\d+)")
@@ -68,22 +77,50 @@ class QLDSmartJobsSource(BaseSource):
 
     kind = "qld_smartjobs"
 
-    def __init__(self, account: str = _DEFAULT_ORGID) -> None:
+    def __init__(
+        self,
+        account: str = _DEFAULT_ORGID,
+        *,
+        max_pages: int = _DEFAULT_MAX_PAGES,
+    ) -> None:
         super().__init__(account or _DEFAULT_ORGID)
+        if max_pages < 1:
+            msg = f"max_pages must be >= 1, got {max_pages}"
+            raise ValueError(msg)
+        self._max_pages = max_pages
 
     async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
-        url = f"{_BASE_URL}{_SEARCH_PATH}?in_organid={self.account or _DEFAULT_ORGID}"
-        response = await fetcher.fetch(url)
-        if not response.is_ok:
-            raise QLDSmartJobsFetchError(self.account, response.status_code)
+        seen_ids: set[str] = set()
+        for page in range(self._max_pages):
+            offset = page * _PAGE_SIZE
+            url = (
+                f"{_BASE_URL}{_SEARCH_PATH}"
+                f"?in_organid={self.account or _DEFAULT_ORGID}"
+                f"&in_pg={offset}"
+            )
+            response = await fetcher.fetch(url)
+            if not response.is_ok:
+                if page == 0:
+                    raise QLDSmartJobsFetchError(self.account, response.status_code)
+                # Mid-walk failure: stop short rather than fail the
+                # whole run; everything yielded so far is preserved.
+                return
 
-        tree = HTMLParser(response.text)
-        for li in tree.css("li"):
-            if li.css_first('a[href*="/jobs/QLD-"]') is None:
-                continue
-            job = _parse_card(li)
-            if job is not None:
+            tree = HTMLParser(response.text)
+            page_yielded = 0
+            for li in tree.css("li"):
+                if li.css_first('a[href*="/jobs/QLD-"]') is None:
+                    continue
+                job = _parse_card(li)
+                if job is None or job.source_external_id in seen_ids:
+                    continue
+                seen_ids.add(job.source_external_id)
+                page_yielded += 1
                 yield job
+            # Last page reached when the offset overruns the result
+            # set (smartjobs serves the empty results template).
+            if page_yielded == 0:
+                return
 
 
 def _parse_card(card: Node) -> NormalizedJob | None:
