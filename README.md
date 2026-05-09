@@ -130,7 +130,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 695+ tests
+pytest -q                       # 700+ tests
 pytest --cov=jobai --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
@@ -142,7 +142,7 @@ CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All 
 
 ## Known limitations
 
-- **NSW Government (`iworkfor.nsw.gov.au`) is currently disabled.** The site moved behind Cloudflare's strict challenge mode in May 2026 and our browser tier (Patchright) doesn't bypass it reliably without paid proxy services. The source detects the `Just a moment...` interstitial and raises `NSWIWorkForBlockedError` instead of silently succeeding with zero jobs (the previous behaviour). Re-enable the rows in the `sources` table if/when CF backs off, or wire a proxy.
+- **NSW Government (`iworkfor.nsw.gov.au`) — partial coverage.** The site sits behind Cloudflare's strict challenge mode (May 2026 onward). The tier-3 stealth fetcher with `needs_persistent_session=True` keeps one browser context alive across all NSW fetches in a scrape cycle, solves CF once via the warm-up + `networkidle` navigation pattern, and ingests page-1 results (~15 jobs/cycle). Pagination beyond page 1 needs the SPA's API replay (the Angular app paginates via XHR, not URL params); planned but not yet shipped. Re-enabling old broken NSW sources will raise `NSWIWorkForBlockedError` if CF blocks instead of silently succeeding with zero jobs.
 - **Anonymous pagination caps.** Seek caps unauthenticated search at ~2,200 results per query, LinkedIn at ~1,000, Indeed varies. The walkers stop on the first empty page so we get whatever the site is willing to serve.
 
 ## License
