@@ -126,9 +126,15 @@ smartrecruiters:
   - account: canva
     display_name: Canva
 
-# Workable boards moved off the public API path we used (v3/accounts).
-# Disabled until we find an updated endpoint that still serves
-# Hugging Face / SafetyCulture / similar AU SaaS users of Workable.
+# Workable: deliberately empty list. The widget API path we use
+# (``apply.workable.com/api/v1/widget/accounts/{slug}``) still works,
+# but a 2026-05 audit of common AU SaaS company slugs found near-zero
+# Workable adoption among AU employers - SafetyCulture, Canva,
+# Octopus Deploy, Atlassian and the rest moved to Greenhouse/Ashby/
+# Lever/SmartRecruiters years ago. Of the candidates probed, only
+# Hugging Face responded with active jobs and they post 0 AU-located
+# roles. Re-enable per-account if you find an AU company that ships
+# real positions through Workable; the source code itself is intact.
 workable: []
 
 # Seek is JS-rendered — needs the browser fetcher (default_tier: 2).
