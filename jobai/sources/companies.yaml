@@ -158,11 +158,54 @@ seek:
     display_name: Seek — All jobs (Perth)
     default_tier: 2
     cadence_seconds: 3600
+  - account: jobs/in-All-Adelaide-SA
+    display_name: Seek — All jobs (Adelaide)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Canberra-ACT
+    display_name: Seek — All jobs (Canberra)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Hobart-TAS
+    display_name: Seek — All jobs (Hobart)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Darwin-NT
+    display_name: Seek — All jobs (Darwin)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Newcastle-NSW
+    display_name: Seek — All jobs (Newcastle)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Gold-Coast-QLD
+    display_name: Seek — All jobs (Gold Coast)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Geelong-VIC
+    display_name: Seek — All jobs (Geelong)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Wollongong-NSW
+    display_name: Seek — All jobs (Wollongong)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: jobs/in-All-Sunshine-Coast-QLD
+    display_name: Seek — All jobs (Sunshine Coast)
+    default_tier: 2
+    cadence_seconds: 3600
+  # ``worktype=242`` = Seek's Remote work-type filter. Catches
+  # remote roles that the city slugs cap out before reaching.
+  - account: jobs/in-All-Australia?worktype=242
+    display_name: Seek — Remote jobs (Australia)
+    default_tier: 2
+    cadence_seconds: 3600
 
 # LinkedIn fingerprints aggressively — needs the stealth (Patchright)
 # fetcher (default_tier: 3). Account is the URL-encoded query string
-# for /jobs/search. Default seeds are LOCATION-only (no `keywords`)
-# so the app is generic across job categories.
+# for /jobs/search. Anonymous LinkedIn caps at ~1,000 results per
+# query, so multiplying location slugs is the lever. Each slug is
+# LOCATION-only (no `keywords`) to keep the catalogue generic.
 linkedin:
   - account: location=Australia
     display_name: LinkedIn — All jobs (Australia)
@@ -176,10 +219,42 @@ linkedin:
     display_name: LinkedIn — All jobs (Sydney)
     default_tier: 3
     cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia
+    display_name: LinkedIn — All jobs (Brisbane)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia
+    display_name: LinkedIn — All jobs (Perth)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia
+    display_name: LinkedIn — All jobs (Adelaide)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Canberra%2C%20Australian%20Capital%20Territory%2C%20Australia
+    display_name: LinkedIn — All jobs (Canberra)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Hobart%2C%20Tasmania%2C%20Australia
+    display_name: LinkedIn — All jobs (Hobart)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Darwin%2C%20Northern%20Territory%2C%20Australia
+    display_name: LinkedIn — All jobs (Darwin)
+    default_tier: 3
+    cadence_seconds: 3600
+  # Work-mode filter ``f_WT=2`` = remote-only on LinkedIn. Catches
+  # remote roles that the city-anchored slugs cap out before reaching.
+  - account: location=Australia&f_WT=2
+    display_name: LinkedIn — Remote jobs (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
-# Default seeds are LOCATION-only (no `q`).
+# Anonymous Indeed forces auth after page 1 (~15 jobs/query), so
+# multiplying slugs is the only way to grow coverage. We use every
+# capital city + a few regional centres + the national catchall.
 indeed:
   - account: l=Australia&fromage=7
     display_name: Indeed — All jobs (Australia, last 7d)
@@ -191,6 +266,65 @@ indeed:
     cadence_seconds: 3600
   - account: l=Sydney+NSW&fromage=7
     display_name: Indeed — All jobs (Sydney, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Brisbane+QLD&fromage=7
+    display_name: Indeed — All jobs (Brisbane, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Perth+WA&fromage=7
+    display_name: Indeed — All jobs (Perth, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Adelaide+SA&fromage=7
+    display_name: Indeed — All jobs (Adelaide, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Canberra+ACT&fromage=7
+    display_name: Indeed — All jobs (Canberra, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Hobart+TAS&fromage=7
+    display_name: Indeed — All jobs (Hobart, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Darwin+NT&fromage=7
+    display_name: Indeed — All jobs (Darwin, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Newcastle+NSW&fromage=7
+    display_name: Indeed — All jobs (Newcastle, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Gold+Coast+QLD&fromage=7
+    display_name: Indeed — All jobs (Gold Coast, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Geelong+VIC&fromage=7
+    display_name: Indeed — All jobs (Geelong, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Wollongong+NSW&fromage=7
+    display_name: Indeed — All jobs (Wollongong, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Sunshine+Coast+QLD&fromage=7
+    display_name: Indeed — All jobs (Sunshine Coast, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Cairns+QLD&fromage=7
+    display_name: Indeed — All jobs (Cairns, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  - account: l=Townsville+QLD&fromage=7
+    display_name: Indeed — All jobs (Townsville, last 7d)
+    default_tier: 2
+    cadence_seconds: 3600
+  # ``sc=0kf%3Aattr%28DSQF7%29`` is Indeed's remote-work filter
+  # (the obfuscated attribute id). National + remote-only catches
+  # remote roles missed by the city-anchored slugs.
+  - account: l=Australia&fromage=7&sc=0kf%3Aattr%28DSQF7%29
+    display_name: Indeed — Remote jobs (Australia, last 7d)
     default_tier: 2
     cadence_seconds: 3600
 
