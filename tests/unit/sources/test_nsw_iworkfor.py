@@ -2,16 +2,17 @@
 
 Driven against a real fixture cut from a live iworkfor.nsw.gov.au
 search-results page (3 representative ``article.search-job-card``
-entries).
+entries). The discover loop runs through ``run_in_page`` against a
+:class:`FakeBrowserFetcher` since the live SPA paginates client-side
+via XHR + an Ant Design pagination control we can't replay through
+plain HTTP.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
-import respx
 from selectolax.parser import HTMLParser
 
 from jobai.fetcher.http import HttpFetcher
@@ -27,6 +28,7 @@ from jobai.sources.nsw_iworkfor import (
     _parse_info_dl,
     _parse_salary,
 )
+from tests.unit.sources._browser_fakes import FakeBrowserFetcher, html_response
 
 _FIXTURE = (Path(__file__).parent / "fixtures" / "nsw_iworkfor.html").read_text(encoding="utf-8")
 _SLUG = (
@@ -41,33 +43,24 @@ def test_source_name_includes_slug() -> None:
     assert source.name == f"nsw_iworkfor:{_SLUG}"
 
 
-async def test_discover_yields_one_job_per_card() -> None:
-    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="iworkfor.nsw.gov.au").mock(
-            side_effect=lambda req: (
-                httpx.Response(200, text=_FIXTURE)
-                if "page=" not in str(req.url)
-                else httpx.Response(200, text="<html><body><main></main></body></html>")
-            ),
-        )
-        async with HttpFetcher() as fetcher:
-            jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
+async def test_discover_rejects_non_browser_fetcher() -> None:
+    """The walker drives a Playwright Page via run_in_page; an HTTP-only
+    fetcher must fail fast with a clear TypeError."""
+    async with HttpFetcher() as fetcher:
+        with pytest.raises(TypeError, match="run_in_page"):
+            async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
+                pass
 
+
+async def test_discover_yields_one_job_per_card() -> None:
+    fetcher = FakeBrowserFetcher(html_response(_FIXTURE))
+    jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
     assert {j.source_external_id for j in jobs} == {"576439", "575973", "576521"}
 
 
 async def test_discover_maps_core_fields() -> None:
-    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="iworkfor.nsw.gov.au").mock(
-            side_effect=lambda req: (
-                httpx.Response(200, text=_FIXTURE)
-                if "page=" not in str(req.url)
-                else httpx.Response(200, text="<html><body><main></main></body></html>")
-            ),
-        )
-        async with HttpFetcher() as fetcher:
-            jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
-
+    fetcher = FakeBrowserFetcher(html_response(_FIXTURE))
+    jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
     by_id = {j.source_external_id: j for j in jobs}
     deputy = by_id["576439"]
     assert deputy.title == "Deputy Commissioner"
@@ -81,23 +74,17 @@ async def test_discover_maps_core_fields() -> None:
 
 
 async def test_discover_raises_on_non_2xx() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(503))
-        async with HttpFetcher() as fetcher:
-            with pytest.raises(NSWIWorkForFetchError) as excinfo:
-                async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
-                    pass
+    fetcher = FakeBrowserFetcher(html_response("<html/>", status_code=503))
+    with pytest.raises(NSWIWorkForFetchError) as excinfo:
+        async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
+            pass
     assert excinfo.value.status_code == 503
     assert excinfo.value.slug == _SLUG
 
 
 async def test_discover_returns_empty_on_page_with_no_cards() -> None:
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(
-            return_value=httpx.Response(200, text="<html><body><main></main></body></html>")
-        )
-        async with HttpFetcher() as fetcher:
-            jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
+    fetcher = FakeBrowserFetcher(html_response("<html><body><main></main></body></html>"))
+    jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
     assert jobs == []
 
 
@@ -142,87 +129,12 @@ def test_is_cloudflare_challenge_returns_false_for_empty_input() -> None:
 
 async def test_discover_raises_blocked_error_on_cloudflare_challenge() -> None:
     """A 200 OK with the Cloudflare interstitial body must surface as a
-    failure, not a silent zero-card success - the old behaviour hid
-    the regression for weeks."""
-    with respx.mock(assert_all_called=False) as router:
-        router.get(_URL).mock(return_value=httpx.Response(200, text=_CF_CHALLENGE_HTML))
-        async with HttpFetcher() as fetcher:
-            with pytest.raises(NSWIWorkForBlockedError) as excinfo:
-                async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
-                    pass
+    failure, not a silent zero-card success."""
+    fetcher = FakeBrowserFetcher(html_response(_CF_CHALLENGE_HTML))
+    with pytest.raises(NSWIWorkForBlockedError) as excinfo:
+        async for _ in NSWIWorkForSource(account=_SLUG).discover(fetcher):
+            pass
     assert excinfo.value.slug == _SLUG
-
-
-async def test_discover_loop_completes_at_max_pages_when_every_page_has_cards() -> None:
-    """If every page within ``max_pages`` keeps yielding new cards, the
-    walker exits the for-loop naturally rather than via the early-exit
-    paths. Pins the loop-completion branch so a future refactor that
-    removes the natural exit gets caught."""
-    page_count = {"n": 0}
-
-    def respond(req: httpx.Request) -> httpx.Response:
-        page_count["n"] += 1
-        # Each page has the SAME 3 cards in the fixture; the source's
-        # ``seen_ids`` set would dedup pages 2+ to zero new yields and
-        # trip the empty-page early-exit. To force the loop to run to
-        # completion we mutate the numeric job IDs per page so each
-        # page's cards get unique source_external_ids.
-        text = _FIXTURE
-        for original in ("576439", "575973", "576521"):
-            text = text.replace(original, f"{original}{page_count['n']}")
-        return httpx.Response(200, text=text)
-
-    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="iworkfor.nsw.gov.au").mock(side_effect=respond)
-        async with HttpFetcher() as fetcher:
-            jobs = [
-                j async for j in NSWIWorkForSource(account=_SLUG, max_pages=2).discover(fetcher)
-            ]
-
-    # Two pages of 3 cards each, all distinct ids => loop ran to completion.
-    assert len(jobs) == 6
-
-
-async def test_discover_terminates_silently_when_cf_challenge_hits_later_page() -> None:
-    """Mid-walk CF block stops the walker but doesn't lose results
-    already yielded. Same shape as the existing 'later-page non-2xx'
-    test - both are graceful-stop conditions."""
-    fixture = _FIXTURE
-    page_count = {"n": 0}
-
-    def respond(req: httpx.Request) -> httpx.Response:
-        page_count["n"] += 1
-        if page_count["n"] == 1:
-            return httpx.Response(200, text=fixture)
-        return httpx.Response(200, text=_CF_CHALLENGE_HTML)
-
-    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="iworkfor.nsw.gov.au").mock(side_effect=respond)
-        async with HttpFetcher() as fetcher:
-            jobs = [
-                j async for j in NSWIWorkForSource(account=_SLUG, max_pages=3).discover(fetcher)
-            ]
-
-    # Page 1 fixture has 3 cards; the walk stops on the page-2 CF block
-    # rather than raising, so we keep what page 1 yielded.
-    assert len(jobs) == 3
-
-
-async def test_discover_terminates_when_later_page_returns_non_2xx() -> None:
-    """A 404 on page 2 ends the walk silently rather than raising
-    (a real source can have an opaque tail beyond its first page)."""
-    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="iworkfor.nsw.gov.au").mock(
-            side_effect=lambda req: (
-                httpx.Response(200, text=_FIXTURE)
-                if "page=" not in str(req.url)
-                else httpx.Response(404)
-            ),
-        )
-        async with HttpFetcher() as fetcher:
-            jobs = [j async for j in NSWIWorkForSource(account=_SLUG).discover(fetcher)]
-    # First-page jobs still surface; the silent stop just bounds the walk.
-    assert {j.source_external_id for j in jobs} == {"576439", "575973", "576521"}
 
 
 # ---------------------------------------------------------------------------

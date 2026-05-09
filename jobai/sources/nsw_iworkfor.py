@@ -1,21 +1,27 @@
 """NSW Government — iworkfor.nsw.gov.au source.
 
-**Status: blocked by Cloudflare strict challenge mode (2026-05).**
+Cloudflare strict-challenge mode (May 2026 onwards) blocks every
+plain-HTTP request with a ``Just a moment...`` interstitial. The
+source declares ``needs_persistent_session = True`` so the runner
+builds a tier-3 stealth fetcher with a long-lived browser context;
+the Patchright stealth patches + a clean UA + ``goto(wait_until=
+'networkidle')`` solves CF once at the start of each scrape cycle
+and the cleared session walks every paginated page.
 
-The NSW board moved its old HTML-render pipeline behind Cloudflare's
-strict challenge interstitial — every plain-HTTP request gets a
-``Just a moment...`` page, and our browser tier (Patchright) gets
-the same 403 the bare client does. Bypassing CF reliably needs paid
-proxy services or residential IPs, which the project rules out.
+Pagination is the SPA's own Ant Design ``ant-pagination`` widget.
+We drive it via ``run_in_page``: click ``[aria-label="Go to next
+page"]``, wait for the leading card to swap (signals the SPA's XHR
++ repaint completed), capture each page's ``article.search-job-card``
+HTML, accumulate in Python, and inject everything into the final DOM
+so a single ``page.content()`` snapshot contains every page's cards.
+URL ``?page=N`` does NOT work — the Angular app ignores the param.
 
-The discover loop now detects the CF challenge HTML and raises
-:class:`NSWIWorkForBlockedError` so the run is recorded as failed
-(instead of silently succeeding with zero jobs, which is what the
-old code did and which hid the regression for weeks). The expected
-operator response is to disable the NSW source rows in the DB until
-the situation changes.
+The discover loop still detects the CF interstitial and raises
+:class:`NSWIWorkForBlockedError` so a successful CF block gets
+flagged as a real failure rather than a silent zero-card success
+(the regression that hid for weeks before).
 
-Old card-structure notes (kept for when we can fetch again):
+Card structure (post-redesign):
 
 * root: ``article.search-job-card`` with ``aria-labelledby="job-title-{id}"``
 * title: ``.search-job-card__title``
@@ -26,14 +32,17 @@ Old card-structure notes (kept for when we can fetch again):
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urljoin
 
+from playwright.async_api import Page
 from selectolax.parser import HTMLParser, Node
 
 from jobai.fetcher.base import Fetcher
+from jobai.fetcher.browser import PageScript
 from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://iworkfor.nsw.gov.au"
@@ -130,36 +139,149 @@ class NSWIWorkForSource(BaseSource):
         self._max_pages = max_pages
 
     async def discover(self, fetcher: Fetcher) -> AsyncIterator[NormalizedJob]:
-        seen_ids: set[str] = set()
-        for page in range(1, self._max_pages + 1):
-            url = _page_url(self.account, page)
-            response = await fetcher.fetch(url, wait_for_selector=_WAIT_SELECTOR)
-            if not response.is_ok:
-                if page == 1:
-                    raise NSWIWorkForFetchError(self.account, response.status_code)
-                return
-            # Cloudflare returns the challenge page with HTTP 200 - we
-            # have to inspect the body to know we were actually blocked.
-            # On page 1 raise so the run fails loudly; on later pages
-            # the source has already yielded earlier results, so just
-            # stop walking.
-            if _is_cloudflare_challenge(response.text):
-                if page == 1:
-                    raise NSWIWorkForBlockedError(self.account)
-                return
+        # NSW iworkfor's Angular SPA paginates client-side via XHR
+        # against api.ad-core04.com. URL ``?page=N`` does NOT work
+        # (the SPA ignores the param), so plain HTTP-style pagination
+        # is impossible - we must drive the in-browser Next button.
+        run_in_page = getattr(fetcher, "run_in_page", None)
+        if run_in_page is None:
+            msg = (
+                "NSWIWorkForSource requires a fetcher with run_in_page; got "
+                f"{type(fetcher).__name__}"
+            )
+            raise TypeError(msg)
+        url = f"{_BASE_URL}/{self.account.lstrip('/')}" if self.account else _BASE_URL
+        page_script = _walk_all_pages(self._max_pages, account=self.account)
+        response = await run_in_page(url, page_script=page_script)
+        if not response.is_ok:
+            raise NSWIWorkForFetchError(self.account, response.status_code)
+        if _is_cloudflare_challenge(response.text):
+            raise NSWIWorkForBlockedError(self.account)
 
-            tree = HTMLParser(response.text)
-            cards = tree.css("article.search-job-card")
-            page_yielded = 0
-            for card in cards:
-                job = _parse_card(card)
-                if job is None or job.source_external_id in seen_ids:
-                    continue
-                seen_ids.add(job.source_external_id)
-                page_yielded += 1
-                yield job
-            if page_yielded == 0:
-                return
+        tree = HTMLParser(response.text)
+        seen_ids: set[str] = set()
+        for card in tree.css("article.search-job-card"):
+            job = _parse_card(card)
+            if job is None or job.source_external_id in seen_ids:
+                continue
+            seen_ids.add(job.source_external_id)
+            yield job
+
+
+# JS snippets used by the pagination walker. Hoisted out of the
+# inner function so each is one logical block (and so ruff's
+# E501 / line-length rule has fewer overlong-line opportunities).
+_NEXT_BUTTON_STATE_JS = """
+() => {
+    const btn = document.querySelector('[aria-label="Go to next page"]');
+    if (!btn) return 'absent';
+    const li = btn.closest('.ant-pagination-next');
+    const cls = li ? li.classList : null;
+    if (cls && cls.contains('ant-pagination-disabled')) return 'disabled';
+    return 'clickable';
+}
+"""
+
+_LEADING_HREF_CHANGED_JS = """
+(prevHref) => {
+    const a = document.querySelector('article.search-job-card a[href^="/job/"]');
+    return a && a.getAttribute('href') !== prevHref;
+}
+"""
+
+_INJECT_CARDS_JS = """
+(html) => {
+    const target = document.querySelector('#search-results-section') || document.body;
+    target.insertAdjacentHTML('beforeend',
+        '<div data-jobai-paginated>' + html + '</div>');
+}
+"""
+
+
+def _walk_all_pages(max_pages: int, *, account: str) -> PageScript:
+    """Drive the Ant Design pagination control inside the SPA.
+
+    NSW renders its pagination as Ant's ``ant-pagination`` widget;
+    the next-page button has ``aria-label="Go to next page"``. The
+    walker clicks it once per page, waits for the card list to swap
+    (detected via a different leading job-id appearing), captures
+    the page's ``article.search-job-card`` outerHTML, and accumulates
+    everything in Python. At the end the captured cards are injected
+    into the live DOM so the final ``page.content()`` snapshot
+    contains every page's cards in one parseable document.
+    """
+
+    async def script(page: Page) -> None:
+        # Wait for the SPA to render the first page of cards.
+        try:
+            await page.wait_for_selector(
+                "article.search-job-card",
+                timeout=30_000,
+            )
+        except Exception:  # noqa: BLE001 - blocked / empty / changed UI
+            return
+
+        all_chunks: list[str] = []
+        seen_ids: set[str] = set()
+
+        for hop in range(max_pages):
+            # Capture the current page's job ids + card HTML.
+            current_ids = await page.eval_on_selector_all(
+                'article.search-job-card a[href^="/job/"]',
+                "xs => xs.map(a => a.getAttribute('href'))",
+            )
+            new_ids = {str(href) for href in current_ids if href and href not in seen_ids}
+            if not new_ids:
+                break
+            seen_ids |= new_ids
+
+            chunk = await page.eval_on_selector_all(
+                "article.search-job-card",
+                "xs => xs.map(c => c.outerHTML).join('')",
+            )
+            if chunk:
+                all_chunks.append(chunk)
+
+            # Click the Next button if it exists and is enabled.
+            if hop + 1 < max_pages:
+                next_btn_state = await page.evaluate(_NEXT_BUTTON_STATE_JS)
+                if next_btn_state != "clickable":
+                    break
+                # The Ant pagination widget renders top + bottom on
+                # wide viewports; using ``.first`` avoids Playwright's
+                # strict-mode violation when more than one Next button
+                # matches the aria-label.
+                try:
+                    await page.locator(
+                        '[aria-label="Go to next page"]'
+                    ).first.click(timeout=10_000)
+                except Exception:  # noqa: BLE001 - end of pagination
+                    break
+                # Wait for the leading card to change (signals the
+                # SPA finished its XHR + repaint).
+                first_new_id = next(iter(new_ids))
+                try:
+                    await page.wait_for_function(
+                        _LEADING_HREF_CHANGED_JS,
+                        arg=first_new_id,
+                        timeout=20_000,
+                    )
+                except Exception:  # noqa: BLE001 - SPA didn't repaint, stop
+                    break
+
+        # Inject everything captured so the snapshot contains every
+        # page's cards in one document.
+        if all_chunks:
+            with contextlib.suppress(Exception):
+                await page.evaluate(
+                    _INJECT_CARDS_JS,
+                    "".join(all_chunks),
+                )
+        # Suppress unused-arg warning when the account-derived URL is
+        # taken at the discover() level rather than in the script.
+        _ = account
+
+    return script
 
 
 def _page_url(slug: str, page: int) -> str:
