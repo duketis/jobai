@@ -12,7 +12,7 @@ A local-first AI job-hunting agent for the Australian market. One process scrape
 
 ## What it does
 
-- **Ingests ~9,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, 4 AU state government boards (VIC / QLD / SA / WA), and the federal APS Jobs board. The big-board walkers (Seek, Indeed, LinkedIn) walk to each site's natural ceiling (~1,000-2,200 results per query) rather than stopping at an artificial page cap.
+- **Ingests ~12,000+ jobs per cycle** across 50 ATS sources (Greenhouse, Lever, Ashby, SmartRecruiters, Workable), 5 Seek slugs, 3 Indeed and 3 LinkedIn searches, 4 AU state government boards (VIC / QLD / SA / WA — fully paginated, ~3,000 jobs/cycle from these alone), and the federal APS Jobs board. The big-board walkers (Seek, Indeed, LinkedIn) walk to each site's natural ceiling (~1,000-2,200 results per query) rather than stopping at an artificial page cap.
 - **Deduplicates and best-of-merges** the same role across boards into one canonical row, with all source links preserved. When sources disagree (one has salary and one doesn't, one has a full description and one a teaser), per-field rules pick the richest value: longest description, earliest `posted_at`, first non-null salary.
 - **Infers salary from description text** when the structured field is null. AU listings notoriously bury comp in the body — `Band 8 - $123,558 to $138,752 + super` on council jobs, `$120k - $160k + super` from recruiters, `Salary: $100,066 - $108,372 per annum`. The regex parser anchors on salary keywords (Salary:, Compensation:, per annum, + super, Band N -), rejects fundraising/AUM/revenue context, and refuses hourly/daily contractor rates to avoid mis-extrapolation. Falls back to a stripped version of `description_html` when sources (Greenhouse, SmartRecruiters, APS Jobs) populate only HTML.
 - **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
@@ -130,7 +130,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 700+ tests
+pytest -q                       # 705+ tests
 pytest --cov=jobai --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
