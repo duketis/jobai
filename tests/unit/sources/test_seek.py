@@ -263,6 +263,29 @@ def test_parse_card_returns_none_when_no_apply_path() -> None:
     assert _parse_card(card) is None
 
 
+def test_parse_card_returns_none_when_no_title_node() -> None:
+    """Cards with a job id but no ``data-automation='jobTitle'`` element
+    are wire-format mismatches; skip rather than crash."""
+    card = HTMLParser(
+        '<article data-automation="normalJob" data-job-id="42">'
+        '<span>no title element</span>'
+        "</article>",
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+
+def test_parse_card_returns_none_when_title_text_is_empty() -> None:
+    """A title anchor that exists but is blank (e.g. icon-only) is unusable."""
+    card = HTMLParser(
+        '<article data-automation="normalJob" data-job-id="42">'
+        '<a data-automation="jobTitle" href="/job/x"></a>'
+        "</article>",
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+
 def test_infer_remote_type_picks_up_remote_and_hybrid() -> None:
     assert _infer_remote_type("Remote, Australia") == "remote"
     assert _infer_remote_type("Hybrid - Sydney") == "hybrid"
@@ -280,3 +303,65 @@ def test_to_int_upscales_thousands_shorthand() -> None:
     assert _to_int("250") == 250_000
     assert _to_int("not a number") is None
     assert _to_int("85,000") == 85_000
+
+
+def test_employment_type_skips_paragraphs_not_starting_with_this_is_a() -> None:
+    """``_employment_type_from_card`` loops every <p>; paragraphs that
+    aren't the employment-type line must be skipped (loop continuation
+    branch) without returning prematurely."""
+    from jobai.sources.seek import _employment_type_from_card  # noqa: PLC0415
+
+    card = HTMLParser(
+        "<article>"
+        "<p>Posted 2 days ago</p>"
+        "<p>This is a Full time job</p>"
+        "</article>"
+    ).css_first("article")
+    assert card is not None
+    assert _employment_type_from_card(card) == "Full time"
+
+
+def test_employment_type_returns_none_when_no_paragraph_matches() -> None:
+    """All <p> nodes inspected, none match -- returns None (loop completes)."""
+    from jobai.sources.seek import _employment_type_from_card  # noqa: PLC0415
+
+    card = HTMLParser("<article><p>x</p><p>y</p></article>").css_first("article")
+    assert card is not None
+    assert _employment_type_from_card(card) is None
+
+
+def test_parse_salary_range_with_unparseable_endpoints_falls_through() -> None:
+    """The range regex captures ``[\\d,]+`` so a stripped-empty input
+    (e.g. lone commas) matches structurally but parses to None on
+    _to_int. Both range AND single fallbacks must drop through to
+    (None, None, None) -- covers 252->255 and 258->261 branches."""
+    from jobai.sources.seek import _parse_salary  # noqa: PLC0415
+
+    # ', to ,' matches the range pattern with both groups = ','; _to_int(',')
+    # strips the comma, gets '', returns None. Both inner ifs are False.
+    assert _parse_salary("$, to $,") == (None, None, None)
+
+
+async def test_discover_walks_to_max_pages_when_every_page_has_new_cards() -> None:
+    """Force the for-loop in discover() to complete all max_pages iterations
+    by giving every page a unique card. Covers the loop-exit branch."""
+
+    def page_for(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        return httpx.Response(
+            200,
+            text=(
+                "<html><body>"
+                f'<article data-automation="normalJob" data-job-id="p{page}">'
+                f'<a data-automation="jobTitle" href="/job/p{page}">Engineer {page}</a>'
+                '<a data-automation="jobCompany">Co</a>'
+                "</article>"
+                "</body></html>"
+            ),
+        )
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_URL).mock(side_effect=page_for)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in SeekSource(account=_SLUG, max_pages=3).discover(fetcher)]
+    assert {j.source_external_id for j in jobs} == {"p1", "p2", "p3"}

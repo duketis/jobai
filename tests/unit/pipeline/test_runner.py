@@ -262,6 +262,77 @@ async def test_run_source_promotes_jobs_into_canonical_table(
     assert link_count == 2
 
 
+async def test_run_source_preserves_remote_type_when_source_supplies_it(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """_ensure_remote_type should be a no-op when the source already
+    populated remote_type. Covers the early-return branch."""
+    job = NormalizedJob(
+        source_external_id="42",
+        title="Engineer",
+        company="X",
+        apply_url="https://example/42",
+        raw_data={"id": "42"},
+        remote_type="remote",  # source provided it explicitly
+    )
+    source = _FixedSource("atlassian", [job])
+    await run_source(conn=conn, source=source, source_row=source_row, fetcher=_StubFetcher())
+    row = conn.execute("SELECT remote_type FROM jobs WHERE title = 'Engineer'").fetchone()
+    # The source-supplied 'remote' must survive without being overwritten by inference.
+    assert row[0] == "remote"
+
+
+async def test_run_source_logs_schema_change_when_field_null_rate_shifts(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """When detect_changes returns a FieldChange, the warning loop runs.
+    Two successive runs with different null-rate distributions trigger
+    this. We assert on result.schema_changes rather than caplog because
+    the runner uses structlog (which bypasses the standard logging
+    handler caplog intercepts)."""
+    # Run 1: every job has a salary, none have description -- baseline.
+    baseline = [
+        NormalizedJob(
+            source_external_id=str(i),
+            title="t",
+            company="c",
+            apply_url=f"https://example/{i}",
+            raw_data={},
+            salary_min=100_000,
+            salary_max=120_000,
+        )
+        for i in range(10)
+    ]
+    await run_source(
+        conn=conn,
+        source=_FixedSource("atlassian", baseline),
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+    # Run 2: no salary at all -- null rate for salary_min flips from 0->1.
+    no_salary = [
+        NormalizedJob(
+            source_external_id=str(i + 100),
+            title="t",
+            company="c",
+            apply_url=f"https://example/{i + 100}",
+            raw_data={},
+        )
+        for i in range(10)
+    ]
+    result = await run_source(
+        conn=conn,
+        source=_FixedSource("atlassian", no_salary),
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+    # A non-empty schema_changes tuple proves the warning loop body ran.
+    assert result.schema_changes
+    assert any(c.field == "salary_min" for c in result.schema_changes)
+
+
 async def test_run_source_records_raw_responses_via_recording_fetcher(
     conn: sqlite3.Connection,
     source_row: SourceRow,

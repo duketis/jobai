@@ -154,7 +154,7 @@ class RetryingFetcher:
         # immediately on the final attempt; we just return the last
         # response the inner fetcher produced.
         # Defensive: keep a sane fallback so type-checkers stay happy.
-        msg = "RetryingFetcher exited the retry loop unexpectedly"
+        msg = "RetryingFetcher exited the retry loop unexpectedly"  # pragma: no cover
         raise RuntimeError(msg)  # pragma: no cover
 
     # Forwards to BrowserFetcher.run_in_page, which drives real Playwright

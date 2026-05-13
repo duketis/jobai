@@ -108,3 +108,64 @@ def test_no_static_dir_means_no_fallback(
     with TestClient(app) as test_client:
         assert test_client.get("/openapi.json").status_code == 200
         assert test_client.get("/").status_code == 404
+
+
+def test_top_level_file_under_static_served_via_spa_fallback(client: TestClient, static_dir: Path) -> None:
+    """A file at the root of static/ (not under /assets/) should be
+    served directly by the SPA fallback, not rewritten to index.html.
+    Common case: favicon.ico, robots.txt."""
+    (static_dir / "favicon.ico").write_bytes(b"\x00\x00\x01\x00\x01\x00")
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    # Real file body, not the index.html shell.
+    assert response.content.startswith(b"\x00\x00\x01\x00")
+
+
+def test_index_html_without_assets_dir_still_serves_spa(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the built SPA has an index.html but no /assets/ subdir (e.g.
+    a hand-rolled static page during local hacking), boot is still
+    clean and / serves the index. Covers the false branch of
+    ``if assets_dir.is_dir():``."""
+    fake_static = tmp_path / "static"
+    fake_static.mkdir()
+    (fake_static / "index.html").write_text("<!doctype html>plain", encoding="utf-8")
+    monkeypatch.setattr("jobai.api.server._STATIC_DIR", fake_static)
+    monkeypatch.setenv("JOBAI_DISABLE_SCHEDULER", "1")
+    app = create_app()
+    with TestClient(app) as test_client:
+        assert "plain" in test_client.get("/").text
+
+
+def test_lifespan_starts_and_stops_scheduler_when_not_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler-on path of the lifespan (no JOBAI_DISABLE_SCHEDULER)
+    builds + starts + shuts down the scheduler without raising. The
+    boot uses an empty DB so no source actually fires while the app
+    is up; we exercise the wiring, not source execution."""
+    from jobai.db.migrations import apply_pending  # noqa: PLC0415
+
+    monkeypatch.delenv("JOBAI_DISABLE_SCHEDULER", raising=False)
+    db_path = tmp_path / "scheduler-test.db"
+    import sqlite3  # noqa: PLC0415
+
+    conn = sqlite3.connect(db_path)
+    try:
+        apply_pending(conn)
+    finally:
+        conn.close()
+    monkeypatch.setenv("JOBAI_DB_PATH", str(db_path))
+    # Re-cache jobai.config so the new env value is picked up.
+    from jobai.config import get_settings  # noqa: PLC0415
+
+    get_settings.cache_clear()
+
+    app = create_app()
+    with TestClient(app) as test_client:
+        assert test_client.get("/openapi.json").status_code == 200
+        # The lifespan should have wired the scheduler onto app.state.
+        assert app.state.scheduler is not None

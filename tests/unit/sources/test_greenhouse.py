@@ -142,3 +142,28 @@ async def test_discover_handles_missing_optional_location() -> None:
     assert len(jobs) == 1
     assert jobs[0].location_raw is None
     assert jobs[0].remote_type is None
+
+
+async def test_discover_yields_posted_at_none_when_no_date_field() -> None:
+    """A Greenhouse listing missing every date field (first_published,
+    updated_at, created_at) should produce a job with posted_at=None
+    rather than crashing on the missing key. Exercises the fall-through
+    return-None branch of ``_extract_posted_at``."""
+    payload = {
+        "jobs": [
+            {
+                "id": 17,
+                "title": "Engineer",
+                "absolute_url": "https://example.com/17",
+                "content": "<p>job</p>",
+            }
+        ]
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://boards-api.greenhouse.io/v1/boards/x/jobs").mock(
+            return_value=httpx.Response(200, json=payload),
+        )
+        source = GreenhouseSource(account="x")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert jobs[0].posted_at is None

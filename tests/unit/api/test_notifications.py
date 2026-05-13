@@ -97,3 +97,12 @@ def test_pagination(client: TestClient, db_path: Path) -> None:
 
     body = client.get("/api/notifications", params={"limit": 2, "offset": 4}).json()
     assert len(body["items"]) == 1
+
+
+def test_list_surfaces_body_when_present(client: TestClient, db_path: Path) -> None:
+    """Notifications with a non-null ``body`` should round-trip the value
+    through the response. Exercises the non-null branch of _optional_str."""
+    _seed_notification(db_path, title="with-body", body="extra context here")
+    body = client.get("/api/notifications").json()
+    items = {item["title"]: item for item in body["items"]}
+    assert items["with-body"]["body"] == "extra context here"

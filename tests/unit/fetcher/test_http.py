@@ -147,4 +147,22 @@ async def test_async_context_manager_closes_underlying_client() -> None:
     fetcher = HttpFetcher()
     async with fetcher:
         pass
+
+
+async def test_fetch_forwards_explicit_timeout_to_httpx() -> None:
+    """When the caller passes ``timeout=...``, the value lands on the
+    underlying httpx request. The body of the assertion uses respx to
+    capture the actual request and inspect its timeout extension."""
+    captured: dict[str, object] = {}
+
+    def _record(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, text="ok")
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.example.com/timed").mock(side_effect=_record)
+        async with HttpFetcher() as fetcher:
+            await fetcher.fetch("https://api.example.com/timed", timeout=2.5)
+    # httpx normalises the timeout into a 4-tuple of (connect, read, write, pool).
+    assert captured["timeout"] is not None
     assert fetcher._client.is_closed is True

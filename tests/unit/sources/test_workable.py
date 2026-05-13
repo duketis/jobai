@@ -203,3 +203,42 @@ async def test_discover_handles_empty_jobs() -> None:
             jobs = [j async for j in source.discover(fetcher)]
 
     assert jobs == []
+
+
+async def test_discover_raises_when_payload_is_not_a_dict() -> None:
+    """A 200 with a list (or string) at the top level is a wire-format
+    mismatch -- treat it as a fetch error rather than silently yielding
+    nothing. Exercises the ``isinstance(payload, dict)`` False branch."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://apply.workable.com/api/v1/widget/accounts/wrong-shape").mock(
+            return_value=httpx.Response(200, json=["not", "a", "dict"]),
+        )
+        source = WorkableSource(account="wrong-shape")
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(WorkableFetchError) as excinfo:
+                async for _ in source.discover(fetcher):
+                    pass
+    assert excinfo.value.status_code == 200
+
+
+async def test_discover_skips_non_dict_entries_in_jobs_array() -> None:
+    """``payload["jobs"]`` may include stray non-dict entries (None, or
+    a string from a malformed page). Skip them rather than crash on the
+    ``isinstance(job, dict)`` False branch."""
+    payload = {
+        "name": "Co",
+        "jobs": [
+            None,
+            "not-a-dict",
+            {"shortcode": "abc", "title": "Engineer", "url": "https://example/abc"},
+        ],
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://apply.workable.com/api/v1/widget/accounts/mixed").mock(
+            return_value=httpx.Response(200, json=payload),
+        )
+        source = WorkableSource(account="mixed")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert len(jobs) == 1
+    assert jobs[0].source_external_id == "abc"

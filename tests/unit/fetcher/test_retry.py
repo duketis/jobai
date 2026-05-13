@@ -243,6 +243,34 @@ async def test_retry_after_http_date_is_honoured(sleeps: list[float], fake_sleep
     assert 9.0 <= sleeps[0] <= 13.0
 
 
+async def test_retry_after_naive_date_is_treated_as_utc(
+    sleeps: list[float], fake_sleep: Any
+) -> None:
+    """Some servers send Retry-After as an RFC-2822 date without a
+    timezone. parsedate_to_datetime hands back a naive datetime in that
+    case; the parser must treat it as UTC, not crash on the subtraction.
+    Covers the tzinfo-is-None branch in _retry_after_seconds."""
+    future = datetime.now(tz=UTC) + timedelta(seconds=8)
+    # Format without 'usegmt=True' produces a timezone offset; we need a
+    # naive-looking date string. Build one manually that parsedate_to_datetime
+    # parses as naive: 'Mon, 13 May 2026 10:00:00'.
+    naive_date_str = future.strftime("%a, %d %b %Y %H:%M:%S")
+    inner = _ScriptedFetcher(
+        [_resp(429, headers={"retry-after": naive_date_str}), _resp(200)]
+    )
+    async with RetryingFetcher(
+        inner,
+        max_attempts=3,
+        backoff_base=0.1,
+        jitter=0.0,
+        backoff_max=60.0,
+        sleep=fake_sleep,
+    ) as fetcher:
+        await fetcher.fetch("https://example.com")
+    # Naive input was UTC-stamped, so the delay should be ~8s.
+    assert 5.0 <= sleeps[0] <= 11.0
+
+
 async def test_retry_after_capped_by_backoff_max(sleeps: list[float], fake_sleep: Any) -> None:
     inner = _ScriptedFetcher([_resp(429, headers={"retry-after": "9999"}), _resp(200)])
     async with RetryingFetcher(

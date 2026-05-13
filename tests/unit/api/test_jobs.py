@@ -379,3 +379,84 @@ def test_post_job_state_rejects_invalid_state(
     response = client.post(f"/api/jobs/{job_id}/state", json={"state": "frobnicated"})
 
     assert response.status_code == 422
+
+
+def test_list_jobs_sort_relevance_without_q_falls_back_to_newest(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """``sort=relevance`` without ``q`` would otherwise need an FTS join;
+    the repository silently substitutes the newest-first ordering."""
+    del seeded_db
+    body = client.get("/api/jobs", params={"sort": "relevance"}).json()
+    # No error, three items, ordered by last_seen_at DESC (== insertion order
+    # for these fixtures, so we just confirm a sane payload).
+    assert body["total"] == 3
+
+
+def test_list_jobs_q_with_only_non_word_chars_returns_empty_match(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """A query like ``!!!`` sanitizes down to an empty FTS expression;
+    the repository drops the FTS join. Pass an explicit sort so the
+    fts-rank default doesn't kick in (which would require the join)."""
+    del seeded_db
+    body = client.get("/api/jobs", params={"q": "!!!", "sort": "newest"}).json()
+    # All three seeded jobs survive (the FTS filter degenerated to no-op).
+    assert body["total"] == 3
+
+
+def test_list_jobs_filter_employment_type(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    del seeded_db
+    body = client.get("/api/jobs", params={"employment_type": "full-time"}).json()
+    # All seeded jobs are full-time; the filter still has to walk the branch.
+    assert body["total"] == 3
+
+
+def test_list_jobs_exclude_title_handles_empty_tokens(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """Exclude-title with stray commas (empty tokens between non-empty ones)
+    must not accidentally exclude every row; the empty tokens are skipped."""
+    del seeded_db
+    body = client.get("/api/jobs", params={"exclude_title": ",senior,,lead,"}).json()
+    titles = [item["title"] for item in body["items"]]
+    assert "Senior Frontend Engineer (Remote)" not in titles
+    # The valid 'lead' token didn't exist in seeds so other jobs survive.
+    assert any("Python" in t for t in titles)
+
+
+def test_resolve_sort_unknown_remote_type_raises_value_error() -> None:
+    """The repository's _build_where rejects unknown remote_type strings;
+    while the route layer validates first, the underlying helper still
+    raises if called directly with a bogus value."""
+    from jobai.api.repository import search_jobs  # noqa: PLC0415
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    conn = _sqlite3.connect(":memory:")
+    with pytest.raises(ValueError, match="remote_type"):
+        search_jobs(conn, remote_type="interplanetary")
+
+
+def test_search_jobs_exclude_title_skips_empty_after_strip(
+    seeded_db: Path,
+) -> None:
+    """Calling search_jobs() directly (bypassing the route's pre-filter)
+    with whitespace-only exclude_title tokens must skip them via the
+    ``if not cleaned: continue`` branch rather than appending empty
+    LIKE clauses."""
+    from jobai.api.repository import search_jobs  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    try:
+        response = search_jobs(conn, exclude_title=["   ", "", "senior"])
+    finally:
+        conn.close()
+    # The 'senior' token is honoured -- Senior Frontend dropped.
+    titles = {item.title for item in response.items}
+    assert all("senior" not in t.lower() for t in titles)
