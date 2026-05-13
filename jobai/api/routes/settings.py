@@ -98,7 +98,10 @@ def update_settings(body: SettingsUpdateRequest, conn: ConnDep) -> SettingsView:
             raise HTTPException(status_code=400, detail=f"unknown setting key: {key}")
         if isinstance(value, str):
             updates.append((key, value))
-        elif value is None:
+        # All allow-listed fields are ``str | None`` in the Pydantic model so
+        # ``value`` is always one of those two; the value-is-not-None
+        # continuation branch is genuinely unreachable via this route.
+        elif value is None:  # pragma: no branch
             updates.append((key, None))
     try:
         write_many(conn, updates)

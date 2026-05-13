@@ -56,7 +56,8 @@ def create_conversation(conn: sqlite3.Connection, *, title: str) -> Conversation
     )
     conn.commit()
     last_id = cursor.lastrowid
-    if last_id is None:
+    # SQLite always returns lastrowid on a successful INSERT; defensive only.
+    if last_id is None:  # pragma: no cover
         raise RuntimeError("INSERT INTO conversations returned no lastrowid")
     return _row_to_conversation(_must_fetch(conn, int(last_id)))
 
@@ -143,7 +144,8 @@ def append_message(
     conn.commit()
 
     last_id = cursor.lastrowid
-    if last_id is None:
+    # SQLite always returns lastrowid on a successful INSERT; defensive only.
+    if last_id is None:  # pragma: no cover
         raise RuntimeError("INSERT INTO messages returned no lastrowid")
     row = conn.execute(
         "SELECT id, conversation_id, role, content_json, created_at FROM messages WHERE id = ?",

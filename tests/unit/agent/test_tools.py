@@ -280,6 +280,25 @@ def test_mark_job_state_raises_for_non_string_notes(
         )
 
 
+def test_mark_job_state_raises_when_job_id_missing(
+    seeded_conn: sqlite3.Connection,
+) -> None:
+    """No ``job_id`` arg means the tool can't act -- surface a clear
+    ValueError rather than KeyError."""
+    executor = ToolExecutor(seeded_conn)
+    with pytest.raises(ValueError, match="job_id"):
+        executor.execute("mark_job_state", {"state": "saved"})
+
+
+def test_mark_job_state_raises_when_job_id_not_int_parseable(
+    seeded_conn: sqlite3.Connection,
+) -> None:
+    """job_id of 'abc' or a list is unusable; raise a clean ValueError."""
+    executor = ToolExecutor(seeded_conn)
+    with pytest.raises(ValueError, match="job_id"):
+        executor.execute("mark_job_state", {"job_id": "not-a-number", "state": "saved"})
+
+
 # ---------------------------------------------------------------------------
 # list_sources
 # ---------------------------------------------------------------------------
@@ -299,6 +318,36 @@ def test_list_sources_returns_each_source_with_runtime_state(
     assert by_name["greenhouse:atlassian"]["last_error_class"] == "network"
     # lever:palantir has no runtime_state row
     assert by_name["lever:palantir"]["current_tier"] is None
+
+
+# ---------------------------------------------------------------------------
+# Argument coercers (_opt_str / _opt_int / _opt_str_list)
+# ---------------------------------------------------------------------------
+
+
+def test_opt_str_coerces_non_string_input_to_string() -> None:
+    """When the agent hands us a non-string value, fall back to str()."""
+    from jobai.agent.tools import _opt_str  # noqa: PLC0415
+
+    assert _opt_str(42) == "42"
+    assert _opt_str(None) is None
+    assert _opt_str("") is None  # empty string -> None
+    assert _opt_str("kept") == "kept"
+
+
+def test_opt_str_list_handles_every_input_shape() -> None:
+    """Accepts JSON arrays (preferred) and comma-separated strings
+    (defensive). Empty tokens drop out; non-str/non-list inputs map
+    to None."""
+    from jobai.agent.tools import _opt_str_list  # noqa: PLC0415
+
+    assert _opt_str_list(None) is None
+    assert _opt_str_list("senior, ,lead,") == ["senior", "lead"]
+    assert _opt_str_list(["senior", "  ", "lead"]) == ["senior", "lead"]
+    # Non-string / non-list -> None
+    assert _opt_str_list(42) is None
+    # All-empty list resolves to None too (cleaned or None).
+    assert _opt_str_list(["", "  "]) is None
 
 
 # ---------------------------------------------------------------------------

@@ -292,6 +292,23 @@ async def test_backfill_returns_zero_when_nothing_pending(
     assert result == BackfillResult(attempted=0, filled=0, skipped=0)
 
 
+async def test_backfill_skips_when_parser_returns_empty_description(
+    conn: sqlite3.Connection,
+) -> None:
+    """A 200 response whose body the recipe can't parse out a non-empty
+    description from gets skipped (no UPDATE). Exercises the
+    ``not description: continue`` branch."""
+    _seed_job(conn, kind="linkedin", apply_url="https://l.in/job/blank")
+    # LinkedIn parser hunts for div.description__text; an empty body
+    # produces no match -> parse returns None.
+    fetcher = _ScriptedFetcher({"https://l.in/job/blank": _resp(200, body=b"<html></html>")})
+
+    result = await backfill_descriptions(conn, fetcher)
+
+    assert result.filled == 0
+    assert result.skipped == 1
+
+
 def test_recipes_registry_exports_linkedin() -> None:
     assert "linkedin" in RECIPES
     # LinkedIn fetches the apply URL as-is; no wait selector needed.

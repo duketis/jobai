@@ -224,7 +224,10 @@ async def backfill_descriptions(
     skipped = 0
     for job_id, kind, apply_url in pending:
         recipe = recipe_map.get(kind)
-        if recipe is None:
+        # ``select_pending_jobs`` was queried with ``allowed_kinds=tuple(RECIPES.keys())``
+        # so every kind we see here must be a key in RECIPES. The guard exists
+        # as belt-and-braces against future plumbing changes; defensive only.
+        if recipe is None:  # pragma: no cover
             skipped += 1
             continue
         fetch_url = recipe.fetch_url(apply_url)

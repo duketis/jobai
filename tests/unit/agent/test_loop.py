@@ -468,3 +468,157 @@ async def test_history_is_threaded_into_request(executor: ToolExecutor) -> None:
 
 def test_default_max_iterations_is_reasonable() -> None:
     assert 5 <= DEFAULT_MAX_ITERATIONS <= 20
+
+
+# ---------------------------------------------------------------------------
+# _translate_stream_event branches: thinking delta + ignored event shapes
+# ---------------------------------------------------------------------------
+
+
+async def test_thinking_delta_is_forwarded(executor: ToolExecutor) -> None:
+    """``thinking_delta`` events should surface as ``StreamEvent(type='thinking_delta')``."""
+    final = _final_message(
+        content=[{"type": "text", "text": "Done."}],
+        stop_reason="end_turn",
+    )
+    fake_stream = _FakeStream(
+        events=[_thinking_delta("pondering..."), _text_delta("Done.")],
+        final=final,
+    )
+    client = _FakeClient([fake_stream])
+
+    events = await _collect(
+        run_chat_turn(
+            client=client,  # type: ignore[arg-type]
+            model="claude-opus-4-7",
+            user_message="hi",
+            history=[],
+            tool_executor=executor,
+        )
+    )
+    types = [e.type for e in events]
+    assert "thinking_delta" in types
+    assert next(e for e in events if e.type == "thinking_delta").data["text"] == "pondering..."
+
+
+async def test_unknown_stream_events_are_ignored(executor: ToolExecutor) -> None:
+    """Events with shapes the translator doesn't understand (eg
+    ``content_block_stop``, or ``content_block_start`` with a text
+    block, or content_block_delta with an unknown delta type) yield
+    no StreamEvent and don't break the loop."""
+    final = _final_message(
+        content=[{"type": "text", "text": "Done."}],
+        stop_reason="end_turn",
+    )
+    fake_stream = _FakeStream(
+        events=[
+            SimpleNamespace(type="content_block_stop", index=0),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(type="text", text=""),
+            ),
+            # Unknown delta_type triggers the fall-through return-None
+            # branch in _translate_stream_event (thinking-delta else path).
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="signature_delta", signature="sig"),
+            ),
+            _text_delta("Done."),
+        ],
+        final=final,
+    )
+    client = _FakeClient([fake_stream])
+
+    events = await _collect(
+        run_chat_turn(
+            client=client,  # type: ignore[arg-type]
+            model="claude-opus-4-7",
+            user_message="hi",
+            history=[],
+            tool_executor=executor,
+        )
+    )
+    types = [e.type for e in events]
+    # No tool_use_start (because the start block was 'text'); only text_delta + done.
+    assert "tool_use_start" not in types
+    assert types[-1] == "done"
+
+
+# ---------------------------------------------------------------------------
+# _block_to_dict + _accumulate_usage helpers (direct unit tests)
+# ---------------------------------------------------------------------------
+
+
+def test_block_to_dict_passes_dicts_through_unchanged() -> None:
+    from jobai.agent.loop import _block_to_dict  # noqa: PLC0415
+
+    block = {"type": "text", "text": "x", "extra": "preserved"}
+    assert _block_to_dict(block) == block
+
+
+def test_block_to_dict_uses_pydantic_model_dump_when_available() -> None:
+    from jobai.agent.loop import _block_to_dict  # noqa: PLC0415
+
+    class _PydanticLike:
+        def model_dump(self) -> dict[str, Any]:
+            return {"type": "text", "text": "via dump"}
+
+    assert _block_to_dict(_PydanticLike()) == {"type": "text", "text": "via dump"}
+
+
+def test_block_to_dict_falls_through_when_model_dump_returns_non_dict() -> None:
+    """A weird model_dump that returns a non-dict (eg a list) should
+    not crash; the function falls through to the type-driven branches."""
+    from jobai.agent.loop import _block_to_dict  # noqa: PLC0415
+
+    class _BadDump:
+        type = "text"
+        text = "from attrs"
+
+        def model_dump(self) -> list[str]:
+            return ["not", "a", "dict"]
+
+    assert _block_to_dict(_BadDump()) == {"type": "text", "text": "from attrs"}
+
+
+def test_block_to_dict_renders_thinking_blocks() -> None:
+    from jobai.agent.loop import _block_to_dict  # noqa: PLC0415
+
+    thinking_block = SimpleNamespace(type="thinking", thinking="ponder", signature="sig")
+    assert _block_to_dict(thinking_block) == {
+        "type": "thinking",
+        "thinking": "ponder",
+        "signature": "sig",
+    }
+
+
+def test_block_to_dict_falls_back_to_unknown_for_uncovered_types() -> None:
+    from jobai.agent.loop import _block_to_dict  # noqa: PLC0415
+
+    weird = SimpleNamespace(type="never-seen-before")
+    assert _block_to_dict(weird) == {"type": "never-seen-before"}
+    # And when the block has no .type attribute at all -> "unknown".
+    bare = SimpleNamespace()
+    assert _block_to_dict(bare) == {"type": "unknown"}
+
+
+def test_accumulate_usage_skips_when_usage_is_none() -> None:
+    from jobai.agent.loop import _accumulate_usage  # noqa: PLC0415
+
+    running: dict[str, int] = {}
+    _accumulate_usage(running, None)
+    assert running == {}
+
+
+def test_accumulate_usage_ignores_non_int_fields() -> None:
+    from jobai.agent.loop import _accumulate_usage  # noqa: PLC0415
+
+    usage = SimpleNamespace(
+        input_tokens=10,
+        output_tokens="not-an-int",  # ignored
+        cache_creation_input_tokens=None,  # ignored
+        cache_read_input_tokens=3,
+    )
+    running: dict[str, int] = {}
+    _accumulate_usage(running, usage)
+    assert running == {"input_tokens": 10, "cache_read_input_tokens": 3}

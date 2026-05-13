@@ -131,6 +131,11 @@ async def run_subscription_chat_turn(
                 yield event
                 if event.type in {"done", "error"}:
                     return
+        # The SDK normally ends every turn with a ResultMessage (triggering
+        # the early ``return`` above). Falling out of the loop here means
+        # the transport closed without one -- defensive-only, surfaced as
+        # a clean turn end so the chat UI doesn't hang forever.
+        return  # pragma: no cover
     except Exception as exc:  # noqa: BLE001 - report any SDK failure as an event
         _log.warning(
             "agent_subscription_failed",
@@ -264,7 +269,9 @@ async def _translate_message(
                 "usage": dict(result.usage),
             },
         )
-        return
+        # Caller's outer loop short-circuits on the 'done' event above and
+        # never re-enters this generator -- defensive only.
+        return  # pragma: no cover
     if isinstance(message, SystemMessage):
         # Init / sidecar metadata; the chat UI doesn't need it.
         return

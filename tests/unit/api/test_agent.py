@@ -459,3 +459,130 @@ def test_chat_long_message_title_is_truncated(
         conn.close()
     assert len(title) <= 80
     assert title.endswith("…")
+
+
+def test_derive_title_returns_fallback_for_whitespace_message() -> None:
+    """Pydantic min_length=1 prevents an all-empty post, but a message
+    that's just whitespace (already validated as len>0) lands at the
+    title helper with nothing to slice. The fallback fires."""
+    from jobai.api.routes.agent import _derive_title  # noqa: PLC0415
+
+    assert _derive_title("   \n  ") == "Untitled conversation"
+
+
+def test_load_history_returns_empty_when_no_prior_messages(
+    app_with_fake_client: FastAPI,
+    db_path: Path,
+) -> None:
+    """``_load_history`` returns [] for a brand-new conversation with no
+    persisted messages (defensive: the route appends the user turn
+    before calling this helper, but an empty list is still handled)."""
+    del app_with_fake_client
+    from jobai.api.routes.agent import _load_history  # noqa: PLC0415
+    from jobai.agent.conversations import create_conversation  # noqa: PLC0415
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        convo = create_conversation(conn, title="t")
+        history = _load_history(conn, convo.id)
+    finally:
+        conn.close()
+    assert history == []
+
+
+def test_chat_subscription_backend_routes_through_subscription_loop(
+    app_with_fake_client: FastAPI,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When agent_backend='subscription', the SSE stream comes from
+    run_subscription_chat_turn (not the API loop). We swap that
+    function for a fake so the test exercises the route's branch
+    without spawning a real claude CLI."""
+    from jobai.agent.loop import StreamEvent  # noqa: PLC0415
+    from jobai.api import routes  # noqa: PLC0415
+
+    async def fake_subscription_turn(**kwargs: Any) -> AsyncIterator[StreamEvent]:
+        del kwargs
+        yield StreamEvent(type="text_delta", data={"text": "sub-mode"})
+        yield StreamEvent(
+            type="done",
+            data={"stop_reason": "end_turn", "usage": {}},
+        )
+
+    monkeypatch.setattr(
+        routes.agent,
+        "run_subscription_chat_turn",
+        fake_subscription_turn,
+    )
+    # Set agent_backend=subscription via runtime_settings.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) "
+            "VALUES ('agent_backend', 'subscription', datetime('now'))",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with TestClient(app_with_fake_client) as client:
+        response = client.post("/api/agent/chat", json={"message": "hi"})
+    events = _parse_sse(response.text)
+    types = [ev for ev, _ in events]
+    assert "text_delta" in types
+    assert any(payload.get("text") == "sub-mode" for _, payload in events)
+
+
+def test_chat_surfaces_runtime_failure_as_sse_error_event(
+    app_with_fake_client: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected exception inside the loop must surface as an SSE
+    ``error`` event rather than tearing down the HTTP response with a 500."""
+    from jobai.api import routes  # noqa: PLC0415
+
+    async def boom(**kwargs: Any) -> AsyncIterator[Any]:
+        del kwargs
+        raise RuntimeError("loop went bang")
+        yield  # pragma: no cover - keeps the function async-iterator-typed
+
+    monkeypatch.setattr(routes.agent, "run_chat_turn", boom)
+
+    with TestClient(app_with_fake_client) as client:
+        response = client.post("/api/agent/chat", json={"message": "hi"})
+    events = _parse_sse(response.text)
+    error_events = [(t, d) for t, d in events if t == "error"]
+    assert error_events
+    assert error_events[0][1]["error"] == "loop went bang"
+
+
+def test_persist_turn_handles_tool_result_without_paired_assistant(
+    db_path: Path,
+) -> None:
+    """``_persist_turn`` zips assistant + tool_result messages. If the
+    tool_result list is longer (eg a tool ran but the assistant turn
+    that triggered it didn't make it into the list), the loop must
+    still persist the orphan tool_result rather than crashing."""
+    from jobai.agent.conversations import create_conversation, list_messages  # noqa: PLC0415
+    from jobai.agent.loop import TurnResult  # noqa: PLC0415
+    from jobai.api.routes.agent import _persist_turn  # noqa: PLC0415
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        convo = create_conversation(conn, title="t")
+        result = TurnResult()
+        result.tool_result_messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}],
+            },
+        )
+        _persist_turn(conn, convo.id, result)
+        messages = list_messages(conn, convo.id)
+    finally:
+        conn.close()
+    # The orphan tool_result landed as a 'user' role row.
+    assert any(m.role == "user" and "tool_result" in str(m.content) for m in messages)

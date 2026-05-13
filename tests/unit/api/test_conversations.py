@@ -131,3 +131,48 @@ def test_delete_removes_conversation_and_messages(
 def test_delete_404_when_missing(client: TestClient) -> None:
     response = client.delete("/api/conversations/9999")
     assert response.status_code == 404
+
+
+def test_patch_rename_updates_title(client: TestClient, db_path: Path) -> None:
+    """PATCH /api/conversations/{id} with a new title round-trips."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO conversations (title) VALUES (?)",
+            ("orig",),
+        )
+        conv_id = int(cursor.lastrowid or 0)
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.patch(
+        f"/api/conversations/{conv_id}",
+        json={"title": "renamed"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == conv_id
+    assert body["title"] == "renamed"
+
+
+def test_patch_rename_404_when_missing(client: TestClient) -> None:
+    response = client.patch("/api/conversations/9999", json={"title": "new"})
+    assert response.status_code == 404
+
+
+def test_patch_rename_422_when_blank_title(client: TestClient, db_path: Path) -> None:
+    """Whitespace-only titles are rejected by the persistence layer's
+    validator; the route maps that to a 422."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO conversations (title) VALUES (?)",
+            ("orig",),
+        )
+        conv_id = int(cursor.lastrowid or 0)
+        conn.commit()
+    finally:
+        conn.close()
+    response = client.patch(f"/api/conversations/{conv_id}", json={"title": "   "})
+    assert response.status_code == 422

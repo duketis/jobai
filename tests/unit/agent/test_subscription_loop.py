@@ -459,3 +459,328 @@ def test_strip_mcp_prefix_removes_only_jobai_namespace() -> None:
     # Other namespaces (built-in tools, other MCP servers) pass through.
     assert subscription_loop._strip_mcp_prefix("Bash") == "Bash"
     assert subscription_loop._strip_mcp_prefix("mcp__other__foo") == "mcp__other__foo"
+
+
+async def test_oauth_token_is_forwarded_to_options(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """When an OAuth token is supplied, the loop forwards it to the SDK
+    via ``options.env`` rather than leaking it into the parent process
+    environment. Exercises the ``if oauth_token:`` True branch."""
+    captured_env: dict[str, dict[str, str]] = {}
+
+    def fake_query(
+        *, prompt: Any, options: Any = None, transport: Any = None
+    ) -> AsyncIterator[Any]:
+        del prompt, transport
+        captured_env["env"] = dict(options.env)
+
+        async def _gen() -> AsyncIterator[Any]:
+            yield _result_message()
+
+        return _gen()
+
+    monkeypatch.setattr(subscription_loop, "query", fake_query)
+    async for _ in subscription_loop.run_subscription_chat_turn(
+        model=None,
+        user_message="ping",
+        history=[],
+        tool_executor=executor,
+        oauth_token="sk-ant-oat-abc",
+    ):
+        pass
+    assert captured_env["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-abc"
+
+
+async def test_mcp_tool_handler_returns_error_payload_on_exception(
+    executor: ToolExecutor,
+) -> None:
+    """The MCP tool wrapper catches executor failures and returns them
+    as ``is_error: True`` payloads so the model sees a clear failure
+    rather than crashing the SDK transport."""
+    tools = subscription_loop._build_mcp_tools(executor)
+    by_name = {t.name: t for t in tools}
+    # ``mark_job_state`` raises ValueError when 'state' is missing.
+    output = await by_name["mark_job_state"].handler({"job_id": 1})
+    assert output["is_error"] is True
+    assert "ValueError" in output["content"][0]["text"]
+
+
+async def test_mcp_tool_handler_treats_non_dict_args_as_empty(
+    executor: ToolExecutor,
+) -> None:
+    """If the SDK hands the handler something that isn't a dict (eg a
+    list / string), normalise to an empty dict before calling the
+    executor. Exercises the ``isinstance(args, dict)`` False branch."""
+    tools = subscription_loop._build_mcp_tools(executor)
+    by_name = {t.name: t for t in tools}
+    # ``get_health`` doesn't need any args, so the empty-dict fallback
+    # produces a successful payload.
+    output = await by_name["get_health"].handler(["unexpected"])
+    assert "content" in output
+    assert output.get("is_error") is None
+
+
+async def test_result_message_with_non_int_usage_values_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """``usage`` may carry non-int values (None, str). The accumulator
+    must skip those rather than crashing -- exercises the
+    ``isinstance(value, int)`` False branch in _translate_message."""
+    _patch_query(
+        monkeypatch,
+        [
+            _result_message(
+                stop_reason="end_turn",
+                usage={"input_tokens": 5, "cache_read_input_tokens": None},
+            ),
+        ],
+    )
+    result = TurnResult()
+    async for _ in subscription_loop.run_subscription_chat_turn(
+        model=None,
+        user_message="ping",
+        history=[],
+        tool_executor=executor,
+        result=result,
+    ):
+        pass
+    # ``input_tokens`` was accepted; ``cache_read_input_tokens`` was filtered out.
+    assert result.usage == {"input_tokens": 5}
+
+
+async def test_partial_event_with_unknown_delta_type_yields_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """A content_block_delta with an unknown delta_type produces no
+    StreamEvent. Exercises the elif-fall-through branch in
+    _translate_partial_event."""
+    delta_event = SdkStreamEvent(
+        uuid="evt-1",
+        session_id="sess-1",
+        event={"type": "content_block_delta", "delta": {"type": "signature_delta"}},
+    )
+    _patch_query(monkeypatch, [delta_event, _result_message()])
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+        )
+    ]
+    types = [e.type for e in events]
+    # The signature_delta produced no event; only the closing 'done' survives.
+    assert "text_delta" not in types
+    assert "thinking_delta" not in types
+    assert "done" in types
+
+
+async def test_partial_event_with_non_dict_event_payload_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """SDK partial events should normally carry a dict ``event`` payload;
+    if a future SDK version hands us a non-dict, we treat it as an
+    empty record rather than crash. Exercises the
+    ``isinstance(message.event, dict)`` False branch."""
+    weird = SdkStreamEvent(uuid="evt-w", session_id="sess-w", event="not-a-dict")  # type: ignore[arg-type]
+    _patch_query(monkeypatch, [weird, _result_message()])
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+        )
+    ]
+    # No partial deltas surface; the run still completes cleanly.
+    assert events[-1].type == "done"
+
+
+def test_flatten_tool_result_content_uniform_text_blocks_joined() -> None:
+    """A list of dict text blocks should flatten into a single string."""
+    out = subscription_loop._flatten_tool_result_content(
+        [{"type": "text", "text": "hello "}, {"type": "text", "text": "world"}],
+    )
+    assert out == "hello world"
+
+
+def test_flatten_tool_result_content_handles_objects_with_text_attr() -> None:
+    """Block objects with a ``.text`` attribute (the SDK's own block
+    classes) also flatten cleanly."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    out = subscription_loop._flatten_tool_result_content(
+        [SimpleNamespace(text="from-attr")],
+    )
+    assert out == "from-attr"
+
+
+def test_flatten_tool_result_content_passes_through_when_not_a_list() -> None:
+    """A string content is returned verbatim -- the early ``isinstance(content, list)``
+    False branch."""
+    assert subscription_loop._flatten_tool_result_content("plain") == "plain"
+
+
+def test_flatten_tool_result_content_returns_input_when_no_text_chunks() -> None:
+    """A list whose blocks have neither ``type=text`` nor a ``.text``
+    attribute returns the original list (no chunks accumulated)."""
+    payload = [{"type": "image", "data": "..."}, 42]
+    assert subscription_loop._flatten_tool_result_content(payload) is payload
+
+
+def test_iter_user_blocks_returns_empty_for_string_content() -> None:
+    """``UserMessage.content`` may be a plain string for synthetic user
+    inputs the loop generates -- normalise to an empty block list."""
+    msg = UserMessage(content="hi there", parent_tool_use_id=None)
+    assert subscription_loop._iter_user_blocks(msg) == []
+
+
+async def test_user_echo_without_tool_result_blocks_yields_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """A UserMessage whose blocks are all text (not ToolResultBlock)
+    produces no tool_result events. Exercises the ToolResultBlock False
+    branch in _translate_user_echo."""
+    msg = UserMessage(
+        content=[TextBlock(text="hi")],
+        parent_tool_use_id=None,
+    )
+    _patch_query(monkeypatch, [msg, _result_message()])
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+        )
+    ]
+    assert all(e.type != "tool_result" for e in events)
+
+
+async def test_partial_event_empty_text_delta_yields_no_event(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """An empty-text content_block_delta is a no-op. Exercises the
+    ``if text:`` False branch on the text/thinking delta paths."""
+    empty_text = SdkStreamEvent(
+        uuid="evt-et",
+        session_id="sess-et",
+        event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": ""}},
+    )
+    empty_thinking = SdkStreamEvent(
+        uuid="evt-eth",
+        session_id="sess-eth",
+        event={
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": ""},
+        },
+    )
+    _patch_query(monkeypatch, [empty_text, empty_thinking, _result_message()])
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+        )
+    ]
+    types = [e.type for e in events]
+    assert "text_delta" not in types
+    assert "thinking_delta" not in types
+
+
+async def test_assistant_message_with_only_empty_blocks_emits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """An AssistantMessage carrying only empty-text + empty-thinking
+    blocks produces no tool_call event and stores no persisted blocks.
+    Covers the ``if blocks: append`` False branch in _translate_assistant."""
+    msg = AssistantMessage(
+        content=[TextBlock(text=""), ThinkingBlock(thinking="", signature="")],
+        model="claude-sonnet-4-6",
+        parent_tool_use_id=None,
+    )
+    _patch_query(monkeypatch, [msg, _result_message()])
+    result = TurnResult()
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+            result=result,
+        )
+    ]
+    # No tool_call events, no persisted assistant turn.
+    assert all(e.type != "tool_call" for e in events)
+    assert result.assistant_messages == []
+
+
+async def test_assistant_message_with_unhandled_block_type_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """A block that isn't TextBlock / ThinkingBlock / ToolUseBlock skips
+    every elif and loops to the next iteration. Exercises the
+    ``elif ToolUseBlock`` False branch in _translate_assistant."""
+
+    class _UnknownBlock:
+        """SDK adding a new block type would land here until we extend
+        the translator -- the runtime must not crash on it."""
+
+    msg = AssistantMessage(
+        content=[_UnknownBlock(), TextBlock(text="visible")],
+        model="claude-sonnet-4-6",
+        parent_tool_use_id=None,
+    )
+    _patch_query(monkeypatch, [msg, _result_message()])
+    result = TurnResult()
+    async for _ in subscription_loop.run_subscription_chat_turn(
+        model=None,
+        user_message="ping",
+        history=[],
+        tool_executor=executor,
+        result=result,
+    ):
+        pass
+    # The TextBlock survived; the unknown block was silently dropped.
+    assert result.assistant_messages == [
+        {"role": "assistant", "content": [{"type": "text", "text": "visible"}]},
+    ]
+
+
+async def test_unhandled_sdk_message_type_is_logged_and_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: ToolExecutor,
+) -> None:
+    """A message type the translator doesn't recognise (eg a future
+    SDK addition) is logged at debug level and produces no events."""
+
+    class _MysteryMessage:
+        pass
+
+    _patch_query(monkeypatch, [_MysteryMessage(), _result_message()])
+    events = [
+        ev
+        async for ev in subscription_loop.run_subscription_chat_turn(
+            model=None,
+            user_message="ping",
+            history=[],
+            tool_executor=executor,
+        )
+    ]
+    # Only the closing 'done' from _result_message survives.
+    assert [e.type for e in events] == ["done"]

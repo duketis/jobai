@@ -18,6 +18,7 @@ from jobai.agent.conversations import (
     list_conversations,
     list_messages,
     messages_to_anthropic_format,
+    rename_conversation,
 )
 from jobai.db.migrations import apply_pending
 
@@ -207,3 +208,45 @@ def test_messages_to_anthropic_format_roundtrips(conn: sqlite3.Connection) -> No
             "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "5 results"}],
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# rename_conversation
+# ---------------------------------------------------------------------------
+
+
+def test_rename_conversation_updates_title_and_bumps_updated_at(
+    conn: sqlite3.Connection,
+) -> None:
+    convo = create_conversation(conn, title="orig")
+    renamed = rename_conversation(conn, convo.id, title="new title")
+    assert renamed.id == convo.id
+    assert renamed.title == "new title"
+
+
+def test_rename_conversation_404_when_missing(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ConversationNotFoundError):
+        rename_conversation(conn, 9999, title="nope")
+
+
+def test_rename_conversation_rejects_blank_title(conn: sqlite3.Connection) -> None:
+    convo = create_conversation(conn, title="orig")
+    with pytest.raises(ValueError, match="must not be empty"):
+        rename_conversation(conn, convo.id, title="   ")
+
+
+def test_row_to_message_raises_on_invalid_content_json(
+    conn: sqlite3.Connection,
+) -> None:
+    """messages.content_json must round-trip as list or str; a dict /
+    number / null at the top level is a wire-format violation that the
+    loader must reject loudly rather than yielding a malformed message."""
+    convo = create_conversation(conn, title="x")
+    # Hand-craft a row with bogus JSON so list_messages tries to load it.
+    conn.execute(
+        "INSERT INTO messages (conversation_id, role, content_json) VALUES (?, ?, ?)",
+        (convo.id, "user", '{"oops": "not list or str"}'),
+    )
+    conn.commit()
+    with pytest.raises(TypeError, match="neither list nor str"):
+        list_messages(conn, convo.id)

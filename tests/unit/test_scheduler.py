@@ -229,3 +229,163 @@ def test_register_description_backfill_uses_configurable_interval(
 
 async def _noop_job() -> None:
     return None
+
+
+# ---------------------------------------------------------------------------
+# Other branches: existing non-managed jobs, default factory, backfill body
+# ---------------------------------------------------------------------------
+
+
+def test_register_sources_preserves_jobs_outside_managed_namespace(
+    seeded_db: Path,
+) -> None:
+    """Jobs whose id doesn't start with the managed prefix must survive
+    re-registration. Covers the ``101 -> 100`` continue branch."""
+    scheduler = build_scheduler()
+    scheduler.add_job(_noop_job, id="unrelated-pre-existing", trigger="interval", seconds=60)
+    register_sources(
+        scheduler,
+        db_path=seeded_db,
+        job_factory=lambda _id, _path: _noop_job,
+    )
+    assert scheduler.get_job("unrelated-pre-existing") is not None
+
+
+async def test_default_job_factory_invokes_run_source_by_id(
+    seeded_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default factory returns a coroutine that calls run_source_by_id
+    with the bound source_id + db_path."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    seen: list[tuple[int, Path]] = []
+
+    async def fake(source_id: int, db_path: Path) -> None:
+        seen.append((source_id, db_path))
+        return None
+
+    monkeypatch.setattr(scheduler_mod, "run_source_by_id", fake)
+    coro_factory = scheduler_mod._default_job_factory(42, seeded_db)
+    await coro_factory()
+    assert seen == [(42, seeded_db)]
+
+
+async def test_run_description_backfill_calls_backfill_with_tier3_fetcher(
+    seeded_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduled backfill tick should build a tier-3 fetcher, hand
+    it to backfill_descriptions, and close it on the way out."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    class _FakeFetcher:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    captured: dict[str, object] = {}
+    fake = _FakeFetcher()
+
+    def fake_build(*, tier: int, **kwargs: object) -> _FakeFetcher:
+        captured["tier"] = tier
+        return fake
+
+    async def fake_backfill(
+        conn: object, fetcher: object, *, limit: int
+    ) -> scheduler_mod.BackfillResult:  # type: ignore[attr-defined]
+        from jobai.pipeline.description_backfill import BackfillResult  # noqa: PLC0415
+
+        captured["limit"] = limit
+        captured["fetcher_is_fake"] = fetcher is fake
+        return BackfillResult(attempted=2, filled=1, skipped=1)
+
+    monkeypatch.setattr(scheduler_mod, "build_fetcher", fake_build)
+    monkeypatch.setattr(scheduler_mod, "backfill_descriptions", fake_backfill)
+
+    await scheduler_mod._run_description_backfill(seeded_db, limit=5)
+    assert captured["tier"] == 3
+    assert captured["limit"] == 5
+    assert captured["fetcher_is_fake"] is True
+    assert fake.closed is True
+
+
+async def test_register_description_backfill_inner_run_invokes_backfill(
+    seeded_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inner ``_run`` coroutine that ``register_description_backfill``
+    schedules just delegates to ``_run_description_backfill``. Pulling the
+    job out of the scheduler and invoking its target covers that line."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    seen: list[tuple[Path, int]] = []
+
+    async def fake_run(db_path: Path, *, limit: int) -> None:
+        seen.append((db_path, limit))
+        return None
+
+    monkeypatch.setattr(scheduler_mod, "_run_description_backfill", fake_run)
+    scheduler = build_scheduler()
+    register_description_backfill(
+        scheduler, db_path=seeded_db, interval_seconds=60, limit_per_tick=7
+    )
+    job = scheduler.get_job(_BACKFILL_JOB_ID)
+    assert job is not None
+    await job.func()
+    assert seen == [(seeded_db, 7)]
+
+
+async def test_run_source_by_id_executes_runner_for_enabled_source(
+    seeded_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The happy path: enabled source, registered kind. The function
+    builds the source instance, the fetcher, and calls run_source.
+    All three are monkey-patched out so no real HTTP / browser fires."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    captured: dict[str, object] = {}
+
+    class _FakeFetcher:
+        async def aclose(self) -> None:
+            captured["closed"] = True
+
+    class _FakeSource:
+        needs_persistent_session = False
+
+        def __init__(self, *, account: str) -> None:
+            captured["source_account"] = account
+
+    def fake_get_source_class(kind: str) -> type[_FakeSource]:
+        captured["kind_requested"] = kind
+        return _FakeSource
+
+    def fake_build_fetcher(**kwargs: object) -> _FakeFetcher:
+        captured["fetcher_kwargs"] = kwargs
+        return _FakeFetcher()
+
+    async def fake_run_source(**kwargs: object) -> scheduler_mod.RunResult:  # type: ignore[name-defined]
+        from jobai.pipeline.runner import RunResult  # noqa: PLC0415
+
+        captured["run_source_called"] = True
+        return RunResult(
+            run_id=1,
+            status="success",
+            items_seen=0,
+            items_new=0,
+            items_updated=0,
+        )
+
+    monkeypatch.setattr(scheduler_mod, "get_source_class", fake_get_source_class)
+    monkeypatch.setattr(scheduler_mod, "build_fetcher", fake_build_fetcher)
+    monkeypatch.setattr(scheduler_mod, "run_source", fake_run_source)
+
+    # seeded_db has greenhouse:atlassian as source_id=1.
+    result = await run_source_by_id(1, seeded_db)
+    assert result is not None
+    assert result.status == "success"
+    assert captured["run_source_called"] is True
+    assert captured["closed"] is True
