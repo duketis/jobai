@@ -12,6 +12,7 @@
 
 import type {
   AgentStreamEvent,
+  ContextFile,
   ConversationDetailResponse,
   ConversationsListResponse,
   HealthSnapshot,
@@ -285,6 +286,73 @@ function parseSseEvent(chunk: string): AgentStreamEvent | null {
     }
   }
   return { type: eventType, data } as AgentStreamEvent;
+}
+
+/** GET /api/context — newest-first list of every entry in the pool. */
+export async function listContextFiles(): Promise<ContextFile[]> {
+  return fetchJson<ContextFile[]>("/context");
+}
+
+/** POST /api/context/snippet — multipart form-encoded create. */
+export async function addContextSnippet(input: {
+  name: string;
+  text: string;
+  tags?: string;
+  note?: string;
+}): Promise<ContextFile> {
+  const form = new FormData();
+  form.set("name", input.name);
+  form.set("text", input.text);
+  if (input.tags) form.set("tags", input.tags);
+  if (input.note) form.set("note", input.note);
+  const response = await fetch(`${API_BASE}/context/snippet`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `POST /context/snippet → HTTP ${response.status}`,
+      response.status,
+      await response.text(),
+    );
+  }
+  return (await response.json()) as ContextFile;
+}
+
+/** POST /api/context/file — multipart upload (PDF / markdown / text). */
+export async function uploadContextFile(input: {
+  file: File;
+  tags?: string;
+  note?: string;
+}): Promise<ContextFile> {
+  const form = new FormData();
+  form.set("upload", input.file);
+  if (input.tags) form.set("tags", input.tags);
+  if (input.note) form.set("note", input.note);
+  const response = await fetch(`${API_BASE}/context/file`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `POST /context/file → HTTP ${response.status}`,
+      response.status,
+      await response.text(),
+    );
+  }
+  return (await response.json()) as ContextFile;
+}
+
+/** DELETE /api/context/{id} — remove one entry. */
+export async function deleteContextFile(fileId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/context/${fileId}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(
+      `DELETE /context/${fileId} → HTTP ${response.status}`,
+      response.status,
+      await response.text(),
+    );
+  }
 }
 
 export { ApiError };

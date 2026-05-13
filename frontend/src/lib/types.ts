@@ -201,3 +201,15 @@ export type AgentStreamEvent =
   | { type: "pause_turn"; data: Record<string, never> }
   | { type: "done"; data: { stop_reason: string; usage?: Record<string, number>; iterations?: number } }
   | { type: "error"; data: { error_class: string; error: string } };
+
+/** One entry in the shared user-context pool (proxied from resumeai). */
+export interface ContextFile {
+  id: string;
+  name: string;
+  kind: string;
+  extracted_text: string | null;
+  byte_size: number;
+  tags: string[];
+  uploaded_at: string;
+  note: string | null;
+}

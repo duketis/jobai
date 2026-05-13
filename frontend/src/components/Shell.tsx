@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Briefcase, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Briefcase, FolderOpen, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
 
@@ -182,6 +182,11 @@ function Sidebar() {
           to="/tailor-runs"
           icon={<Sparkles className="size-4" />}
           label="Tailor runs"
+        />
+        <SidebarLink
+          to="/context"
+          icon={<FolderOpen className="size-4" />}
+          label="Context pool"
         />
       </nav>
 

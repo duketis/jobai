@@ -27,6 +27,7 @@ export default defineConfig({
         "src/components/TailorButton.tsx",
         "src/components/TailorStatusPill.tsx",
         "src/lib/useTailorRuns.ts",
+        "src/pages/ContextPage.tsx",
         "src/pages/TailorRunsPage.tsx",
       ],
       thresholds: {
