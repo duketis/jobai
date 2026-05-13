@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Briefcase, Plus, Trash2 } from "lucide-react";
+import { Briefcase, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
 
@@ -178,6 +178,11 @@ function Sidebar() {
 
       <nav className="p-2 space-y-1">
         <SidebarLink to="/jobs" icon={<Briefcase className="size-4" />} label="Jobs" />
+        <SidebarLink
+          to="/tailor-runs"
+          icon={<Sparkles className="size-4" />}
+          label="Tailor runs"
+        />
       </nav>
 
       <div className="px-3 py-2 flex items-center justify-between">
