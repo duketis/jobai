@@ -121,6 +121,47 @@ export interface SettingsView {
   has_claude_code_oauth_token: boolean;
 }
 
+/** Lifecycle states a tailor chain walks through. Matches the backend enum
+ * in jobai/tailor/models.py and the CHECK constraint in migration 0005. */
+export type TailorRunStatus =
+  | "pending"
+  | "resume_running"
+  | "letter_running"
+  | "succeeded"
+  | "failed";
+
+/** One row in tailor_runs as exposed via /api/tailor/runs[/:id]. */
+export interface TailorRunRecord {
+  id: number;
+  job_id: number;
+  status: TailorRunStatus;
+  resume_run_id: string | null;
+  resume_status: string | null;
+  letter_run_id: string | null;
+  letter_status: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+/** Paginated list response from /api/tailor/runs. */
+export interface TailorRunsListResponse {
+  items: TailorRunRecord[];
+}
+
+/** 202 response to POST /api/tailor/jobs/{id}. */
+export interface KickOneResponse {
+  tailor_run_id: number;
+  job_id: number;
+  status: TailorRunStatus;
+}
+
+/** 202 response to POST /api/tailor/batch. */
+export interface KickBatchResponse {
+  items: KickOneResponse[];
+}
+
 /**
  * Server-Sent Event types emitted by /api/agent/chat. Maps 1:1 to the
  * StreamEvent type values produced by the agent loop in

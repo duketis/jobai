@@ -19,8 +19,13 @@ import type {
   JobState,
   JobStateResponse,
   JobsListResponse,
+  KickBatchResponse,
+  KickOneResponse,
   SettingsView,
   SourceSummary,
+  TailorRunRecord,
+  TailorRunStatus,
+  TailorRunsListResponse,
 } from "./types";
 
 const API_BASE = "/api";
@@ -156,6 +161,58 @@ export async function updateSettings(body: SettingsUpdate): Promise<SettingsView
 
 export async function listSources(): Promise<{ items: SourceSummary[] }> {
   return fetchJson<{ items: SourceSummary[] }>("/sources");
+}
+
+// ---------------------------------------------------------------------------
+// Tailor endpoints (resumeai + coverletterai chain)
+// ---------------------------------------------------------------------------
+
+/** Kick off a tailor chain for a single canonical job id. */
+export async function tailorOneJob(jobId: number): Promise<KickOneResponse> {
+  return fetchJson<KickOneResponse>(`/tailor/jobs/${jobId}`, { method: "POST" });
+}
+
+/** Kick off tailor chains for many jobs at once. */
+export async function tailorJobBatch(jobIds: number[]): Promise<KickBatchResponse> {
+  return fetchJson<KickBatchResponse>("/tailor/batch", {
+    method: "POST",
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+}
+
+export interface TailorRunsListParams {
+  job_id?: number;
+  status?: TailorRunStatus;
+  limit?: number;
+}
+
+/** List tailor runs newest-first with optional filters. */
+export async function listTailorRuns(
+  params: TailorRunsListParams = {},
+): Promise<TailorRunsListResponse> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      query.set(key, String(value));
+    }
+  }
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return fetchJson<TailorRunsListResponse>(`/tailor/runs${suffix}`);
+}
+
+/** Fetch one tailor run by id. */
+export async function getTailorRun(tailorRunId: number): Promise<TailorRunRecord> {
+  return fetchJson<TailorRunRecord>(`/tailor/runs/${tailorRunId}`);
+}
+
+/** URL the browser can use to download the resume PDF for a tailor run. */
+export function tailorRunResumePdfUrl(tailorRunId: number): string {
+  return `${API_BASE}/tailor/runs/${tailorRunId}/resume.pdf`;
+}
+
+/** URL the browser can use to download the cover-letter PDF for a tailor run. */
+export function tailorRunLetterPdfUrl(tailorRunId: number): string {
+  return `${API_BASE}/tailor/runs/${tailorRunId}/letter.pdf`;
 }
 
 /**
