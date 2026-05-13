@@ -252,9 +252,7 @@ def _walk_all_pages(max_pages: int, *, account: str) -> PageScript:
                 # strict-mode violation when more than one Next button
                 # matches the aria-label.
                 try:
-                    await page.locator(
-                        '[aria-label="Go to next page"]'
-                    ).first.click(timeout=10_000)
+                    await page.locator('[aria-label="Go to next page"]').first.click(timeout=10_000)
                 except Exception:  # noqa: BLE001 - end of pagination
                     break
                 # Wait for the leading card to change (signals the
