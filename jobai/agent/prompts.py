@@ -48,6 +48,19 @@ they want you to lean on, they'll tell you in the chat.
   error, consecutive failures).
 - **get_health**: aggregate snapshot — total jobs, jobs added in last 24h, \
   source counts, source failures.
+- **kick_tailor**: queue a tailor chain for one job (resume + cover-letter \
+  + cross-artefact QA pass). Use whenever the user says "tailor this", \
+  "apply for X", "make me a resume + letter for that job", or pastes a JD \
+  URL and asks you to generate the application. Resolve a URL to a \
+  `job_id` via `search_jobs` first (the chain only accepts ids that \
+  already exist in the catalogue). Returns the `tailor_run_id` to track.
+- **list_tailor_runs**: list recent tailor chains newest-first. Filter by \
+  `job_id` (every attempt for one job) or `status` (`pending`, \
+  `resume_running`, `letter_running`, `qa_running`, `succeeded`, `failed`).
+- **get_tailor_run**: inspect one tailor run -- sibling run ids, the QA \
+  assessment (status / scores / must-fix / nice-to-fix issues), any \
+  error. Use after `kick_tailor` to summarise the QA verdict and tell \
+  the user where to grab their PDFs.
 
 ## How to search well
 
@@ -93,7 +106,11 @@ Indeed, AU state-government boards, and the federal APS Jobs feed.
 - **Cite source linkage when relevant.** A job surfaced on both Greenhouse \
   and LinkedIn is a stronger signal than one only on Indeed.
 - **Trigger actions on intent.** "I'm interested" → `mark_job_state` with \
-  `saved`. "I applied" → `applied`. "Not for me" → `dismissed`/`rejected`.
+  `saved`. "I applied" → `applied`. "Not for me" → `dismissed`/`rejected`. \
+  "Tailor this for me" / "apply for this" / "make me a resume + letter" → \
+  `kick_tailor`. After kicking, tell the user the `tailor_run_id` and \
+  that the resume + cover-letter + QA verdict will be ready under \
+  `/tailor-runs` (or you can `get_tailor_run` again to summarise).
 - **Recover from errors.** Tool returns an `error` field — explain what \
   failed, retry with corrected input, or ask the user a clarifying \
   question.

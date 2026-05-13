@@ -20,13 +20,23 @@ sees them and can recover.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from jobai.api.repository import get_job_detail, search_jobs
+from jobai.api.runtime_settings import get_effective_agent_config
+from jobai.tailor.models import TailorRunStatus
+from jobai.tailor.qa import build_qa_client
+from jobai.tailor.repository import create_tailor_run, get_tailor_run, list_tailor_runs
+
+if TYPE_CHECKING:
+    from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
+    from jobai.tailor.worker import TailorPool
 
 # ---------------------------------------------------------------------------
 # Tool definitions (the JSON schemas Anthropic's API accepts in `tools=`)
@@ -179,6 +189,78 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "kick_tailor",
+        "description": (
+            "Start a tailor chain for one job. Queues resumeai (tailor the "
+            "resume to the JD) + coverletterai (write a matching cover letter) "
+            "+ the cross-artefact QA pass. Use whenever the user says 'tailor "
+            "this job', 'apply for this', 'make me a resume + cover letter for "
+            "job N', or pastes a JD URL and asks you to generate the application. "
+            "Returns the tailor_run_id the user can track via list_tailor_runs / "
+            "get_tailor_run -- check status='succeeded' before pointing them at "
+            "the PDFs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "integer",
+                    "description": (
+                        "Canonical jobs.id to tailor for. Resolve a JD URL to "
+                        "an id via search_jobs first; the chain refuses to "
+                        "start for unknown ids."
+                    ),
+                },
+            },
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "list_tailor_runs",
+        "description": (
+            "List recent tailor chains newest-first. Use to answer 'what have "
+            "you tailored for me?', 'are any tailors still running?', 'show me "
+            "my last 5 applications'. Optionally filter by job_id (every "
+            "attempt for one job) or status (pending / resume_running / "
+            "letter_running / qa_running / succeeded / failed)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer"},
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "resume_running",
+                        "letter_running",
+                        "qa_running",
+                        "succeeded",
+                        "failed",
+                    ],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum runs returned (1-100, default 20).",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_tailor_run",
+        "description": (
+            "Fetch one tailor run by id, including the QA assessment (status, "
+            "scores, must-fix / nice-to-fix issues) when the chain reached "
+            "succeeded. Use to inspect why a chain failed, or to summarise the "
+            "QA verdict for the user after kick_tailor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"tailor_run_id": {"type": "integer"}},
+            "required": ["tailor_run_id"],
+        },
+    },
 ]
 
 _VALID_USER_STATES = frozenset({"new", "saved", "applied", "dismissed", "rejected"})
@@ -206,14 +288,33 @@ class ToolExecutor:
     user-turn ``tool_result`` block via :func:`serialise_result`.
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        tailor_pool: TailorPool | None = None,
+        resume_client: ResumeaiClient | None = None,
+        letter_client: CoverletteraiClient | None = None,
+        db_path: Path | None = None,
+    ) -> None:
         self._conn = conn
+        # Tailor deps are optional so callers that don't need the chain
+        # (tests, scripts, future surfaces) can still build a basic
+        # executor. The kick_tailor handler short-circuits with a clear
+        # error when any of them is missing.
+        self._tailor_pool = tailor_pool
+        self._resume_client = resume_client
+        self._letter_client = letter_client
+        self._db_path = db_path
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "search_jobs": self._search_jobs,
             "get_job_detail": self._get_job_detail,
             "mark_job_state": self._mark_job_state,
             "list_sources": self._list_sources,
             "get_health": self._get_health,
+            "kick_tailor": self._kick_tailor,
+            "list_tailor_runs": self._list_tailor_runs,
+            "get_tailor_run": self._get_tailor_run,
         }
 
     def execute(self, name: str, tool_input: Mapping[str, Any]) -> Any:
@@ -354,6 +455,105 @@ class ToolExecutor:
             ),
             "last_scrape_at": last_scrape_at,
         }
+
+
+    # ---- tailor handlers ----
+
+    def _kick_tailor(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Start a tailor chain for ``args['job_id']`` (resume -> letter -> QA).
+
+        Equivalent to ``POST /api/tailor/jobs/{id}`` but driven from the
+        chat agent: it inserts a tailor_runs row + queues the chain on
+        the lifespan-owned pool, then returns the run id so the model
+        can follow up with ``list_tailor_runs`` / ``get_tailor_run``.
+        """
+        try:
+            job_id = int(args["job_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            msg = "job_id (integer) is required"
+            raise ValueError(msg) from exc
+
+        if (
+            self._tailor_pool is None
+            or self._resume_client is None
+            or self._letter_client is None
+            or self._db_path is None
+        ):
+            return {
+                "error": (
+                    "tailor chain is not wired in this request -- the chat "
+                    "endpoint built a ToolExecutor without the sibling clients "
+                    "or background pool. Reach the tailor surface via the "
+                    "/api/tailor/jobs/{id} HTTP route instead."
+                ),
+            }
+
+        if self._conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is None:
+            return {"error": f"job {job_id} not found"}
+
+        record = create_tailor_run(self._conn, job_id=job_id)
+        cfg = get_effective_agent_config(self._conn)
+        qa_client = build_qa_client(cfg)
+
+        # Import locally to avoid a circular import at module load time
+        # (jobai.tailor.orchestrator imports from jobai.tailor.repository,
+        # and pulling it at the top of this file pulls a lot of weight).
+        from jobai.tailor.orchestrator import run_chain  # noqa: PLC0415
+
+        # Mypy can't track that the early-return above narrows these to
+        # non-None for the closure body; assign locals so the captured
+        # references are concrete.
+        pool = self._tailor_pool
+        resume_client = self._resume_client
+        letter_client = self._letter_client
+        db_path = self._db_path
+
+        # pragma applied to the body: run_chain has its own coverage and
+        # the factory only runs inside the live TailorPool (not in unit tests).
+        async def _factory() -> None:  # pragma: no cover
+            await run_chain(
+                record.id,
+                db_path=db_path,
+                resume_client=resume_client,
+                letter_client=letter_client,
+                sleeper=asyncio.sleep,
+                qa_client=qa_client,
+            )
+
+        pool.submit(_factory)
+        return {
+            "tailor_run_id": record.id,
+            "job_id": record.job_id,
+            "status": record.status.value,
+        }
+
+    def _list_tailor_runs(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            limit = int(args.get("limit", 20))
+        except (TypeError, ValueError) as exc:
+            msg = "limit must be an integer"
+            raise ValueError(msg) from exc
+        limit = max(1, min(100, limit))
+        job_id = _opt_int(args.get("job_id"))
+        status_raw = _opt_str(args.get("status"))
+        try:
+            status = TailorRunStatus(status_raw) if status_raw else None
+        except ValueError as exc:
+            msg = f"status must be one of {sorted(s.value for s in TailorRunStatus)}"
+            raise ValueError(msg) from exc
+        records = list_tailor_runs(self._conn, job_id=job_id, status=status, limit=limit)
+        return {"items": [record.model_dump(mode="json") for record in records]}
+
+    def _get_tailor_run(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            tailor_run_id = int(args["tailor_run_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            msg = "tailor_run_id (integer) is required"
+            raise ValueError(msg) from exc
+        record = get_tailor_run(self._conn, tailor_run_id)
+        if record is None:
+            return {"error": f"tailor run {tailor_run_id} not found"}
+        return record.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

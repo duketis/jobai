@@ -25,10 +25,11 @@ import logging
 import sqlite3
 from collections.abc import AsyncIterator
 from itertools import zip_longest
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 from anthropic import AsyncAnthropic
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sse_starlette.sse import EventSourceResponse
 
 from jobai.agent.conversations import (
@@ -43,8 +44,9 @@ from jobai.agent.conversations import (
 from jobai.agent.loop import StreamEvent, TurnResult, run_chat_turn
 from jobai.agent.subscription_loop import run_subscription_chat_turn
 from jobai.agent.tools import ToolExecutor
-from jobai.api.dependencies import AnthropicDep, ConnDep, ModelDep
+from jobai.api.dependencies import AnthropicDep, ConnDep, ModelDep, get_db_path
 from jobai.api.models import AgentChatRequest
+from jobai.api.routes.tailor import LetterDep, PoolDep, ResumeDep
 from jobai.api.runtime_settings import get_effective_agent_config
 
 router = APIRouter()
@@ -66,6 +68,10 @@ async def chat(
     conn: ConnDep,
     fallback_client: AnthropicDep,
     fallback_model: ModelDep,
+    tailor_pool: PoolDep,
+    resume_client: ResumeDep,
+    letter_client: LetterDep,
+    db_path: Annotated[Path, Depends(get_db_path)],
 ) -> EventSourceResponse:
     """Stream one turn through the agent loop as SSE.
 
@@ -96,6 +102,10 @@ async def chat(
             user_message=body.message,
             fallback_client=fallback_client,
             fallback_model=fallback_model,
+            tailor_pool=tailor_pool,
+            resume_client=resume_client,
+            letter_client=letter_client,
+            db_path=db_path,
         ),
     )
 
@@ -140,6 +150,10 @@ async def _stream_turn(
     user_message: str,
     fallback_client: AsyncAnthropic,
     fallback_model: str,
+    tailor_pool: Any,
+    resume_client: Any,
+    letter_client: Any,
+    db_path: Path,
 ) -> AsyncIterator[dict[str, str]]:
     """Drive the agent loop and yield SSE-shaped dicts.
 
@@ -156,7 +170,13 @@ async def _stream_turn(
     yield _sse("conversation", {"conversation_id": conversation_id})
 
     history = _load_history(conn, conversation_id)
-    executor = ToolExecutor(conn)
+    executor = ToolExecutor(
+        conn,
+        tailor_pool=tailor_pool,
+        resume_client=resume_client,
+        letter_client=letter_client,
+        db_path=db_path,
+    )
     result = TurnResult()
     cfg = get_effective_agent_config(conn)
 
