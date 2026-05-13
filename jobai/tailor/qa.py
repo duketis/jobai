@@ -78,9 +78,37 @@ How to set ``status``:
 - 'concerns' : 60 <= any score < 80, OR any nice_to_fix issue.
 - 'fail'     : any score < 60, OR any must_fix issue.
 
-Output STRICT JSON matching the QAAssessment schema. No fences, no
-preamble, no commentary -- just the JSON object. The orchestrator
-parses your output directly.
+# OUTPUT FORMAT
+
+Return STRICT JSON only. No fences, no preamble, no commentary --
+the orchestrator parses your output directly with a Pydantic model
+and will mark the run as a parse failure if anything else is present.
+
+EVERY field below is REQUIRED. ``coverage_score``,
+``consistency_score`` and ``format_score`` are integers 0-100; emit
+them on every response, even when you can't draw strong signal --
+use a neutral 60 in that case and call out the missing context in
+``summary`` instead of omitting the field. ``must_fix_issues`` and
+``nice_to_fix_issues`` are arrays (may be empty); ``summary`` is a
+short paragraph.
+
+Exact response shape:
+
+{
+  "status": "pass" | "concerns" | "fail",
+  "coverage_score": 0..100,
+  "consistency_score": 0..100,
+  "format_score": 0..100,
+  "must_fix_issues": [
+    {"severity": "must_fix", "category": "coverage"|"consistency"|"format"|"content",
+     "summary": "short headline", "detail": "optional longer reason"}
+  ],
+  "nice_to_fix_issues": [
+    {"severity": "nice_to_fix", "category": "coverage"|"consistency"|"format"|"content",
+     "summary": "short headline", "detail": "optional longer reason"}
+  ],
+  "summary": "one short paragraph"
+}
 """
 
 

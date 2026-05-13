@@ -344,9 +344,14 @@ async def test_subscription_qa_client_skips_non_text_blocks_and_empty_text(
 
     async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
         del prompt, options
+        # ``content`` is typed as the SDK's content-block union; we feed
+        # it a stand-in via ``cast`` so the test exercises the False
+        # branch of ``isinstance(block, TextBlock)`` without mypy
+        # rejecting the deliberate type-mismatch.
+        wrong_block: Any = _NotATextBlock()
         yield claude_agent_sdk.AssistantMessage(
             content=[
-                _NotATextBlock(),  # wrong type
+                wrong_block,
                 claude_agent_sdk.TextBlock(text=""),  # empty text
                 claude_agent_sdk.TextBlock(text="kept"),
             ],
