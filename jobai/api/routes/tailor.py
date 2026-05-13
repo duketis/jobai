@@ -182,17 +182,31 @@ async def kick_batch(
     in ``job_ids`` produce duplicate runs (deliberately — the user
     re-kicking on the same job mid-batch is valid).
     """
-    placeholders = ",".join("?" for _ in body.job_ids)
-    found = {
-        int(row[0])
+    # Chunk the existence check so a 10k-id submit doesn't trip
+    # SQLite's SQLITE_MAX_VARIABLE_NUMBER (default 32_766 in modern
+    # builds, but lower on some platforms). 500-per-batch keeps every
+    # query well under any sane limit and still ships in 1-2 round
+    # trips for any realistic batch size.
+    chunk_size = 500
+    found: set[int] = set()
+    for start in range(0, len(body.job_ids), chunk_size):
+        chunk = body.job_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
         for row in conn.execute(
             f"SELECT id FROM jobs WHERE id IN ({placeholders})",  # noqa: S608 - placeholders count matches params length
-            body.job_ids,
-        )
-    }
+            chunk,
+        ):
+            found.add(int(row[0]))
     missing = sorted(set(body.job_ids) - found)
     if missing:
-        raise HTTPException(status_code=404, detail=f"jobs not found: {missing}")
+        # Truncate the 404 detail when the list is huge -- otherwise the
+        # response body balloons to MBs of integers for a typo submit.
+        preview = missing[:25]
+        suffix = f" (+ {len(missing) - 25} more)" if len(missing) > 25 else ""
+        raise HTTPException(
+            status_code=404,
+            detail=f"jobs not found: {preview}{suffix}",
+        )
     items: list[KickOneResponse] = []
     for job_id in body.job_ids:
         record = create_tailor_run(conn, job_id=job_id)

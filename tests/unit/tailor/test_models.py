@@ -45,8 +45,17 @@ def test_kick_batch_request_rejects_empty_list() -> None:
         KickBatchRequest(job_ids=[])
 
 
-def test_kick_batch_request_caps_at_100() -> None:
-    """Hard cap so a runaway frontend can't queue thousands of chains
-    in one request and hammer the sibling APIs."""
+def test_kick_batch_request_accepts_large_batches() -> None:
+    """The endpoint is intentionally generous (10k cap) because the
+    TailorPool already serialises concurrency; everything above the
+    cap just queues up. The Pydantic ceiling is a safety stop to
+    prevent absurdly large payloads, not a quota."""
+    request = KickBatchRequest(job_ids=list(range(5_000)))
+    assert len(request.job_ids) == 5_000
+
+
+def test_kick_batch_request_rejects_above_ceiling() -> None:
+    """The 10k ceiling exists so a runaway frontend can't post a
+    megabyte of integer ids in one request."""
     with pytest.raises(ValidationError):
-        KickBatchRequest(job_ids=list(range(101)))
+        KickBatchRequest(job_ids=list(range(10_001)))

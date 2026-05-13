@@ -32,11 +32,13 @@ _VALID_REMOTE_TYPES = {"remote", "hybrid", "onsite"}
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 20
 
-#: Cap on the cross-page "give me every matching id" path. A user
-#: explicitly asking to tailor every match is fine, but tens of
-#: thousands of LLM-bound chains is not -- the UI confirms anything
-#: beyond a sane batch, this is the absolute safety stop.
-MAX_IDS = 1000
+#: Cap on the cross-page "give me every matching id" path. Matches
+#: the upper bound on POST /api/tailor/batch's ``job_ids`` field so
+#: the UI can always pass the full result through. The TailorPool
+#: itself queues anything above its concurrency cap, so 10k chains
+#: just take longer; this number exists to prevent absurdly large
+#: payloads, not to limit batch size.
+MAX_IDS = 10_000
 
 #: Sort options the API + UI both speak. Map of value → ORDER BY clause.
 #: "relevance" is meaningful only when ``q`` is set; the resolver below

@@ -123,6 +123,34 @@ def test_kick_batch_rejects_empty_list(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_kick_batch_404_detail_is_truncated_for_huge_missing_lists(
+    client: TestClient,
+) -> None:
+    """A typo submit of 100 nonexistent ids must not return a megabyte
+    of integers in the 404 body -- we cap the preview at 25 and append
+    a '(+ N more)' suffix."""
+    response = client.post(
+        "/api/tailor/batch",
+        json={"job_ids": list(range(5000, 5100))},
+    )
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert "+ 75 more" in detail
+
+
+def test_kick_batch_handles_large_id_list_via_chunked_lookup(
+    client: TestClient,
+) -> None:
+    """The IN-clause existence check chunks at 500 ids so a 1k+ batch
+    doesn't trip SQLite's parameter limit. Single seeded job id (1) is
+    duplicated across the batch -- all rows resolve, all chains submit."""
+    big_batch = [1] * 1_500
+    response = client.post("/api/tailor/batch", json={"job_ids": big_batch})
+    assert response.status_code == 202
+    body = response.json()
+    assert len(body["items"]) == 1_500
+
+
 # -- listing + detail ------------------------------------------------------
 
 

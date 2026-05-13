@@ -143,10 +143,13 @@ class KickBatchRequest(BaseModel):
 
     job_ids: list[int] = Field(
         min_length=1,
-        max_length=100,
+        max_length=10_000,
         description=(
             "Canonical jobai job ids to tailor. Each id becomes one row in "
-            "tailor_runs; chains run concurrently up to the configured cap."
+            "tailor_runs; chains run concurrently up to the configured cap "
+            "(JOBAI_TAILOR_MAX_CONCURRENT, default 3) -- everything above "
+            "the cap queues up and processes in order. Upper bound is a "
+            "safety stop, not a quota."
         ),
     )
 
