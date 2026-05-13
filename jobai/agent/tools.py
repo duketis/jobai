@@ -456,7 +456,6 @@ class ToolExecutor:
             "last_scrape_at": last_scrape_at,
         }
 
-
     # ---- tailor handlers ----
 
     def _kick_tailor(self, args: Mapping[str, Any]) -> dict[str, Any]:

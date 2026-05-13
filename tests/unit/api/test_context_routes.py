@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from jobai.api.routes.context import get_context_client
 from jobai.api.server import create_app
-from jobai.context.client import ContextFile, SnippetCreate
+from jobai.context.client import ContextFile, ProjectScanCreate, SnippetCreate
 
 
 def _file_record(name: str, file_id: str = "ctx_x", text: str = "") -> ContextFile:
@@ -38,6 +38,7 @@ class _FakeContextClient:
         self.get_raises: BaseException | None = None
         self.snippet_raises: BaseException | None = None
         self.upload_raises: BaseException | None = None
+        self.scan_raises: BaseException | None = None
         self.delete_raises: BaseException | None = None
 
     async def list_files(self) -> list[ContextFile]:
@@ -89,6 +90,15 @@ class _FakeContextClient:
         if self.upload_raises is not None:
             raise self.upload_raises
         created = _file_record(filename, f"ctx_file_{len(self.files)}")
+        self.files.append(created)
+        return created
+
+    async def scan_project(self, project: ProjectScanCreate) -> ContextFile:
+        self.calls.append({"op": "scan_project", "project": project})
+        if self.scan_raises is not None:
+            raise self.scan_raises
+        target = project.name or project.path.rstrip("/").rsplit("/", 1)[-1]
+        created = _file_record(target, f"ctx_proj_{len(self.files)}")
         self.files.append(created)
         return created
 
@@ -330,6 +340,63 @@ def test_upload_file_502_on_sibling_error(
         "/api/context/file",
         files={"upload": ("x.txt", b"x", "text/plain")},
     )
+    assert response.status_code == 502
+
+
+def test_scan_project_forwards_form_fields(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    response = client.post(
+        "/api/context/project",
+        data={
+            "path": "/Users/jonathan/Documents/personal/jobai",
+            "name": "jobai",
+            "author_email": "jonathan@example.com",
+            "tags": "project, primary",
+            "note": "main job-hunt repo",
+        },
+    )
+    assert response.status_code == 201
+    call = next(c for c in fake.calls if c["op"] == "scan_project")
+    project: ProjectScanCreate = call["project"]
+    assert project.path == "/Users/jonathan/Documents/personal/jobai"
+    assert project.name == "jobai"
+    assert project.author_email == "jonathan@example.com"
+    assert project.tags == ["project", "primary"]
+    assert project.note == "main job-hunt repo"
+
+
+def test_scan_project_blanks_optional_fields_to_none(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    response = client.post(
+        "/api/context/project",
+        data={"path": "/some/path", "name": "", "author_email": "", "tags": "", "note": ""},
+    )
+    assert response.status_code == 201
+    project: ProjectScanCreate = next(c for c in fake.calls if c["op"] == "scan_project")["project"]
+    assert project.name is None
+    assert project.author_email is None
+    assert project.tags == []
+    assert project.note is None
+
+
+def test_scan_project_validates_required_path(client: TestClient) -> None:
+    response = client.post("/api/context/project", data={"path": ""})
+    assert response.status_code == 422
+
+
+def test_scan_project_502_on_sibling_error(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.scan_raises = httpx.ConnectError("nope")
+    response = client.post("/api/context/project", data={"path": "/x"})
     assert response.status_code == 502
 
 

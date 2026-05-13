@@ -23,6 +23,7 @@ from fastapi.responses import Response
 from jobai.context.client import (
     ContextClient,
     ContextFile,
+    ProjectScanCreate,
     SnippetCreate,
 )
 
@@ -119,7 +120,7 @@ async def add_snippet(
     "/file",
     response_model=ContextFile,
     status_code=201,
-    summary="Upload a PDF / markdown / text file to the user-context pool",
+    summary="Upload a PDF / CSV / markdown / text file to the user-context pool",
 )
 async def upload_file(
     client: ContextClientDep,
@@ -127,7 +128,13 @@ async def upload_file(
     tags: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
 ) -> ContextFile:
-    """Forward the upload (filename + content-type + body) to resumeai."""
+    """Forward the upload (filename + content-type + body) to resumeai.
+
+    Single-file only on the wire (matches resumeai's surface). The
+    frontend folder/multi-file picker fans out into N requests to this
+    endpoint rather than batching them, so each upload either succeeds
+    or fails independently and the UI can show per-file progress.
+    """
     body = await upload.read()
     parsed_tags = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
     try:
@@ -142,6 +149,44 @@ async def upload_file(
         raise HTTPException(
             status_code=502,
             detail=f"resumeai upload failed: {exc}",
+        ) from exc
+
+
+@router.post(
+    "/project",
+    response_model=ContextFile,
+    status_code=201,
+    summary="Scan a local git repo and ingest the summary as a context entry",
+)
+async def scan_project(
+    client: ContextClientDep,
+    path: Annotated[str, Form(..., min_length=1)],
+    name: Annotated[str, Form()] = "",
+    author_email: Annotated[str, Form()] = "",
+    tags: Annotated[str, Form()] = "",
+    note: Annotated[str, Form()] = "",
+) -> ContextFile:
+    """Forward the project-scan form to resumeai.
+
+    ``path`` is an absolute host path; resumeai resolves it via its
+    own ``/host/personal`` read-only mount. ``author_email`` filters
+    the git log to commits by that author (defaults to the whole
+    repo summary when blank).
+    """
+    parsed_tags = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
+    payload = ProjectScanCreate(
+        path=path,
+        name=name or None,
+        author_email=author_email or None,
+        tags=parsed_tags,
+        note=note or None,
+    )
+    try:
+        return await client.scan_project(payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"resumeai project scan failed: {exc}",
         ) from exc
 
 

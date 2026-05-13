@@ -55,6 +55,21 @@ class SnippetCreate(BaseModel):
     note: str | None = None
 
 
+class ProjectScanCreate(BaseModel):
+    """Payload for the ``POST /context/project`` form.
+
+    The path is an absolute host path -- resumeai resolves it via its
+    own ``/host/personal`` read-only bind mount, so jobai just forwards
+    the string verbatim and lets the sibling do the resolution.
+    """
+
+    path: str = Field(min_length=1)
+    name: str | None = None
+    author_email: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    note: str | None = None
+
+
 class ContextClient(Protocol):
     """Wire surface for the resumeai context pool.
 
@@ -89,11 +104,21 @@ class ContextClient(Protocol):
         tags: list[str] | None = None,
         note: str | None = None,
     ) -> ContextFile:
-        """POST ``/context`` -- upload one file (PDF / markdown / text).
+        """POST ``/context`` -- upload one file (PDF / markdown / text / csv).
 
         Streamed inline because we already buffered the bytes; the
         UI uploads are small (<5 MB) and resumeai's text extraction
         wants the whole payload at once anyway.
+        """
+        ...
+
+    async def scan_project(self, project: ProjectScanCreate) -> ContextFile:
+        """POST ``/context/project`` -- scan a local git repo by path.
+
+        resumeai walks the git history at ``project.path`` (relative to
+        the sibling container's ``/host/personal`` mount), summarises
+        the commits authored by ``project.author_email`` (or every
+        commit if blank), and ingests the result as a context entry.
         """
         ...
 
@@ -166,6 +191,24 @@ class HttpxContextClient:
             files=files,
         )
         return await self._latest_or_named(response, filename)
+
+    async def scan_project(self, project: ProjectScanCreate) -> ContextFile:
+        form: dict[str, Any] = {
+            "path": project.path,
+            "name": project.name or "",
+            "author_email": project.author_email or "",
+            "tags": ",".join(project.tags) if project.tags else "",
+            "note": project.note or "",
+        }
+        response = await self._client.post(
+            f"{self._base_url}/context/project",
+            data=form,
+        )
+        # resumeai derives the entry name from ``name`` (or the path's
+        # basename when blank); the same lookup pattern as snippet/
+        # upload picks it back out of the freshly-refreshed list.
+        target_name = project.name or project.path.rstrip("/").rsplit("/", 1)[-1]
+        return await self._latest_or_named(response, target_name)
 
     async def delete_file(self, file_id: str) -> None:
         response = await self._client.delete(f"{self._base_url}/api/context/{file_id}")
