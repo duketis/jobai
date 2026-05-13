@@ -110,6 +110,32 @@ class Settings(BaseSettings):
             "(typically via mounting your ``~/.claude/`` into the container)."
         ),
     )
+    resumeai_url: str = Field(
+        default="http://resumeai:8765",
+        description=(
+            "Base URL for the resumeai sibling service. Default targets the "
+            "service name on the shared ``ai-tailor-network`` docker network. "
+            "Override to ``http://localhost:8765`` for host-mode development."
+        ),
+    )
+    coverletterai_url: str = Field(
+        default="http://coverletterai:8766",
+        description=(
+            "Base URL for the coverletterai sibling service. Default targets "
+            "the service name on the shared ``ai-tailor-network`` docker "
+            "network. Override to ``http://localhost:8766`` for host-mode dev."
+        ),
+    )
+    tailor_max_concurrent: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description=(
+            "Cap on concurrent tailor chains in flight at once. The siblings "
+            "serialise their internal renderers, so a high cap mostly stacks "
+            "polls; 3-5 is the sweet spot for a batch."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)
