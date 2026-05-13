@@ -96,6 +96,11 @@ jobai source sync                   Upsert source rows from companies.yaml.
 jobai source list                   List configured sources.
 jobai source enable <name>          Re-enable a disabled source.
 jobai source disable <name>         Disable a source (kill switch).
+jobai source discover [--register]  Mine apply_url for ATS slugs we haven't
+                                    seeded yet (Greenhouse / Lever / Ashby /
+                                    SmartRecruiters / Workable). ``--register``
+                                    upserts each as an enabled source so the
+                                    next ``run --enabled`` picks them up.
 ```
 
 ## HTTP API
