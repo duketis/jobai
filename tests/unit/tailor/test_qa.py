@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
 import pytest
 
+from jobai.api.runtime_settings import EffectiveAgentConfig
 from jobai.tailor.models import QAAssessment, QAStatus
 from jobai.tailor.qa import (
     AnthropicQAClient,
+    SubscriptionQAClient,
     _parse_assessment,
     assess,
+    build_qa_client,
     build_user_prompt,
 )
 
@@ -232,6 +236,207 @@ async def test_anthropic_qa_client_uses_explicit_model_override() -> None:
     client = AnthropicQAClient(client=fake, default_model="default-model")  # type: ignore[arg-type]
     await client.complete(system="s", user="u", model="override-model")
     assert fake.messages.last_kwargs["model"] == "override-model"
+
+
+async def test_subscription_qa_client_collects_assistant_text_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The subscription adapter joins every TextBlock emitted by the SDK
+    across assistant messages, stopping when ResultMessage arrives."""
+    import claude_agent_sdk  # noqa: PLC0415
+
+    captured_opts: dict[str, Any] = {}
+
+    async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        captured_opts["prompt"] = prompt
+        captured_opts["system_prompt"] = options.system_prompt
+        captured_opts["model"] = options.model
+        captured_opts["max_turns"] = options.max_turns
+        captured_opts["env"] = dict(options.env)
+        yield claude_agent_sdk.AssistantMessage(
+            content=[
+                claude_agent_sdk.TextBlock(text='{"status":'),
+                claude_agent_sdk.TextBlock(text='"pass"}'),
+            ],
+            model="claude-opus-4-7",
+            parent_tool_use_id=None,
+        )
+        # ResultMessage shapes vary across SDK versions; the adapter only
+        # cares that it's an instance of the type, so a positional-args
+        # constructor with whatever the dataclass declares first is fine.
+        yield _make_result_message()
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _fake_query)
+
+    client = SubscriptionQAClient(
+        default_model="claude-opus-4-7",
+        oauth_token="oat-x",  # noqa: S106 - test fixture, not a real token
+    )
+    text = await client.complete(system="rubric", user="docs")
+
+    assert text == '{"status":"pass"}'
+    assert captured_opts["prompt"] == "docs"
+    assert captured_opts["system_prompt"] == "rubric"
+    assert captured_opts["model"] == "claude-opus-4-7"
+    assert captured_opts["max_turns"] == 1
+    assert captured_opts["env"] == {"CLAUDE_CODE_OAUTH_TOKEN": "oat-x"}
+
+
+async def test_subscription_qa_client_honours_model_override_and_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No OAuth token => env stays empty (CLI falls back to its host auth);
+    explicit model arg overrides the default."""
+    import claude_agent_sdk  # noqa: PLC0415
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        del prompt
+        captured["model"] = options.model
+        captured["env"] = dict(options.env)
+        yield _make_result_message()
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _fake_query)
+
+    client = SubscriptionQAClient(default_model="claude-default", oauth_token=None)
+    text = await client.complete(system="s", user="u", model="claude-override")
+
+    assert text == ""
+    assert captured["model"] == "claude-override"
+    assert captured["env"] == {}
+
+
+async def test_subscription_qa_client_ignores_unhandled_message_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SystemMessage / UserMessage echoes are skipped; only AssistantMessage
+    TextBlocks contribute to the returned string."""
+    import claude_agent_sdk  # noqa: PLC0415
+
+    async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        del prompt, options
+        yield claude_agent_sdk.SystemMessage(subtype="init", data={"hello": "world"})
+        yield claude_agent_sdk.AssistantMessage(
+            content=[claude_agent_sdk.TextBlock(text="ok")],
+            model="m",
+            parent_tool_use_id=None,
+        )
+        yield _make_result_message()
+        # Anything emitted after ResultMessage is unreachable -- the adapter
+        # ``break``s out on it -- and never gets translated.
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _fake_query)
+    client = SubscriptionQAClient(default_model="m", oauth_token=None)
+    assert await client.complete(system="s", user="u") == "ok"
+
+
+async def test_subscription_qa_client_skips_non_text_blocks_and_empty_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty-text or non-TextBlock assistant content is silently dropped --
+    only blocks where ``isinstance(block, TextBlock) and block.text`` is
+    truthy contribute to the returned string."""
+    import claude_agent_sdk  # noqa: PLC0415
+
+    class _NotATextBlock:
+        text = "this should not appear"
+
+    async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        del prompt, options
+        yield claude_agent_sdk.AssistantMessage(
+            content=[
+                _NotATextBlock(),  # wrong type
+                claude_agent_sdk.TextBlock(text=""),  # empty text
+                claude_agent_sdk.TextBlock(text="kept"),
+            ],
+            model="m",
+            parent_tool_use_id=None,
+        )
+        yield _make_result_message()
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _fake_query)
+    client = SubscriptionQAClient(default_model="m", oauth_token=None)
+    assert await client.complete(system="s", user="u") == "kept"
+
+
+async def test_subscription_qa_client_returns_cleanly_when_stream_closes_without_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the SDK stream ends without ever emitting ResultMessage (a
+    transport-level early-close) we still return what we collected
+    rather than hanging or raising. Covers the natural loop-exit branch."""
+    import claude_agent_sdk  # noqa: PLC0415
+
+    async def _fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        del prompt, options
+        yield claude_agent_sdk.AssistantMessage(
+            content=[claude_agent_sdk.TextBlock(text="partial")],
+            model="m",
+            parent_tool_use_id=None,
+        )
+        # No ResultMessage -- the loop falls off the end naturally.
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _fake_query)
+    client = SubscriptionQAClient(default_model="m", oauth_token=None)
+    assert await client.complete(system="s", user="u") == "partial"
+
+
+def _make_result_message() -> Any:
+    """Build a ResultMessage in a way that works across SDK versions.
+
+    Only the *type* matters for the adapter's break-out; the field
+    values aren't inspected. We construct via ``__new__`` so we don't
+    have to chase whichever fields a given SDK release requires.
+    """
+    import claude_agent_sdk  # noqa: PLC0415
+
+    return claude_agent_sdk.ResultMessage.__new__(claude_agent_sdk.ResultMessage)
+
+
+def _cfg(**overrides: Any) -> EffectiveAgentConfig:
+    """Build a :class:`EffectiveAgentConfig` with sensible defaults."""
+    return EffectiveAgentConfig(
+        agent_backend=overrides.get("agent_backend", "api"),
+        anthropic_api_key=overrides.get("anthropic_api_key"),
+        claude_code_oauth_token=overrides.get("claude_code_oauth_token"),
+        anthropic_model=overrides.get("anthropic_model", "claude-opus-4-7"),
+    )
+
+
+def test_build_qa_client_returns_subscription_client_in_subscription_mode() -> None:
+    cfg = _cfg(
+        agent_backend="subscription",
+        claude_code_oauth_token="oat-x",  # noqa: S106 - test fixture, not a real token
+    )
+    client = build_qa_client(cfg)
+    assert isinstance(client, SubscriptionQAClient)
+    assert client._oauth_token == "oat-x"  # noqa: S105 - asserting test-fixture value
+    assert client._default_model == "claude-opus-4-7"
+
+
+def test_build_qa_client_falls_back_to_api_when_subscription_lacks_token() -> None:
+    """Subscription backend declared but no OAuth token => try API key path
+    rather than returning None."""
+    cfg = _cfg(
+        agent_backend="subscription",
+        claude_code_oauth_token=None,
+        anthropic_api_key="sk-ant-test",
+    )
+    client = build_qa_client(cfg)
+    assert isinstance(client, AnthropicQAClient)
+
+
+def test_build_qa_client_returns_anthropic_client_with_api_key() -> None:
+    cfg = _cfg(anthropic_api_key="sk-ant-test", agent_backend="api")
+    client = build_qa_client(cfg)
+    assert isinstance(client, AnthropicQAClient)
+    assert client._default_model == "claude-opus-4-7"
+
+
+def test_build_qa_client_returns_none_when_neither_credential_present() -> None:
+    cfg = _cfg()  # No key, no token, default backend.
+    assert build_qa_client(cfg) is None
 
 
 @pytest.fixture(autouse=True)

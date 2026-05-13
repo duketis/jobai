@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from jobai.api.dependencies import ConnDep, get_db_path
+from jobai.api.runtime_settings import get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.models import (
     KickBatchRequest,
@@ -35,7 +36,7 @@ from jobai.tailor.models import (
     TailorRunStatus,
 )
 from jobai.tailor.orchestrator import run_chain
-from jobai.tailor.qa import QAClient
+from jobai.tailor.qa import QAClient, build_qa_client
 from jobai.tailor.repository import (
     create_tailor_run,
     get_tailor_run,
@@ -76,14 +77,17 @@ def get_letter_client(request: Request) -> CoverletteraiClient:
     return client
 
 
-def get_qa_client(request: Request) -> QAClient | None:
-    """Pull the lifespan-owned QA client off ``app.state``.
+def get_qa_client(conn: ConnDep) -> QAClient | None:
+    """Build a QA client from the live effective agent config.
 
-    Returns ``None`` (not 503) when the QA client isn't configured --
-    the chain still produces both PDFs without the QA stage, so a
-    missing API key doesn't block kicking a tailor.
+    Rebuilt per request (not stashed on ``app.state``) so that the
+    moment the user flips backend / pastes a key / paints an OAuth
+    token via the Settings UI, the next tailor chain picks it up
+    without a process restart. Returns ``None`` when no credentials
+    are reachable; the orchestrator then skips the QA stage cleanly.
     """
-    return getattr(request.app.state, "qa_client", None)
+    cfg = get_effective_agent_config(conn)
+    return build_qa_client(cfg)
 
 
 PoolDep = Annotated[TailorPool, Depends(get_tailor_pool)]

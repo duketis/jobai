@@ -330,6 +330,53 @@ def test_pool_di_returns_pool_when_initialised(
         assert hasattr(app.state.letter_client, "kick")
 
 
+def test_get_qa_client_builds_from_effective_agent_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``get_qa_client`` reads the live :class:`EffectiveAgentConfig` and
+    delegates to :func:`build_qa_client`. We patch the resolver so the
+    test doesn't depend on the underlying ``app_settings`` row layout."""
+    from jobai.api.routes.tailor import get_qa_client  # noqa: PLC0415
+    from jobai.api.runtime_settings import EffectiveAgentConfig  # noqa: PLC0415
+    from jobai.tailor.qa import SubscriptionQAClient  # noqa: PLC0415
+
+    fake_cfg = EffectiveAgentConfig(
+        agent_backend="subscription",
+        anthropic_api_key=None,
+        claude_code_oauth_token="oat-x",  # noqa: S106 - test fixture, not a real token
+        anthropic_model="claude-opus-4-7",
+    )
+    monkeypatch.setattr(
+        "jobai.api.routes.tailor.get_effective_agent_config",
+        lambda conn: fake_cfg,
+    )
+
+    stub_conn: Any = object()
+    client = get_qa_client(stub_conn)
+    assert isinstance(client, SubscriptionQAClient)
+
+
+def test_get_qa_client_returns_none_when_no_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jobai.api.routes.tailor import get_qa_client  # noqa: PLC0415
+    from jobai.api.runtime_settings import EffectiveAgentConfig  # noqa: PLC0415
+
+    fake_cfg = EffectiveAgentConfig(
+        agent_backend="api",
+        anthropic_api_key=None,
+        claude_code_oauth_token=None,
+        anthropic_model="claude-opus-4-7",
+    )
+    monkeypatch.setattr(
+        "jobai.api.routes.tailor.get_effective_agent_config",
+        lambda conn: fake_cfg,
+    )
+
+    stub_conn: Any = object()
+    assert get_qa_client(stub_conn) is None
+
+
 def test_resume_and_letter_client_di_return_lifespan_object() -> None:
     """The DI helpers return whatever the lifespan stashed on app.state.
 

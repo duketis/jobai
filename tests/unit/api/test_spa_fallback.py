@@ -141,39 +141,6 @@ def test_index_html_without_assets_dir_still_serves_spa(
         assert "plain" in test_client.get("/").text
 
 
-def test_build_qa_client_returns_none_when_no_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without an Anthropic API key anywhere, the QA client is None
-    and the tailor chain skips the QA stage rather than crashing."""
-    from jobai.api.server import _build_qa_client  # noqa: PLC0415
-
-    class _FakeSettings:
-        anthropic_api_key = None
-        anthropic_model = "claude-opus-4-7"
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert _build_qa_client(_FakeSettings()) is None
-
-
-def test_build_qa_client_constructs_anthropic_adapter_when_key_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When the boot config carries a key, the helper instantiates the
-    Anthropic-backed adapter against that key + the configured model."""
-    from jobai.api.server import _build_qa_client  # noqa: PLC0415
-    from jobai.tailor.qa import AnthropicQAClient  # noqa: PLC0415
-
-    class _FakeSettings:
-        anthropic_api_key = "sk-ant-test"
-        anthropic_model = "claude-opus-4-7"
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    client = _build_qa_client(_FakeSettings())
-    assert isinstance(client, AnthropicQAClient)
-    assert client._default_model == "claude-opus-4-7"
-
-
 def test_lifespan_starts_and_stops_scheduler_when_not_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

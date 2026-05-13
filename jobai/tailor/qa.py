@@ -30,6 +30,8 @@ from jobai.tailor.models import QAAssessment, QAIssue, QAStatus
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
 
+    from jobai.api.runtime_settings import EffectiveAgentConfig
+
 _SYSTEM_PROMPT = """\
 You are the final quality gate for a tailored job application: a
 resume and a cover letter the system has produced for a specific
@@ -177,6 +179,95 @@ class AnthropicQAClient:
             if isinstance(text, str):
                 chunks.append(text)
         return "".join(chunks)
+
+
+class SubscriptionQAClient:
+    """:class:`QAClient` backed by the ``claude`` CLI via ``claude_agent_sdk``.
+
+    Mirrors :mod:`jobai.agent.subscription_loop` -- one-shot completion,
+    no MCP tools, no streaming history. Calls bill against the user's
+    Claude Pro/Max subscription quota rather than a paid API key.
+
+    The OAuth token is captured at construction and forwarded to the
+    CLI subprocess via ``options.env`` (same pattern the chat agent
+    uses) so the secret never leaks onto the FastAPI server's process
+    environment.
+    """
+
+    def __init__(self, *, default_model: str, oauth_token: str | None = None) -> None:
+        self._default_model = default_model
+        self._oauth_token = oauth_token
+
+    async def complete(self, *, system: str, user: str, model: str | None = None) -> str:
+        # Lazy-imported so the rest of the module stays importable in
+        # environments without the SDK installed (the API-mode path
+        # only needs ``anthropic``).
+        from claude_agent_sdk import (  # noqa: PLC0415
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ResultMessage,
+            TextBlock,
+            query,
+        )
+
+        cli_env: dict[str, str] = {}
+        if self._oauth_token:
+            cli_env["CLAUDE_CODE_OAUTH_TOKEN"] = self._oauth_token
+
+        options = ClaudeAgentOptions(
+            system_prompt=system,
+            # No code-tools, no MCP servers -- the QA pass is a pure
+            # text-in / JSON-out completion. ``bypassPermissions`` keeps
+            # the CLI from prompting for tool-use confirmation that the
+            # background tailor pool can't answer.
+            tools=[],
+            mcp_servers={},
+            allowed_tools=[],
+            model=model or self._default_model,
+            max_turns=1,
+            permission_mode="bypassPermissions",
+            env=cli_env,
+        )
+
+        chunks: list[str] = []
+        async for message in query(prompt=user, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        chunks.append(block.text)
+            elif isinstance(message, ResultMessage):
+                # SDK guarantees ResultMessage closes every turn -- safe
+                # to stop iterating here without draining further.
+                break
+        return "".join(chunks)
+
+
+def build_qa_client(cfg: EffectiveAgentConfig) -> QAClient | None:
+    """Pick the right QA client for the live agent config.
+
+    Resolution order:
+    1. ``subscription`` backend + an OAuth token -> SubscriptionQAClient
+       (bills the user's Max quota; same auth path as the chat agent).
+    2. ``api`` backend + an API key (any source) -> AnthropicQAClient
+       (pay-per-token billing).
+    3. Otherwise ``None`` -- the orchestrator skips QA cleanly and both
+       PDFs still ship. The UI's QA badge stays empty for runs that
+       reach succeeded without a verdict.
+
+    Lazy-imports the Anthropic SDK so a missing install doesn't break
+    the subscription path.
+    """
+    if cfg.agent_backend == "subscription" and cfg.claude_code_oauth_token:
+        return SubscriptionQAClient(
+            default_model=cfg.anthropic_model,
+            oauth_token=cfg.claude_code_oauth_token,
+        )
+    if cfg.anthropic_api_key:
+        from anthropic import AsyncAnthropic  # noqa: PLC0415
+
+        client = AsyncAnthropic(api_key=cfg.anthropic_api_key)
+        return AnthropicQAClient(client=client, default_model=cfg.anthropic_model)
+    return None
 
 
 def _parse_assessment(raw: str) -> QAAssessment:
