@@ -23,6 +23,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html"],
       include: [
+        "src/components/QABadge.tsx",
         "src/components/TailorButton.tsx",
         "src/components/TailorStatusPill.tsx",
         "src/lib/useTailorRuns.ts",

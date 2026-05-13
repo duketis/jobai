@@ -15,6 +15,8 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
     resume_status: null,
     letter_run_id: null,
     letter_status: null,
+    qa_status: null,
+    qa_assessment: null,
     error: null,
     created_at: "2026-05-13T00:00:00Z",
     updated_at: "2026-05-13T00:00:00Z",

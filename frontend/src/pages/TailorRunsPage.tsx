@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, RefreshCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { QABadge } from "@/components/QABadge";
 import { TailorStatusPill } from "@/components/TailorStatusPill";
 import {
   listTailorRuns,
@@ -119,11 +120,12 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
   return (
     <li
       className={cn(
-        "rounded-md border border-border bg-card px-3 py-2 text-sm flex flex-wrap items-center gap-3",
+        "relative rounded-md border border-border bg-card px-3 py-2 text-sm flex flex-wrap items-center gap-3",
         run.status === "failed" && "border-destructive/40 bg-destructive/5",
       )}
     >
       <TailorStatusPill run={run} />
+      <QABadge status={run.qa_status} assessment={run.qa_assessment} />
       <span className="font-mono text-xs text-muted-foreground">#{run.id}</span>
       <span className="text-muted-foreground">job</span>
       <a

@@ -122,13 +122,34 @@ export interface SettingsView {
 }
 
 /** Lifecycle states a tailor chain walks through. Matches the backend enum
- * in jobai/tailor/models.py and the CHECK constraint in migration 0005. */
+ * in jobai/tailor/models.py and the CHECK constraint in migration 0006. */
 export type TailorRunStatus =
   | "pending"
   | "resume_running"
   | "letter_running"
+  | "qa_running"
   | "succeeded"
   | "failed";
+
+/** Verdict from the final cross-artefact QA pass. */
+export type QAStatus = "running" | "pass" | "concerns" | "fail";
+
+export interface QAIssue {
+  severity: "must_fix" | "nice_to_fix";
+  category: "coverage" | "consistency" | "format" | "content";
+  summary: string;
+  detail: string | null;
+}
+
+export interface QAAssessment {
+  status: QAStatus;
+  coverage_score: number;
+  consistency_score: number;
+  format_score: number;
+  must_fix_issues: QAIssue[];
+  nice_to_fix_issues: QAIssue[];
+  summary: string;
+}
 
 /** One row in tailor_runs as exposed via /api/tailor/runs[/:id]. */
 export interface TailorRunRecord {
@@ -139,6 +160,8 @@ export interface TailorRunRecord {
   resume_status: string | null;
   letter_run_id: string | null;
   letter_status: string | null;
+  qa_status: QAStatus | null;
+  qa_assessment: QAAssessment | null;
   error: string | null;
   created_at: string;
   updated_at: string;

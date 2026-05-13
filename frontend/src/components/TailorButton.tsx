@@ -9,6 +9,7 @@ import {
 import type { TailorRunRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { QABadge } from "./QABadge";
 import { TailorStatusPill } from "./TailorStatusPill";
 
 interface TailorButtonProps {
@@ -45,8 +46,14 @@ export function TailorButton({ jobId, latestRun }: TailorButtonProps) {
   const succeeded = latestRun !== null && latestRun.status === "succeeded";
 
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="relative inline-flex items-center gap-2">
       {latestRun !== null && <TailorStatusPill run={latestRun} />}
+      {latestRun !== null && (
+        <QABadge
+          status={latestRun.qa_status}
+          assessment={latestRun.qa_assessment}
+        />
+      )}
 
       {succeeded && latestRun !== null && (
         <>
