@@ -3,12 +3,14 @@ import { Navigate, Route, Routes } from "react-router";
 import { Shell } from "@/components/Shell";
 import { JobDetailPage } from "@/pages/JobDetailPage";
 import { JobsListPage } from "@/pages/JobsListPage";
+import { TailorRunsPage } from "@/pages/TailorRunsPage";
 
 /**
  * Top-level routes:
  *
  *  /jobs          → searchable job list (top pane)
  *  /jobs/:id      → one job's detail (top pane)
+ *  /tailor-runs   → log of every resumeai+coverletterai chain jobai has spawned
  *  /              → redirect to /jobs
  *
  * The chat is no longer a separate route — it lives in the persistent
@@ -23,6 +25,7 @@ export function App() {
         <Route path="/" element={<Navigate to="/jobs" replace />} />
         <Route path="/jobs" element={<JobsListPage />} />
         <Route path="/jobs/:id" element={<JobDetailPage />} />
+        <Route path="/tailor-runs" element={<TailorRunsPage />} />
         <Route path="*" element={<Navigate to="/jobs" replace />} />
       </Route>
     </Routes>

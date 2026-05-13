@@ -1,10 +1,26 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, ExternalLink, MapPin, Search } from "lucide-react";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  MapPin,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import { getHealth, listJobs, type JobSort, type JobsListParams } from "@/lib/api";
-import type { JobSummary } from "@/lib/types";
+import { TailorButton } from "@/components/TailorButton";
+import {
+  getHealth,
+  listJobs,
+  tailorJobBatch,
+  type JobSort,
+  type JobsListParams,
+} from "@/lib/api";
+import type { JobSummary, TailorRunRecord } from "@/lib/types";
+import { useLatestTailorRunsByJob } from "@/lib/useTailorRuns";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -180,23 +196,76 @@ export function JobsListPage() {
 
   const total = data?.total ?? 0;
   const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+  const { latestByJob } = useLatestTailorRunsByJob();
+
+  // Batch-select mode: when active, each JobCard renders a checkbox and
+  // an action bar appears once at least one row is selected. The set is
+  // local to this page (not URL-persisted) so a stray refresh doesn't
+  // leave the user staring at a stale selection.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const queryClient = useQueryClient();
+  const batchMutation = useMutation({
+    mutationFn: (ids: number[]) => tailorJobBatch(ids),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
+      setSelectedIds(new Set());
+    },
+  });
+
+  function toggleSelected(jobId: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  }
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          {isLoading
-            ? "Loading…"
-            : `${total.toLocaleString()} matching${total === 1 ? " job" : " jobs"}`}
-          {!isLoading && health?.last_scrape_at && (
-            <span title={health.last_scrape_at}>
-              {" "}
-              (updated {formatRelative(health.last_scrape_at)})
-            </span>
+      <header className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isLoading
+              ? "Loading…"
+              : `${total.toLocaleString()} matching${total === 1 ? " job" : " jobs"}`}
+            {!isLoading && health?.last_scrape_at && (
+              <span title={health.last_scrape_at}>
+                {" "}
+                (updated {formatRelative(health.last_scrape_at)})
+              </span>
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setSelectionMode((v) => !v);
+            if (selectionMode) setSelectedIds(new Set());
+          }}
+          className={cn(
+            "h-9 px-3 rounded-md border text-sm transition-colors",
+            selectionMode
+              ? "border-foreground bg-foreground text-background"
+              : "border-border bg-background hover:border-foreground/40",
           )}
-        </p>
+          title={selectionMode ? "Exit batch mode" : "Select multiple jobs to tailor in one batch"}
+        >
+          {selectionMode ? "Cancel batch" : "Select to batch-tailor"}
+        </button>
       </header>
+
+      {selectionMode && selectedIds.size > 0 && (
+        <BatchActionBar
+          selectedCount={selectedIds.size}
+          onClear={() => setSelectedIds(new Set())}
+          onSubmit={() => batchMutation.mutate(Array.from(selectedIds))}
+          pending={batchMutation.isPending}
+          errorMessage={batchMutation.error ? (batchMutation.error as Error).message : null}
+        />
+      )}
 
       <ExcludeTitleChips
         excludeTitle={excludeTitle}
@@ -297,7 +366,14 @@ export function JobsListPage() {
         <>
           <ul className="space-y-3">
             {(data?.items ?? []).map((job) => (
-              <JobCard key={job.id} job={job} />
+              <JobCard
+                key={job.id}
+                job={job}
+                latestTailorRun={latestByJob.get(job.id) ?? null}
+                selectionMode={selectionMode}
+                selected={selectedIds.has(job.id)}
+                onToggleSelected={() => toggleSelected(job.id)}
+              />
             ))}
             {!isLoading && data?.items.length === 0 && (
               <li className="text-center py-12 text-muted-foreground text-sm">
@@ -344,57 +420,139 @@ function SearchInput({
   );
 }
 
-function JobCard({ job }: { job: JobSummary }) {
-  return (
-    <li className="rounded-lg border border-border bg-card p-4 hover:border-foreground/40 transition-colors">
-      <Link to={`/jobs/${job.id}`} className="block group">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="font-medium text-foreground truncate group-hover:underline">
-              {job.title}
-            </h2>
-            <p className="text-sm text-muted-foreground mt-0.5">{job.company}</p>
-          </div>
-          <SalaryPill job={job} />
-        </div>
+interface JobCardProps {
+  job: JobSummary;
+  latestTailorRun: TailorRunRecord | null;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelected: () => void;
+}
 
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {job.location_raw && (
-            <span className="inline-flex items-center gap-1">
-              <MapPin className="size-3.5" />
-              {job.location_raw}
-            </span>
-          )}
-          {job.remote_type && (
-            <Badge>{job.remote_type}</Badge>
-          )}
-          {job.employment_type && <Badge>{job.employment_type}</Badge>}
-          {job.posted_at && (
-            <span className="ml-auto" title={job.posted_at}>
-              {formatPosted(job.posted_at)}
-            </span>
-          )}
-        </div>
-      </Link>
-      {job.sources.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {job.sources.map((s) => (
-            <span key={`${s.source_name}:${s.apply_url}`} className="inline-flex items-center gap-1">
-              <span>{s.source_name}</span>
-            </span>
-          ))}
-          <a
-            href={job.apply_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            onClick={(e) => e.stopPropagation()}
-            className="ml-auto inline-flex items-center gap-1 text-foreground hover:underline"
-          >
-            Apply <ExternalLink className="size-3" />
-          </a>
-        </div>
+function JobCard({
+  job,
+  latestTailorRun,
+  selectionMode,
+  selected,
+  onToggleSelected,
+}: JobCardProps) {
+  return (
+    <li
+      className={cn(
+        "rounded-lg border bg-card p-4 transition-colors",
+        selected ? "border-foreground/70" : "border-border hover:border-foreground/40",
       )}
+    >
+      <div className="flex items-start gap-3">
+        {selectionMode && (
+          <label className="pt-1 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelected}
+              className="size-4"
+              aria-label={`Select ${job.title} at ${job.company}`}
+            />
+          </label>
+        )}
+        <div className="flex-1 min-w-0">
+          <Link to={`/jobs/${job.id}`} className="block group">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="font-medium text-foreground truncate group-hover:underline">
+                  {job.title}
+                </h2>
+                <p className="text-sm text-muted-foreground mt-0.5">{job.company}</p>
+              </div>
+              <SalaryPill job={job} />
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              {job.location_raw && (
+                <span className="inline-flex items-center gap-1">
+                  <MapPin className="size-3.5" />
+                  {job.location_raw}
+                </span>
+              )}
+              {job.remote_type && <Badge>{job.remote_type}</Badge>}
+              {job.employment_type && <Badge>{job.employment_type}</Badge>}
+              {job.posted_at && (
+                <span className="ml-auto" title={job.posted_at}>
+                  {formatPosted(job.posted_at)}
+                </span>
+              )}
+            </div>
+          </Link>
+          <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {job.sources.map((s) => (
+              <span
+                key={`${s.source_name}:${s.apply_url}`}
+                className="inline-flex items-center gap-1"
+              >
+                <span>{s.source_name}</span>
+              </span>
+            ))}
+            <div className="ml-auto inline-flex items-center gap-3">
+              <TailorButton jobId={job.id} latestRun={latestTailorRun} />
+              <a
+                href={job.apply_url}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 text-foreground hover:underline"
+              >
+                Apply <ExternalLink className="size-3" />
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
     </li>
+  );
+}
+
+function BatchActionBar({
+  selectedCount,
+  onClear,
+  onSubmit,
+  pending,
+  errorMessage,
+}: {
+  selectedCount: number;
+  onClear: () => void;
+  onSubmit: () => void;
+  pending: boolean;
+  errorMessage: string | null;
+}) {
+  return (
+    <div className="rounded-md border border-foreground/30 bg-secondary/40 p-3 flex items-center gap-3">
+      <span className="text-sm font-medium">
+        {selectedCount} job{selectedCount === 1 ? "" : "s"} selected
+      </span>
+      <button
+        type="button"
+        onClick={onClear}
+        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+        title="Clear selection"
+      >
+        <X className="size-3" /> Clear
+      </button>
+      <div className="flex-1" />
+      {errorMessage && <span className="text-xs text-destructive">{errorMessage}</span>}
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={pending}
+        className={cn(
+          "h-8 px-3 rounded-md text-sm font-medium inline-flex items-center gap-1.5 transition-colors",
+          pending
+            ? "bg-muted text-muted-foreground cursor-not-allowed"
+            : "bg-foreground text-background hover:bg-foreground/85",
+        )}
+      >
+        <Sparkles className="size-3.5" />
+        {pending ? "Kicking..." : `Tailor ${selectedCount} job${selectedCount === 1 ? "" : "s"}`}
+      </button>
+    </div>
   );
 }
 
