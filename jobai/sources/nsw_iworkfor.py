@@ -211,7 +211,11 @@ def _walk_all_pages(max_pages: int, *, account: str) -> PageScript:
     contains every page's cards in one parseable document.
     """
 
-    async def script(page: Page) -> None:
+    async def script(page: Page) -> None:  # pragma: no cover - drives real Playwright
+        # Integration-only: clicks the Ant Design "next page" control on
+        # the Cloudflare-protected Angular SPA. Exercised end-to-end by
+        # docker compose + the persistent stealth tier; not reachable in
+        # unit tests without spawning real Chromium + a Patchright session.
         # Wait for the SPA to render the first page of cards.
         try:
             await page.wait_for_selector(

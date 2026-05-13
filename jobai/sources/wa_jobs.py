@@ -94,7 +94,11 @@ def _walk_all_pages(max_pages: int) -> PageScript:
     row across all pages.
     """
 
-    async def script(page: Page) -> None:
+    async def script(page: Page) -> None:  # pragma: no cover - drives real Playwright
+        # Integration-only: submits the WA jobs search form, walks page
+        # navigation via the form's hidden state machine, accumulates
+        # rows into the final DOM snapshot. Exercised end-to-end by
+        # docker compose + the browser tier; not reachable in unit tests.
         with contextlib.suppress(Exception):
             await page.click('input[value="Search"]', timeout=15_000)
         with contextlib.suppress(Exception):

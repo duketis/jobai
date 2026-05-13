@@ -132,7 +132,10 @@ def _walk_all_pages(max_pages: int) -> PageScript:
     snapshot contains every row across all pages.
     """
 
-    async def script(page: Page) -> None:
+    async def script(page: Page) -> None:  # pragma: no cover - drives real Playwright
+        # Integration-only: Playwright-driven form submit + paginated
+        # click loop. Exercised end-to-end by the docker-compose soak,
+        # not reachable in unit tests without spawning real Chromium.
         # Step 1: click Search to get to page 1 of results.
         try:
             await page.click('input[name="in_searchBut"]', timeout=15_000)
@@ -199,7 +202,9 @@ def _walk_all_pages(max_pages: int) -> PageScript:
     return script
 
 
-async def _append_rows_to_first_table(page: Page, row_html: str) -> None:
+async def _append_rows_to_first_table(  # pragma: no cover - drives real Playwright
+    page: Page, row_html: str
+) -> None:
     """Append captured ``<tr>`` HTML to the current page's results tbody.
 
     The accumulating snapshot strategy: every paginated page's rows

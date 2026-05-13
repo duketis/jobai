@@ -106,7 +106,11 @@ def _walk_all_pages(max_pages: int) -> PageScript:
     across all pages.
     """
 
-    async def script(page: Page) -> None:
+    async def script(page: Page) -> None:  # pragma: no cover - drives real Playwright
+        # Integration-only: submits the search form, walks paginated
+        # results via JS-driven form submits, and appends each page's
+        # rows into the final DOM snapshot. Exercised end-to-end by
+        # docker compose + the browser tier; not reachable in unit tests.
         # Step 1: click Search to get to page 1 of results.
         with contextlib.suppress(Exception):
             await page.click("#brsSearchBtn", timeout=15_000)

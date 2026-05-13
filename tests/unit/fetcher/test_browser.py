@@ -180,3 +180,55 @@ async def test_async_context_manager_closes_driver_on_exit() -> None:
     async with BrowserFetcher(driver=driver):
         assert driver.closed is False
     assert driver.closed is True
+
+
+async def test_run_in_page_delegates_to_driver() -> None:
+    """``BrowserFetcher.run_in_page`` is the public escape hatch -- the
+    body is one delegation call, but covering it makes sure the timeout
+    + page_script kwargs reach the driver intact."""
+
+    async def _script(_page: Any) -> None:  # pragma: no cover - fake never runs scripts
+        return None
+
+    driver = _FakeDriver()
+    fetcher = BrowserFetcher(driver=driver, timeout=7.0)
+    response = await fetcher.run_in_page(
+        "https://example.test/form",
+        page_script=_script,
+    )
+    assert response.status_code == 200  # the fake driver's default response
+    assert driver.calls[-1]["url"] == "https://example.test/form"
+    assert driver.calls[-1]["kind"] == "run_in_page"
+    assert driver.calls[-1]["timeout_ms"] == 7000.0
+
+
+async def test_run_in_page_uses_explicit_timeout_override() -> None:
+    async def _script(_page: Any) -> None:  # pragma: no cover - fake never runs scripts
+        return None
+
+    driver = _FakeDriver()
+    fetcher = BrowserFetcher(driver=driver, timeout=7.0)
+    await fetcher.run_in_page("https://example.test/", timeout=3.0, page_script=_script)
+    assert driver.calls[-1]["timeout_ms"] == 3000.0
+
+
+def test_playwright_driver_init_stores_config() -> None:
+    """``PlaywrightDriver.__init__`` is side-effect-free -- it just stores
+    config + creates an asyncio.Lock. Cover it without spinning up real
+    Chromium (the methods that do are pragma'd)."""
+    from jobai.fetcher.browser import PlaywrightDriver  # noqa: PLC0415
+
+    sentinel_factory = object()
+    driver = PlaywrightDriver(
+        user_agent="x/1",
+        headless=False,
+        playwright_factory=sentinel_factory,
+        persistent_session=True,
+    )
+    assert driver._user_agent == "x/1"
+    assert driver._headless is False
+    assert driver._factory is sentinel_factory
+    assert driver._persistent_session is True
+    assert driver._browser is None
+    assert driver._playwright is None
+    assert driver._persistent_context is None

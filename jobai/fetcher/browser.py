@@ -116,7 +116,10 @@ class PlaywrightDriver:
         self._persistent_context: Any = None  # BrowserContext when persistent_session
         self._init_lock = asyncio.Lock()
 
-    async def _ensure_browser(self) -> Browser:
+    async def _ensure_browser(self) -> Browser:  # pragma: no cover - drives real Playwright
+        # Spawning Chromium via Playwright cannot be exercised under
+        # unit tests; the integration soak (docker compose up -d) covers
+        # the boot path on every release.
         async with self._init_lock:
             if self._browser is None:
                 self._playwright = await self._factory().start()
@@ -125,7 +128,7 @@ class PlaywrightDriver:
                 )
             return self._browser
 
-    async def _get_context(self) -> Any:
+    async def _get_context(self) -> Any:  # pragma: no cover - drives real Playwright
         """Return a context for the next fetch.
 
         In per-fetch mode (default) this is a fresh context the caller
@@ -146,7 +149,7 @@ class PlaywrightDriver:
                     )
         return self._persistent_context
 
-    async def fetch_page(
+    async def fetch_page(  # pragma: no cover - drives real Playwright
         self,
         url: str,
         *,
@@ -154,6 +157,10 @@ class PlaywrightDriver:
         timeout_ms: float,
         wait_for_selector: str | None = None,
     ) -> Response:
+        # Integration-only -- exercises Chromium nav, networkidle wait,
+        # wait_for_selector, and the page.content() snapshot. The fake
+        # driver fixture in tests/unit/fetcher exercises the surrounding
+        # BrowserFetcher wiring without hitting real Chromium.
         context = await self._get_context()
         # In persistent mode the context is shared - never close it
         # here; close() takes care of it on driver shutdown.
@@ -216,7 +223,7 @@ class PlaywrightDriver:
                 with contextlib.suppress(Exception):
                     await page.close()
 
-    async def run_in_page(
+    async def run_in_page(  # pragma: no cover - drives real Playwright
         self,
         url: str,
         *,
@@ -256,7 +263,7 @@ class PlaywrightDriver:
                 with contextlib.suppress(Exception):
                     await page.close()
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # pragma: no cover - tears down real Playwright
         if self._persistent_context is not None:
             with contextlib.suppress(Exception):
                 await self._persistent_context.close()
