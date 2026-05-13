@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Loader2,
   MapPin,
   Search,
   Sparkles,
@@ -14,6 +15,7 @@ import { Link, useSearchParams } from "react-router";
 import { TailorButton } from "@/components/TailorButton";
 import {
   getHealth,
+  listJobIds,
   listJobs,
   tailorJobBatch,
   type JobSort,
@@ -22,6 +24,12 @@ import {
 import type { JobSummary, TailorRunRecord } from "@/lib/types";
 import { useLatestTailorRunsByJob } from "@/lib/useTailorRuns";
 import { cn } from "@/lib/utils";
+
+//: When the user submits a batch larger than this, we surface a
+//: confirm() before kicking. Three concurrent chains × ~3 min each
+//: means 25 jobs is already ~25 min of LLM-bound work; anything
+//: bigger usually means the user wanted to filter further first.
+const BATCH_CONFIRM_THRESHOLD = 25;
 
 const PAGE_SIZE = 25;
 
@@ -199,7 +207,7 @@ export function JobsListPage() {
   const { latestByJob } = useLatestTailorRunsByJob();
 
   // Batch-select mode: when active, each JobCard renders a checkbox and
-  // an action bar appears once at least one row is selected. The set is
+  // a master checkbox + action bar appear above the list. The set is
   // local to this page (not URL-persisted) so a stray refresh doesn't
   // leave the user staring at a stale selection.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -213,6 +221,15 @@ export function JobsListPage() {
     },
   });
 
+  // "Select all N matching" -- runs lazily when the user clicks the
+  // banner so we don't pay the round-trip on every page load.
+  const expandMutation = useMutation({
+    mutationFn: () => listJobIds(params),
+    onSuccess: (response) => {
+      setSelectedIds(new Set(response.ids));
+    },
+  });
+
   function toggleSelected(jobId: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -220,6 +237,46 @@ export function JobsListPage() {
       else next.add(jobId);
       return next;
     });
+  }
+
+  const visibleIds = useMemo(
+    () => (data?.items ?? []).map((job) => job.id),
+    [data?.items],
+  );
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected =
+    visibleIds.some((id) => selectedIds.has(id)) && !allVisibleSelected;
+
+  function toggleAllVisible() {
+    if (allVisibleSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.add(id);
+        return next;
+      });
+    }
+  }
+
+  function submitBatch() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (
+      ids.length > BATCH_CONFIRM_THRESHOLD &&
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Queue ${ids.length} tailor chains? (~${Math.ceil(ids.length / 3) * 3} minutes of LLM time at 3 concurrent.)`,
+      )
+    ) {
+      return;
+    }
+    batchMutation.mutate(ids);
   }
 
   return (
@@ -260,16 +317,8 @@ export function JobsListPage() {
       {selectionMode && (
         <BatchActionBar
           selectedCount={selectedIds.size}
-          totalVisible={data?.items.length ?? 0}
-          allSelected={
-            (data?.items.length ?? 0) > 0 &&
-            (data?.items ?? []).every((job) => selectedIds.has(job.id))
-          }
           onClear={() => setSelectedIds(new Set())}
-          onSelectAll={() =>
-            setSelectedIds(new Set((data?.items ?? []).map((job) => job.id)))
-          }
-          onSubmit={() => batchMutation.mutate(Array.from(selectedIds))}
+          onSubmit={submitBatch}
           pending={batchMutation.isPending}
           errorMessage={batchMutation.error ? (batchMutation.error as Error).message : null}
         />
@@ -372,6 +421,18 @@ export function JobsListPage() {
         <ErrorBanner message={(error as Error).message} />
       ) : (
         <>
+          {selectionMode && visibleIds.length > 0 ? (
+            <ListSelectAllRow
+              allSelected={allVisibleSelected}
+              someSelected={someVisibleSelected}
+              visibleCount={visibleIds.length}
+              total={total}
+              selectedCount={selectedIds.size}
+              expanding={expandMutation.isPending}
+              onToggleVisible={toggleAllVisible}
+              onExpandToAll={() => expandMutation.mutate()}
+            />
+          ) : null}
           <ul className="space-y-3">
             {(data?.items ?? []).map((job) => (
               <JobCard
@@ -520,19 +581,13 @@ function JobCard({
 
 function BatchActionBar({
   selectedCount,
-  totalVisible,
-  allSelected,
   onClear,
-  onSelectAll,
   onSubmit,
   pending,
   errorMessage,
 }: {
   selectedCount: number;
-  totalVisible: number;
-  allSelected: boolean;
   onClear: () => void;
-  onSelectAll: () => void;
   onSubmit: () => void;
   pending: boolean;
   errorMessage: string | null;
@@ -543,19 +598,6 @@ function BatchActionBar({
       <span className="text-sm font-medium">
         {selectedCount} job{selectedCount === 1 ? "" : "s"} selected
       </span>
-      <button
-        type="button"
-        onClick={allSelected ? onClear : onSelectAll}
-        disabled={totalVisible === 0}
-        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 disabled:opacity-50"
-        title={
-          allSelected
-            ? "Deselect every job on this page"
-            : `Select every job on this page (${totalVisible})`
-        }
-      >
-        {allSelected ? "Deselect all" : `Select all (${totalVisible})`}
-      </button>
       <button
         type="button"
         onClick={onClear}
@@ -585,6 +627,91 @@ function BatchActionBar({
             ? `Tailor ${selectedCount} job${selectedCount === 1 ? "" : "s"}`
             : "Pick at least one job"}
       </button>
+    </div>
+  );
+}
+
+/**
+ * Gmail-pattern master row at the top of the jobs list:
+ *
+ *  ☐  Select all 25 on this page                        25 of 247
+ *
+ * After the user toggles the master checkbox to "all visible
+ * selected", a banner appears offering to expand the selection to
+ * every matching job across all pages -- one explicit second click,
+ * not a hidden default. The banner only shows when the result set
+ * is bigger than the visible page.
+ */
+function ListSelectAllRow({
+  allSelected,
+  someSelected,
+  visibleCount,
+  total,
+  selectedCount,
+  expanding,
+  onToggleVisible,
+  onExpandToAll,
+}: {
+  allSelected: boolean;
+  someSelected: boolean;
+  visibleCount: number;
+  total: number;
+  selectedCount: number;
+  expanding: boolean;
+  onToggleVisible: () => void;
+  onExpandToAll: () => void;
+}) {
+  const showExpandBanner =
+    allSelected && total > visibleCount && selectedCount < total;
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-3 px-3 py-2 rounded-md border border-border bg-card text-sm">
+        <input
+          type="checkbox"
+          checked={allSelected}
+          ref={(node) => {
+            // Tri-state: some-but-not-all visible selected → indeterminate.
+            if (node) node.indeterminate = someSelected;
+          }}
+          onChange={onToggleVisible}
+          aria-label={
+            allSelected
+              ? "Deselect every job on this page"
+              : "Select every job on this page"
+          }
+          className="size-4 cursor-pointer"
+        />
+        <span className="font-medium">
+          {allSelected
+            ? `All ${visibleCount} on this page selected`
+            : someSelected
+              ? `${selectedCount} selected`
+              : `Select all ${visibleCount} on this page`}
+        </span>
+        <div className="flex-1" />
+        <span className="text-xs text-muted-foreground">
+          {selectedCount} of {total.toLocaleString()}
+        </span>
+      </label>
+      {showExpandBanner ? (
+        <button
+          type="button"
+          onClick={onExpandToAll}
+          disabled={expanding}
+          className="w-full text-left px-3 py-2 rounded-md border border-foreground/30 bg-secondary/40 text-sm hover:bg-secondary/60 transition-colors disabled:opacity-60 inline-flex items-center gap-2"
+        >
+          {expanding ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="size-3.5" />
+          )}
+          <span>
+            {expanding
+              ? "Loading all matching jobs…"
+              : `Select all ${total.toLocaleString()} matching →`}
+          </span>
+        </button>
+      ) : null}
     </div>
   );
 }

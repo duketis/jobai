@@ -87,6 +87,28 @@ export interface JobsListParams {
   offset?: number;
 }
 
+function jobsQueryString(params: JobsListParams): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      query.set(key, String(value));
+    }
+  }
+  return query.size > 0 ? `?${query.toString()}` : "";
+}
+
+/** Every job id matching the current filters (cross-page select-all). */
+export interface JobIdsResponse {
+  ids: number[];
+  total: number;
+}
+
+export async function listJobIds(
+  params: Omit<JobsListParams, "limit" | "offset"> & { limit?: number } = {},
+): Promise<JobIdsResponse> {
+  return fetchJson<JobIdsResponse>(`/jobs/ids${jobsQueryString(params)}`);
+}
+
 export async function listJobs(params: JobsListParams = {}): Promise<JobsListResponse> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
