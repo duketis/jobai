@@ -257,10 +257,18 @@ export function JobsListPage() {
         </button>
       </header>
 
-      {selectionMode && selectedIds.size > 0 && (
+      {selectionMode && (
         <BatchActionBar
           selectedCount={selectedIds.size}
+          totalVisible={data?.items.length ?? 0}
+          allSelected={
+            (data?.items.length ?? 0) > 0 &&
+            (data?.items ?? []).every((job) => selectedIds.has(job.id))
+          }
           onClear={() => setSelectedIds(new Set())}
+          onSelectAll={() =>
+            setSelectedIds(new Set((data?.items ?? []).map((job) => job.id)))
+          }
           onSubmit={() => batchMutation.mutate(Array.from(selectedIds))}
           pending={batchMutation.isPending}
           errorMessage={batchMutation.error ? (batchMutation.error as Error).message : null}
@@ -512,26 +520,47 @@ function JobCard({
 
 function BatchActionBar({
   selectedCount,
+  totalVisible,
+  allSelected,
   onClear,
+  onSelectAll,
   onSubmit,
   pending,
   errorMessage,
 }: {
   selectedCount: number;
+  totalVisible: number;
+  allSelected: boolean;
   onClear: () => void;
+  onSelectAll: () => void;
   onSubmit: () => void;
   pending: boolean;
   errorMessage: string | null;
 }) {
+  const canSubmit = selectedCount > 0;
   return (
-    <div className="rounded-md border border-foreground/30 bg-secondary/40 p-3 flex items-center gap-3">
+    <div className="rounded-md border border-foreground/30 bg-secondary/40 p-3 flex flex-wrap items-center gap-3">
       <span className="text-sm font-medium">
         {selectedCount} job{selectedCount === 1 ? "" : "s"} selected
       </span>
       <button
         type="button"
+        onClick={allSelected ? onClear : onSelectAll}
+        disabled={totalVisible === 0}
+        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 disabled:opacity-50"
+        title={
+          allSelected
+            ? "Deselect every job on this page"
+            : `Select every job on this page (${totalVisible})`
+        }
+      >
+        {allSelected ? "Deselect all" : `Select all (${totalVisible})`}
+      </button>
+      <button
+        type="button"
         onClick={onClear}
-        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+        disabled={selectedCount === 0}
+        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 disabled:opacity-50"
         title="Clear selection"
       >
         <X className="size-3" /> Clear
@@ -541,16 +570,20 @@ function BatchActionBar({
       <button
         type="button"
         onClick={onSubmit}
-        disabled={pending}
+        disabled={pending || !canSubmit}
         className={cn(
           "h-8 px-3 rounded-md text-sm font-medium inline-flex items-center gap-1.5 transition-colors",
-          pending
+          pending || !canSubmit
             ? "bg-muted text-muted-foreground cursor-not-allowed"
             : "bg-foreground text-background hover:bg-foreground/85",
         )}
       >
         <Sparkles className="size-3.5" />
-        {pending ? "Kicking..." : `Tailor ${selectedCount} job${selectedCount === 1 ? "" : "s"}`}
+        {pending
+          ? "Kicking..."
+          : canSubmit
+            ? `Tailor ${selectedCount} job${selectedCount === 1 ? "" : "s"}`
+            : "Pick at least one job"}
       </button>
     </div>
   );
