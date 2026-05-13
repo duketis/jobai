@@ -372,8 +372,7 @@ def test_format_location_falls_back_to_component_join_or_none() -> None:
     assert _format_location("not-a-dict") is None
     # No fullLocation but city/region/country present.
     assert (
-        _format_location({"city": "Sydney", "region": "NSW", "country": "AU"})
-        == "Sydney, NSW, AU"
+        _format_location({"city": "Sydney", "region": "NSW", "country": "AU"}) == "Sydney, NSW, AU"
     )
     # Entirely empty dict -> None.
     assert _format_location({}) is None

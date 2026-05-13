@@ -229,3 +229,172 @@ def test_nsw_iworkfor_source_declares_needs_persistent_session() -> None:
     flag gets caught immediately."""
     assert NSWIWorkForSource.needs_persistent_session is True
     assert NSWIWorkForSource(account="jobs").needs_persistent_session is True
+
+
+def test_nsw_parse_card_returns_none_for_missing_pieces() -> None:
+    """Cards without title / href / job_id short-circuit to None."""
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.nsw_iworkfor import _parse_card  # noqa: PLC0415
+
+    # No title node at all.
+    card = HTMLParser('<article class="search-job-card">no title</article>').css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+    # Title node present but empty text.
+    card = HTMLParser(
+        '<article class="search-job-card"><span class="search-job-card__title"></span></article>'
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+    # Title + apply path missing entirely.
+    card = HTMLParser(
+        '<article class="search-job-card">'
+        '<span class="search-job-card__title">Engineer</span>'
+        "</article>"
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+    # Title + path present but no job_id extractable.
+    card = HTMLParser(
+        '<article class="search-job-card">'
+        '<span class="search-job-card__title">Engineer</span>'
+        '<a class="search-job-card__title-link" href="/no-id-here">x</a>'
+        "</article>"
+    ).css_first("article")
+    assert card is not None
+    assert _parse_card(card) is None
+
+
+def test_nsw_text_helper_handles_blank_node_text() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.nsw_iworkfor import _text  # noqa: PLC0415
+
+    card = HTMLParser("<div><span></span></div>").css_first("div")
+    assert card is not None
+    assert _text(card, "span") is None
+
+
+def test_nsw_extract_job_id_falls_back_to_aria_label() -> None:
+    """When the URL doesn't carry the id, the parser falls back to
+    aria-labelledby='job-title-NNNN'."""
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.nsw_iworkfor import _extract_job_id  # noqa: PLC0415
+
+    card = HTMLParser('<article aria-labelledby="job-title-98765"></article>').css_first("article")
+    assert card is not None
+    assert _extract_job_id("/no-id-in-url", card) == "98765"
+
+    # aria-labelledby present but the suffix isn't all digits -> None.
+    card = HTMLParser('<article aria-labelledby="job-title-abc"></article>').css_first("article")
+    assert card is not None
+    assert _extract_job_id("/no-id-in-url", card) is None
+
+
+def test_nsw_parse_info_dl_skips_rows_missing_dt_or_dd() -> None:
+    """Each row in the info dl must have both a dt and dd; missing either skips."""
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.nsw_iworkfor import _parse_info_dl  # noqa: PLC0415
+
+    card = HTMLParser(
+        "<div>"
+        '<dl class="job-card-info">'
+        "<div><dt>Salary</dt><dd>$100k</dd></div>"
+        "<div><dt>Missing-dd</dt></div>"  # no <dd>, skipped
+        "<div><dd>Missing-dt</dd></div>"  # no <dt>, skipped
+        "<div><dt>Empty-Label</dt><dd></dd></div>"  # blank value, skipped
+        "</dl>"
+        "</div>"
+    ).css_first("div")
+    assert card is not None
+    info = _parse_info_dl(card)
+    assert info == {"Salary": "$100k"}
+
+
+def test_nsw_parse_info_dl_returns_empty_when_dl_missing() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.nsw_iworkfor import _parse_info_dl  # noqa: PLC0415
+
+    card = HTMLParser("<div>no dl here</div>").css_first("div")
+    assert card is not None
+    assert _parse_info_dl(card) == {}
+
+
+def test_nsw_first_segment_handles_empty_and_comma_only() -> None:
+    from jobai.sources.nsw_iworkfor import _first_segment  # noqa: PLC0415
+
+    assert _first_segment(None) is None
+    assert _first_segment("") is None
+    assert _first_segment(",") is None
+    assert _first_segment("Sydney, NSW") == "Sydney"
+
+
+def test_nsw_parse_salary_handles_partial_ranges_and_no_match() -> None:
+    from jobai.sources.nsw_iworkfor import _parse_salary  # noqa: PLC0415
+
+    assert _parse_salary(None) == (None, None, None)
+    assert _parse_salary("") == (None, None, None)
+    assert _parse_salary("Negotiable") == (None, None, None)
+    # Range regex matches with a comma-only second endpoint -> _to_int(',')
+    # returns None -> falls through to single-match, which catches the
+    # first number. Covers the 422->424 branch.
+    assert _parse_salary("$100,000 - $,") == (100_000, None, "AUD")
+    # Single value path returns (value, None, AUD).
+    assert _parse_salary("$80,000 base") == (80_000, None, "AUD")
+    # Single regex matches a comma-only string -> _to_int returns None ->
+    # falls through to (None, None, None). Covers the 427->429 branch.
+    assert _parse_salary("$ ,") == (None, None, None)
+
+
+def test_nsw_to_int_returns_none_and_upscales_shorthand() -> None:
+    from jobai.sources.nsw_iworkfor import _to_int  # noqa: PLC0415
+
+    assert _to_int("not-a-number") is None
+    assert _to_int("85") == 85_000
+    assert _to_int("85,000") == 85_000
+
+
+async def test_nsw_iworkfor_discover_dedups_repeated_cards() -> None:
+    """Two cards with the same job id collapse to one."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from jobai.fetcher.base import Response  # noqa: PLC0415
+
+    class _DupFetcher:
+        needs_persistent_session = True
+
+        async def aclose(self) -> None:
+            return None
+
+        async def run_in_page(self, *_args: object, **_kwargs: object) -> Response:
+            html = (
+                "<html><body>"
+                '<article class="search-job-card">'
+                '<span class="search-job-card__title">Engineer</span>'
+                '<a class="search-job-card__title-link" href="/job/role-9999">x</a>'
+                "</article>"
+                '<article class="search-job-card">'
+                '<span class="search-job-card__title">Engineer</span>'
+                '<a class="search-job-card__title-link" href="/job/role-9999">x</a>'
+                "</article>"
+                "</body></html>"
+            )
+            return Response(
+                url="https://x",
+                status_code=200,
+                headers={},
+                body=html.encode("utf-8"),
+                fetched_at=datetime.now(tz=UTC),
+            )
+
+    jobs = []
+    async for job in NSWIWorkForSource(account="jobs").discover(_DupFetcher()):  # type: ignore[arg-type]
+        jobs.append(job)
+    assert len(jobs) == 1

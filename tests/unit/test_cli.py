@@ -245,3 +245,171 @@ def test_run_unknown_source_fails_cleanly(_isolated_db: Path) -> None:
 
     result = runner.invoke(app, ["run", "--source", "not-a-real-ats:x"])
     assert result.exit_code != 0
+
+
+def test_serve_command_invokes_uvicorn_with_configured_host_port(
+    _isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``jobai serve`` delegates to uvicorn.run; monkey-patch the call
+    so the test doesn't actually start a server."""
+    from jobai import cli as cli_mod  # noqa: PLC0415
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    import uvicorn  # noqa: PLC0415
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(cli_mod, "uvicorn", uvicorn)
+    result = runner.invoke(
+        app,
+        ["serve", "--host", "0.0.0.0", "--port", "8888"],  # noqa: S104
+    )
+    assert result.exit_code == 0, result.output
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert captured["args"] == ("jobai.api.server:app",)
+    assert kwargs["host"] == "0.0.0.0"  # noqa: S104
+    assert kwargs["port"] == 8888
+    assert kwargs["reload"] is False
+
+
+def test_infer_remote_command_walks_and_reports(_isolated_db: Path) -> None:
+    """``infer-remote`` against an empty DB reports zero updates cleanly."""
+    runner.invoke(app, ["migrate"])
+    result = runner.invoke(app, ["infer-remote"])
+    assert result.exit_code == 0, result.output
+    assert "infer-remote" in result.output
+
+
+def test_source_sync_reports_skipped_unknown_kinds(
+    _isolated_db: Path,
+    tmp_path: Path,
+) -> None:
+    """When companies.yaml lists a kind not in the registry, ``source
+    sync`` prints a 'skipped unknown kinds' line in addition to the
+    upsert count."""
+    runner.invoke(app, ["migrate"])
+    yaml_file = tmp_path / "companies.yaml"
+    yaml_file.write_text(
+        "greenhouse:\n"
+        "  - account: atlassian\n"
+        "    display_name: Atlassian\n"
+        "not_a_real_ats:\n"
+        "  - account: foo\n"
+        "    display_name: Foo\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["source", "sync", "--file", str(yaml_file)])
+    assert result.exit_code == 0, result.output
+    assert "skipped unknown kinds" in result.output
+    assert "not_a_real_ats" in result.output
+
+
+def test_split_name_rejects_missing_kind_or_account() -> None:
+    """``_split_name`` raises BadParameter for any of: missing colon,
+    empty kind ('@:account'), or empty account ('kind:')."""
+    import typer  # noqa: PLC0415
+
+    from jobai.cli import _split_name  # noqa: PLC0415
+
+    with pytest.raises(typer.BadParameter):
+        _split_name("missing-colon")
+    with pytest.raises(typer.BadParameter):
+        _split_name(":no-kind")
+    with pytest.raises(typer.BadParameter):
+        _split_name("no-account:")
+
+
+def test_run_one_source_command_executes_runner_and_echoes_result(
+    _isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``jobai run --source kind:account`` instantiates the source,
+    runs it, and echoes a one-line summary. We monkey-patch the
+    fetcher + run_source so the test doesn't hit the network."""
+    from jobai import cli as cli_mod  # noqa: PLC0415
+    from jobai.pipeline.runner import RunResult  # noqa: PLC0415
+
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        upsert_source(conn, kind="greenhouse", account="atlassian", display_name="Atlassian")
+    finally:
+        conn.close()
+
+    class _FakeFetcher:
+        async def aclose(self) -> None:
+            return None
+
+    def fake_build_fetcher(**kwargs: object) -> _FakeFetcher:
+        del kwargs
+        return _FakeFetcher()
+
+    async def fake_run_source(**kwargs: object) -> RunResult:
+        del kwargs
+        return RunResult(
+            run_id=1,
+            status="success",
+            items_seen=3,
+            items_new=2,
+            items_updated=1,
+        )
+
+    monkeypatch.setattr(cli_mod, "build_fetcher", fake_build_fetcher)
+    monkeypatch.setattr(cli_mod, "run_source", fake_run_source)
+
+    result = runner.invoke(app, ["run", "--source", "greenhouse:atlassian"])
+    assert result.exit_code == 0, result.output
+    assert "greenhouse:atlassian" in result.output
+    assert "status=success" in result.output
+
+
+def test_run_enabled_walks_every_enabled_source(
+    _isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``jobai run --enabled`` iterates every enabled source row,
+    runs each, and echoes one summary line per source."""
+    from jobai import cli as cli_mod  # noqa: PLC0415
+    from jobai.pipeline.runner import RunResult  # noqa: PLC0415
+
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        upsert_source(conn, kind="greenhouse", account="atlassian", display_name="Atlassian")
+        upsert_source(conn, kind="lever", account="palantir", display_name="Palantir")
+    finally:
+        conn.close()
+
+    class _FakeFetcher:
+        async def aclose(self) -> None:
+            return None
+
+    def fake_build_fetcher(**kwargs: object) -> _FakeFetcher:
+        del kwargs
+        return _FakeFetcher()
+
+    async def fake_run_source(**kwargs: object) -> RunResult:
+        del kwargs
+        return RunResult(
+            run_id=1,
+            status="success",
+            items_seen=0,
+            items_new=0,
+            items_updated=0,
+            error_summary="non-fatal",  # triggers the "  error:" echo branch
+        )
+
+    monkeypatch.setattr(cli_mod, "build_fetcher", fake_build_fetcher)
+    monkeypatch.setattr(cli_mod, "run_source", fake_run_source)
+
+    result = runner.invoke(app, ["run", "--enabled"])
+    assert result.exit_code == 0, result.output
+    assert "greenhouse:atlassian" in result.output
+    assert "lever:palantir" in result.output
+    assert "error: non-fatal" in result.output

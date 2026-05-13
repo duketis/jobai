@@ -263,7 +263,6 @@ async def test_default_job_factory_invokes_run_source_by_id(
 
     async def fake(source_id: int, db_path: Path) -> None:
         seen.append((source_id, db_path))
-        return None
 
     monkeypatch.setattr(scheduler_mod, "run_source_by_id", fake)
     coro_factory = scheduler_mod._default_job_factory(42, seeded_db)
@@ -293,11 +292,10 @@ async def test_run_description_backfill_calls_backfill_with_tier3_fetcher(
         captured["tier"] = tier
         return fake
 
-    async def fake_backfill(
-        conn: object, fetcher: object, *, limit: int
-    ) -> scheduler_mod.BackfillResult:  # type: ignore[attr-defined]
-        from jobai.pipeline.description_backfill import BackfillResult  # noqa: PLC0415
+    from jobai.pipeline.description_backfill import BackfillResult  # noqa: PLC0415
 
+    async def fake_backfill(conn: object, fetcher: object, *, limit: int) -> BackfillResult:
+        del conn
         captured["limit"] = limit
         captured["fetcher_is_fake"] = fetcher is fake
         return BackfillResult(attempted=2, filled=1, skipped=1)
@@ -325,7 +323,6 @@ async def test_register_description_backfill_inner_run_invokes_backfill(
 
     async def fake_run(db_path: Path, *, limit: int) -> None:
         seen.append((db_path, limit))
-        return None
 
     monkeypatch.setattr(scheduler_mod, "_run_description_backfill", fake_run)
     scheduler = build_scheduler()
@@ -367,9 +364,10 @@ async def test_run_source_by_id_executes_runner_for_enabled_source(
         captured["fetcher_kwargs"] = kwargs
         return _FakeFetcher()
 
-    async def fake_run_source(**kwargs: object) -> scheduler_mod.RunResult:  # type: ignore[name-defined]
-        from jobai.pipeline.runner import RunResult  # noqa: PLC0415
+    from jobai.pipeline.runner import RunResult  # noqa: PLC0415
 
+    async def fake_run_source(**kwargs: object) -> RunResult:
+        del kwargs
         captured["run_source_called"] = True
         return RunResult(
             run_id=1,

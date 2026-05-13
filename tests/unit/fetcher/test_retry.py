@@ -255,9 +255,7 @@ async def test_retry_after_naive_date_is_treated_as_utc(
     # naive-looking date string. Build one manually that parsedate_to_datetime
     # parses as naive: 'Mon, 13 May 2026 10:00:00'.
     naive_date_str = future.strftime("%a, %d %b %Y %H:%M:%S")
-    inner = _ScriptedFetcher(
-        [_resp(429, headers={"retry-after": naive_date_str}), _resp(200)]
-    )
+    inner = _ScriptedFetcher([_resp(429, headers={"retry-after": naive_date_str}), _resp(200)])
     async with RetryingFetcher(
         inner,
         max_attempts=3,

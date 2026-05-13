@@ -282,14 +282,8 @@ def test_extract_country_handles_non_dict_address_and_postal() -> None:
 
     assert _extract_country({"address": "broken-string"}) is None
     assert _extract_country({"address": {"postalAddress": "broken"}}) is None
-    assert (
-        _extract_country({"address": {"postalAddress": {"addressCountry": "AU"}}})
-        == "AU"
-    )
-    assert (
-        _extract_country({"address": {"postalAddress": {"addressCountry": 123}}})
-        is None
-    )
+    assert _extract_country({"address": {"postalAddress": {"addressCountry": "AU"}}}) == "AU"
+    assert _extract_country({"address": {"postalAddress": {"addressCountry": 123}}}) is None
 
 
 def test_extract_compensation_handles_various_shapes() -> None:

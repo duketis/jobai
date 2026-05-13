@@ -435,8 +435,9 @@ def test_resolve_sort_unknown_remote_type_raises_value_error() -> None:
     """The repository's _build_where rejects unknown remote_type strings;
     while the route layer validates first, the underlying helper still
     raises if called directly with a bogus value."""
-    from jobai.api.repository import search_jobs  # noqa: PLC0415
     import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    from jobai.api.repository import search_jobs  # noqa: PLC0415
 
     conn = _sqlite3.connect(":memory:")
     with pytest.raises(ValueError, match="remote_type"):

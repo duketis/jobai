@@ -156,10 +156,10 @@ async def test_discover_walks_to_max_pages_when_every_page_has_new_cards() -> No
         # might otherwise stay constant across all pages.
         job_id = 100000 + offset
         body = (
-            f'<html><body><ul><li>'
+            f"<html><body><ul><li>"
             f'<a href="/jobs/QLD-{job_id}/"><span class="result-title">'
-            f'<strong>Engineer {offset}</strong></span></a>'
-            f'</li></ul></body></html>'
+            f"<strong>Engineer {offset}</strong></span></a>"
+            f"</li></ul></body></html>"
         )
         return httpx.Response(200, text=body)
 
@@ -190,9 +190,7 @@ def test_parse_card_returns_none_on_missing_pieces() -> None:
     assert _parse_card(li) is None
 
     # Job-id regex doesn't match the path.
-    li = HTMLParser(
-        '<li><a href="/jobs/QLD-/"><strong>Title</strong></a></li>'
-    ).css_first("li")
+    li = HTMLParser('<li><a href="/jobs/QLD-/"><strong>Title</strong></a></li>').css_first("li")
     assert li is not None
     assert _parse_card(li) is None
 
@@ -236,9 +234,7 @@ def test_split_title_company_when_full_text_does_not_start_with_title() -> None:
 
     # The anchor's full stripped text 'Prefix Engineer' doesn't start
     # with the inner-strong title 'Engineer'; the conditional drops out.
-    anchor = HTMLParser(
-        "<a>Prefix <strong>Engineer</strong></a>"
-    ).css_first("a")
+    anchor = HTMLParser("<a>Prefix <strong>Engineer</strong></a>").css_first("a")
     assert anchor is not None
     title, company = _split_title_company(anchor)
     assert title == "Engineer"

@@ -107,6 +107,7 @@ def test_update_settings_400_when_repository_rejects_key(
     """If the repository raises ValueError (defense-in-depth on the
     allow-list), the route surfaces it as a 400 not a 500."""
     import pytest as _pytest  # noqa: PLC0415,F401
+
     from jobai.api.routes import settings as settings_routes  # noqa: PLC0415
 
     def boom_write(*args: object, **kwargs: object) -> None:

@@ -155,3 +155,138 @@ async def test_discover_walks_multiple_pages_and_dedups() -> None:
 async def test_max_pages_validation() -> None:
     with pytest.raises(ValueError, match="max_pages"):
         LinkedInSource(account=_QUERY, max_pages=0)
+
+
+async def test_discover_stops_silently_on_mid_walk_failure() -> None:
+    """A non-2xx after page 0 ends the walk; everything yielded so far survives."""
+
+    calls = {"n": 0}
+
+    def page_for(request: httpx.Request) -> httpx.Response:
+        del request
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, text=_FIXTURE)
+        return httpx.Response(500, text="server-side")
+
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=page_for)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in LinkedInSource(account=_QUERY, max_pages=5).discover(fetcher)]
+    # Page 0's fixture jobs are preserved despite the mid-walk failure.
+    assert len(jobs) > 0
+
+
+async def test_discover_walks_to_max_pages_when_every_page_has_new_cards() -> None:
+    """Force the for loop in discover() to exhaust all max_pages by
+    giving every page a unique URN."""
+
+    def page_for(request: httpx.Request) -> httpx.Response:
+        start = int(request.url.params.get("start", "0"))
+        body = (
+            "<html><body><ul>"
+            f'<li><div class="base-card" data-entity-urn="urn:li:jobPosting:{start}">'
+            f'<a class="base-card__full-link" href="/jobs/view/{start}">x</a>'
+            f'<h3 class="base-search-card__title">R {start}</h3>'
+            '<h4 class="base-search-card__subtitle">Co</h4>'
+            '<span class="job-search-card__location">Sydney</span>'
+            "</div></li></ul></body></html>"
+        )
+        return httpx.Response(200, text=body)
+
+    with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
+        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=page_for)
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in LinkedInSource(account=_QUERY, max_pages=2).discover(fetcher)]
+    assert len(jobs) == 2
+
+
+def test_extract_job_id_falls_back_to_href_when_urn_missing() -> None:
+    """A card without a valid urn but with a viewable href returns the
+    id pulled from the URL path. Covers the 182->184 + 187 branches."""
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.linkedin import _extract_job_id  # noqa: PLC0415
+
+    card = HTMLParser(
+        '<div class="base-card" data-entity-urn="not-a-urn">'
+        '<a class="base-card__full-link" href="/jobs/view/role-77777">x</a>'
+        "</div>"
+    ).css_first("div")
+    assert card is not None
+    assert _extract_job_id(card) == "77777"
+
+
+def test_extract_job_id_returns_none_when_both_urn_and_href_missing() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.linkedin import _extract_job_id  # noqa: PLC0415
+
+    card = HTMLParser('<div class="base-card"></div>').css_first("div")
+    assert card is not None
+    assert _extract_job_id(card) is None
+
+
+def test_text_helper_handles_missing_node_and_blank_text() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.linkedin import _text  # noqa: PLC0415
+
+    card = HTMLParser("<div><span></span></div>").css_first("div")
+    assert card is not None
+    assert _text(card, ".missing") is None
+    assert _text(card, "span") is None
+    card = HTMLParser("<div><span>hi</span></div>").css_first("div")
+    assert card is not None
+    assert _text(card, "span") == "hi"
+
+
+def test_href_helper_returns_none_for_missing_node() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.linkedin import _href  # noqa: PLC0415
+
+    card = HTMLParser("<div></div>").css_first("div")
+    assert card is not None
+    assert _href(card, "a") is None
+
+
+def test_attr_helper_returns_none_for_missing_node() -> None:
+    from selectolax.parser import HTMLParser  # noqa: PLC0415
+
+    from jobai.sources.linkedin import _attr  # noqa: PLC0415
+
+    card = HTMLParser("<div></div>").css_first("div")
+    assert card is not None
+    assert _attr(card, "a", "href") is None
+
+
+def test_country_from_recognises_au_us_uk_and_falls_through() -> None:
+    from jobai.sources.linkedin import _country_from  # noqa: PLC0415
+
+    assert _country_from(None) is None
+    assert _country_from("") is None
+    assert _country_from("Sydney, Australia") == "Australia"
+    assert _country_from("San Francisco, United States") == "United States"
+    assert _country_from("Greater London Area, UK") == "United Kingdom"
+    # Unknown country -> None.
+    assert _country_from("Tokyo, Japan") is None
+
+
+def test_city_from_handles_empty_input() -> None:
+    from jobai.sources.linkedin import _city_from  # noqa: PLC0415
+
+    assert _city_from(None) is None
+    assert _city_from("") is None
+    assert _city_from(",   ") is None
+    assert _city_from("Sydney, AU") == "Sydney"
+
+
+def test_remote_from_returns_none_for_empty_or_no_keyword() -> None:
+    from jobai.sources.linkedin import _remote_from  # noqa: PLC0415
+
+    assert _remote_from(None) is None
+    assert _remote_from("") is None
+    assert _remote_from("Sydney NSW") is None
+    assert _remote_from("Remote, AU") == "remote"
+    assert _remote_from("Hybrid - Sydney") == "hybrid"

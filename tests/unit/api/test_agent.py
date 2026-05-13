@@ -478,8 +478,8 @@ def test_load_history_returns_empty_when_no_prior_messages(
     persisted messages (defensive: the route appends the user turn
     before calling this helper, but an empty list is still handled)."""
     del app_with_fake_client
-    from jobai.api.routes.agent import _load_history  # noqa: PLC0415
     from jobai.agent.conversations import create_conversation  # noqa: PLC0415
+    from jobai.api.routes.agent import _load_history  # noqa: PLC0415
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -545,8 +545,10 @@ def test_chat_surfaces_runtime_failure_as_sse_error_event(
 
     async def boom(**kwargs: Any) -> AsyncIterator[Any]:
         del kwargs
-        raise RuntimeError("loop went bang")
-        yield  # pragma: no cover - keeps the function async-iterator-typed
+        msg = "loop went bang"
+        raise RuntimeError(msg)
+        # Unreachable yield keeps this an async generator at the type level.
+        yield None  # type: ignore[unreachable]  # pragma: no cover
 
     monkeypatch.setattr(routes.agent, "run_chat_turn", boom)
 

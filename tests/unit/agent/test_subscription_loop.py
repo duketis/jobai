@@ -487,10 +487,12 @@ async def test_oauth_token_is_forwarded_to_options(
         user_message="ping",
         history=[],
         tool_executor=executor,
-        oauth_token="sk-ant-oat-abc",
+        oauth_token="sk-ant-oat-abc",  # noqa: S106 - synthetic token fixture
     ):
         pass
-    assert captured_env["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-abc"
+    assert (
+        captured_env["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-abc"  # noqa: S105 - same synthetic fixture as above
+    )
 
 
 async def test_mcp_tool_handler_returns_error_payload_on_exception(
@@ -529,13 +531,14 @@ async def test_result_message_with_non_int_usage_values_is_skipped(
     """``usage`` may carry non-int values (None, str). The accumulator
     must skip those rather than crashing -- exercises the
     ``isinstance(value, int)`` False branch in _translate_message."""
+    usage_with_nulls: dict[str, Any] = {
+        "input_tokens": 5,
+        "cache_read_input_tokens": None,
+    }
     _patch_query(
         monkeypatch,
         [
-            _result_message(
-                stop_reason="end_turn",
-                usage={"input_tokens": 5, "cache_read_input_tokens": None},
-            ),
+            _result_message(stop_reason="end_turn", usage=usage_with_nulls),
         ],
     )
     result = TurnResult()
@@ -741,8 +744,12 @@ async def test_assistant_message_with_unhandled_block_type_is_ignored(
         """SDK adding a new block type would land here until we extend
         the translator -- the runtime must not crash on it."""
 
+    # The runtime translator iterates ``msg.content`` as ``list[Any]``;
+    # the SDK's static type is narrower, but a real future SDK upgrade
+    # that adds a new block class would land here without crashing.
+    blocks: list[Any] = [_UnknownBlock(), TextBlock(text="visible")]
     msg = AssistantMessage(
-        content=[_UnknownBlock(), TextBlock(text="visible")],
+        content=blocks,
         model="claude-sonnet-4-6",
         parent_tool_use_id=None,
     )

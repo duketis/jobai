@@ -110,7 +110,9 @@ def test_no_static_dir_means_no_fallback(
         assert test_client.get("/").status_code == 404
 
 
-def test_top_level_file_under_static_served_via_spa_fallback(client: TestClient, static_dir: Path) -> None:
+def test_top_level_file_under_static_served_via_spa_fallback(
+    client: TestClient, static_dir: Path
+) -> None:
     """A file at the root of static/ (not under /assets/) should be
     served directly by the SPA fallback, not rewritten to index.html.
     Common case: favicon.ico, robots.txt."""

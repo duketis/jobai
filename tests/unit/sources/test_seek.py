@@ -268,7 +268,7 @@ def test_parse_card_returns_none_when_no_title_node() -> None:
     are wire-format mismatches; skip rather than crash."""
     card = HTMLParser(
         '<article data-automation="normalJob" data-job-id="42">'
-        '<span>no title element</span>'
+        "<span>no title element</span>"
         "</article>",
     ).css_first("article")
     assert card is not None
@@ -312,10 +312,7 @@ def test_employment_type_skips_paragraphs_not_starting_with_this_is_a() -> None:
     from jobai.sources.seek import _employment_type_from_card  # noqa: PLC0415
 
     card = HTMLParser(
-        "<article>"
-        "<p>Posted 2 days ago</p>"
-        "<p>This is a Full time job</p>"
-        "</article>"
+        "<article><p>Posted 2 days ago</p><p>This is a Full time job</p></article>"
     ).css_first("article")
     assert card is not None
     assert _employment_type_from_card(card) == "Full time"
