@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
+import { FileText, FolderGit2, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 
 import {
   addContextSnippet,
   deleteContextFile,
   listContextFiles,
+  scanContextProject,
   uploadContextFile,
 } from "@/lib/api";
 import type { ContextFile } from "@/lib/types";
@@ -40,6 +41,7 @@ export function ContextPage() {
 
       <SnippetForm onCreated={invalidate} />
       <FileUploadForm onCreated={invalidate} />
+      <ProjectScanForm onCreated={invalidate} />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
@@ -267,79 +269,195 @@ interface FileUploadFormProps {
   onCreated: () => void;
 }
 
+const ACCEPTED_EXTENSIONS = [".pdf", ".csv", ".md", ".markdown", ".txt", ".text"];
+
+function isAcceptedFile(file: File): boolean {
+  const lower = file.name.toLowerCase();
+  return ACCEPTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 function FileUploadForm({ onCreated }: FileUploadFormProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [tags, setTags] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // When true, swap the picker to webkitdirectory mode so the user
+  // can choose a whole folder; we still fan out into single-file
+  // uploads (resumeai's surface is one file per request).
+  const [folderMode, setFolderMode] = useState(false);
+  const [progress, setProgress] = useState<{ uploaded: number; total: number } | null>(
+    null,
+  );
 
   const upload = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       /* v8 ignore next 3 */
-      if (file === null) {
+      if (files.length === 0) {
         throw new Error("Pick a file first");
       }
-      return uploadContextFile({ file, tags, note });
+      // Filter to accepted extensions only -- folder mode otherwise
+      // tries to upload .DS_Store / lockfiles / images that resumeai
+      // would reject one at a time.
+      const accepted = files.filter(isAcceptedFile);
+      const skipped = files.length - accepted.length;
+      if (accepted.length === 0) {
+        throw new Error(
+          `No accepted files in selection (looked for ${ACCEPTED_EXTENSIONS.join(", ")}).`,
+        );
+      }
+      setProgress({ uploaded: 0, total: accepted.length });
+      const failures: string[] = [];
+      for (const [index, file] of accepted.entries()) {
+        try {
+          await uploadContextFile({ file, tags, note });
+        } catch (err) {
+          failures.push(`${file.name}: ${readErrorMessage(err)}`);
+        }
+        setProgress({ uploaded: index + 1, total: accepted.length });
+      }
+      if (failures.length > 0) {
+        const suffix = skipped > 0 ? ` (${skipped} skipped: wrong type)` : "";
+        throw new Error(
+          `${failures.length}/${accepted.length} failed${suffix}\n${failures.join("\n")}`,
+        );
+      }
+      return {
+        uploaded: accepted.length,
+        skipped,
+      };
     },
     onSuccess: () => {
-      setFile(null);
+      setFiles([]);
       setTags("");
       setNote("");
       setError(null);
+      setProgress(null);
       /* v8 ignore next -- ref is always populated for a rendered input */
       if (inputRef.current) inputRef.current.value = "";
       onCreated();
     },
-    onError: (err) => setError(readErrorMessage(err)),
+    onError: (err) => {
+      setError(readErrorMessage(err));
+      setProgress(null);
+    },
   });
+
+  // Folder-pickers via webkitdirectory aren't standard React props; cast
+  // through Record so TS doesn't complain. Safari / Chrome / Edge all
+  // support this; Firefox falls back to a regular multi-file picker.
+  const folderProps =
+    folderMode
+      ? ({
+          webkitdirectory: "",
+          directory: "",
+          mozdirectory: "",
+        } as unknown as Record<string, string>)
+      : {};
 
   return (
     <details className="rounded-md border bg-card p-4">
       <summary className="cursor-pointer text-sm font-medium flex items-center gap-2">
-        <Upload className="size-4" /> Upload a file (PDF / markdown / text)
+        <Upload className="size-4" /> Upload a file (PDF / CSV / markdown / text)
       </summary>
       <form
         className="mt-4 space-y-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!file) {
+          if (files.length === 0) {
             setError("Choose a file before uploading.");
             return;
           }
           upload.mutate();
         }}
       >
-        <FormRow label="File">
+        <div className="flex items-center gap-3 text-xs">
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name="upload-mode"
+              checked={!folderMode}
+              onChange={() => {
+                setFolderMode(false);
+                setFiles([]);
+                /* v8 ignore next */
+                if (inputRef.current) inputRef.current.value = "";
+              }}
+            />
+            File(s)
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name="upload-mode"
+              checked={folderMode}
+              onChange={() => {
+                setFolderMode(true);
+                setFiles([]);
+                /* v8 ignore next */
+                if (inputRef.current) inputRef.current.value = "";
+              }}
+            />
+            Folder
+          </label>
+          <span className="text-muted-foreground">
+            {folderMode
+              ? "Recursively uploads every supported file in the chosen folder."
+              : "Hold shift / cmd to multi-select. Each file is uploaded separately."}
+          </span>
+        </div>
+        <FormRow label={folderMode ? "Folder" : "File(s)"}>
           <input
             ref={inputRef}
             type="file"
-            accept=".pdf,.md,.markdown,.txt,.text"
+            accept={ACCEPTED_EXTENSIONS.join(",")}
+            multiple={!folderMode}
             className="block w-full text-sm"
             onChange={(event) => {
-              const next = event.target.files?.[0] ?? null;
-              setFile(next);
+              /* v8 ignore next -- event.target.files is non-null whenever the
+                 browser fires onChange; the ?? [] is defensive for SSR + edge
+                 cases that don't reach the unit-test environment. */
+              const next = Array.from(event.target.files ?? []);
+              setFiles(next);
             }}
+            {...folderProps}
           />
         </FormRow>
-        <FormRow label="Tags (comma-separated)">
+        {files.length > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {files.length} item{files.length === 1 ? "" : "s"} selected
+            {folderMode
+              ? ` — only ${ACCEPTED_EXTENSIONS.join(", ")} will be uploaded`
+              : ""}
+          </p>
+        ) : null}
+        <FormRow label="Tags (comma-separated, applied to every file)">
           <input
             className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
             value={tags}
             onChange={(event) => setTags(event.target.value)}
           />
         </FormRow>
-        <FormRow label="Note">
+        <FormRow label="Note (applied to every file)">
           <input
             className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
             value={note}
             onChange={(event) => setNote(event.target.value)}
           />
         </FormRow>
+        {/* v8 ignore start -- progress is set mid-mutation and cleared on
+            settle; jsdom mutations resolve synchronously so the spinner
+            never gets a chance to render under unit tests. */}
+        {progress ? (
+          <p className="text-xs text-muted-foreground">
+            Uploading {progress.uploaded}/{progress.total}…
+          </p>
+        ) : null}
+        {/* v8 ignore stop */}
         {error ? <ErrorBanner message={error} /> : null}
         <button
           type="submit"
-          disabled={upload.isPending || file === null}
+          disabled={upload.isPending || files.length === 0}
           className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
         >
           {/* v8 ignore start */}
@@ -350,6 +468,125 @@ function FileUploadForm({ onCreated }: FileUploadFormProps) {
           )}
           {/* v8 ignore stop */}
           Upload
+        </button>
+      </form>
+    </details>
+  );
+}
+
+interface ProjectScanFormProps {
+  onCreated: () => void;
+}
+
+function ProjectScanForm({ onCreated }: ProjectScanFormProps) {
+  const [path, setPath] = useState("");
+  const [name, setName] = useState("");
+  const [authorEmail, setAuthorEmail] = useState("");
+  const [tags, setTags] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const scan = useMutation({
+    mutationFn: () =>
+      scanContextProject({
+        path,
+        name: name || undefined,
+        author_email: authorEmail || undefined,
+        tags: tags || undefined,
+        note: note || undefined,
+      }),
+    onSuccess: () => {
+      setPath("");
+      setName("");
+      setAuthorEmail("");
+      setTags("");
+      setNote("");
+      setError(null);
+      onCreated();
+    },
+    onError: (err) => setError(readErrorMessage(err)),
+  });
+
+  return (
+    <details className="rounded-md border bg-card p-4">
+      <summary className="cursor-pointer text-sm font-medium flex items-center gap-2">
+        <FolderGit2 className="size-4" /> Scan a local git project
+      </summary>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Walks the git history at the absolute host path you give it
+        (resumeai resolves it via its read-only{" "}
+        <code className="px-1 py-0.5 rounded bg-muted text-[10px]">
+          /host/personal
+        </code>{" "}
+        mount). Author-email filter optional — leave blank for the full
+        repo summary.
+      </p>
+      <form
+        className="mt-4 space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!path.trim()) {
+            setError("Absolute path is required.");
+            return;
+          }
+          scan.mutate();
+        }}
+      >
+        <FormRow label="Absolute path">
+          <input
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm font-mono"
+            value={path}
+            onChange={(event) => setPath(event.target.value)}
+            placeholder="/Users/jonathan/Documents/personal/jobai"
+            required
+          />
+        </FormRow>
+        <FormRow label="Display name (optional)">
+          <input
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="jobai"
+          />
+        </FormRow>
+        <FormRow label="Git author email (optional)">
+          <input
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+            value={authorEmail}
+            onChange={(event) => setAuthorEmail(event.target.value)}
+            placeholder="you@example.com"
+          />
+        </FormRow>
+        <FormRow label="Tags (comma-separated)">
+          <input
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+            placeholder="project:jobai, role:engineering"
+          />
+        </FormRow>
+        <FormRow label="Note">
+          <input
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="main job-hunting project, Python+FastAPI"
+          />
+        </FormRow>
+        {error ? <ErrorBanner message={error} /> : null}
+        <button
+          type="submit"
+          disabled={scan.isPending || !path.trim()}
+          className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+        >
+          {/* v8 ignore start */}
+          {scan.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <FolderGit2 className="size-4" />
+          )}
+          {/* v8 ignore stop */}
+          Scan project
         </button>
       </form>
     </details>

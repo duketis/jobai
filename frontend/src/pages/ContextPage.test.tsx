@@ -249,8 +249,9 @@ describe("ContextPage", () => {
 
     renderPage();
     await userEvent.click(screen.getByText(/Upload a file/));
-    const fileInput = screen
-      .getAllByLabelText(/File/)[0] as HTMLInputElement;
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
     const file = new File(["%PDF-1.5 data"], "resume.pdf", {
       type: "application/pdf",
     });
@@ -320,19 +321,21 @@ describe("ContextPage", () => {
   });
 
   it("clears the picked file when the input is reset via fireEvent", async () => {
-    // Exercises the ``?? null`` fallback in the file-picker onChange when
-    // event.target.files is empty (user cleared the selection in-browser).
+    // Exercises the empty-files branch of the file-picker onChange
+    // (user cleared the selection in-browser); the upload button
+    // returns to disabled after the reset.
     const { fireEvent } = await import("@testing-library/react");
     renderPage();
     await userEvent.click(screen.getByText(/Upload a file/));
-    const fileInput = screen.getAllByLabelText(/File/)[0] as HTMLInputElement;
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
     // Pick a file first so the submit button enables.
     await userEvent.upload(
       fileInput,
       new File(["x"], "x.txt", { type: "text/plain" }),
     );
     expect(screen.getByRole("button", { name: /^Upload$/ })).not.toBeDisabled();
-    // Now fire an onChange with no files -> setFile(null) -> submit disables.
     fireEvent.change(fileInput, { target: { files: [] } });
     expect(screen.getByRole("button", { name: /^Upload$/ })).toBeDisabled();
   });
@@ -360,8 +363,9 @@ describe("ContextPage", () => {
     ]);
     renderPage();
     await userEvent.click(screen.getByText(/Upload a file/));
-    const fileInput = screen
-      .getAllByLabelText(/File/)[0] as HTMLInputElement;
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
     await userEvent.upload(
       fileInput,
       new File(["x"], "x.txt", { type: "text/plain" }),
@@ -455,6 +459,275 @@ describe("ContextPage", () => {
     if (textareas) await userEvent.type(textareas, "y");
     await userEvent.click(screen.getByRole("button", { name: /Add snippet/ }));
     expect(await screen.findByText(/raw transport blew up/)).toBeInTheDocument();
+  });
+
+  it("uploads multiple files sequentially in file mode", async () => {
+    let uploadCount = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/file") && init?.method === "POST") {
+        uploadCount += 1;
+        return new Response(
+          JSON.stringify(makeFile({ id: `ctx_${uploadCount}` })),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(fileInput, [
+      new File(["a"], "a.md", { type: "text/markdown" }),
+      new File(["b"], "b.txt", { type: "text/plain" }),
+      new File(["c"], "c.csv", { type: "text/csv" }),
+    ]);
+    expect(screen.getByText(/3 items selected/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^Upload$/ }));
+    await waitFor(() => expect(uploadCount).toBe(3));
+  });
+
+  it("skips unsupported files in folder mode and reports the count", async () => {
+    let uploadCount = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/file") && init?.method === "POST") {
+        uploadCount += 1;
+        return new Response(
+          JSON.stringify(makeFile({ id: `ctx_${uploadCount}` })),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    // Switch to folder mode.
+    await userEvent.click(screen.getByLabelText("Folder"));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(fileInput, [
+      new File(["a"], "a.md", { type: "text/markdown" }),
+      new File(["junk"], ".DS_Store", { type: "application/octet-stream" }),
+      new File(["pic"], "screenshot.png", { type: "image/png" }),
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: /^Upload$/ }));
+    // Only the .md file should have been uploaded.
+    await waitFor(() => expect(uploadCount).toBe(1));
+  });
+
+  it("rejects a folder selection that contains zero supported files", async () => {
+    // userEvent.upload pre-filters by the input's ``accept`` attribute,
+    // so we drive onChange directly via fireEvent with an unsupported
+    // file -- the form's own type-filter then fires and surfaces the
+    // 'No accepted files' error.
+    const { fireEvent } = await import("@testing-library/react");
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    await userEvent.click(screen.getByLabelText("Folder"));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const bogusFile = new File(["x"], ".DS_Store", {
+      type: "application/octet-stream",
+    });
+    Object.defineProperty(fileInput, "files", { value: [bogusFile] });
+    fireEvent.change(fileInput);
+    await userEvent.click(screen.getByRole("button", { name: /^Upload$/ }));
+    expect(await screen.findByText(/No accepted files in selection/)).toBeInTheDocument();
+  });
+
+  it("notes the skipped count in the error when failures coincide with unsupported files", async () => {
+    // Folder mode: one .md upload fails, one .DS_Store gets skipped
+    // pre-upload -> error message should mention both '1/1 failed' AND
+    // the '1 skipped' suffix.
+    const { fireEvent } = await import("@testing-library/react");
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/file") && init?.method === "POST") {
+        return new Response("boom", { status: 502 });
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    await userEvent.click(screen.getByLabelText("Folder"));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(fileInput, "files", {
+      value: [
+        new File(["a"], "a.md", { type: "text/markdown" }),
+        new File(["x"], ".DS_Store", { type: "application/octet-stream" }),
+      ],
+      configurable: true,
+    });
+    fireEvent.change(fileInput);
+    await userEvent.click(screen.getByRole("button", { name: /^Upload$/ }));
+    expect(await screen.findByText(/1 skipped: wrong type/)).toBeInTheDocument();
+  });
+
+  it("surfaces per-file failures when only some uploads fail", async () => {
+    let uploadCount = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/file") && init?.method === "POST") {
+        uploadCount += 1;
+        if (uploadCount === 2) {
+          return new Response("boom", { status: 502 });
+        }
+        return new Response(
+          JSON.stringify(makeFile({ id: `ctx_${uploadCount}` })),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(fileInput, [
+      new File(["a"], "a.md", { type: "text/markdown" }),
+      new File(["b"], "b.md", { type: "text/markdown" }),
+      new File(["c"], "c.md", { type: "text/markdown" }),
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: /^Upload$/ }));
+    expect(await screen.findByText(/1\/3 failed/)).toBeInTheDocument();
+  });
+
+  it("toggles back to file mode and resets the selection", async () => {
+    renderPage();
+    await userEvent.click(screen.getByText(/Upload a file/));
+    await userEvent.click(screen.getByLabelText("Folder"));
+    await userEvent.click(screen.getByLabelText("File(s)"));
+    // Just confirm the form is still mounted + interactive.
+    expect(screen.getByRole("button", { name: /^Upload$/ })).toBeDisabled();
+  });
+
+  it("scans a local project and surfaces the new entry", async () => {
+    let scanCalled = false;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify(scanCalled ? [makeFile({ name: "jobai" })] : []), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/project") && init?.method === "POST") {
+        scanCalled = true;
+        return new Response(
+          JSON.stringify(makeFile({ name: "jobai", id: "ctx_proj" })),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Scan a local git project/));
+    await userEvent.type(
+      screen.getByPlaceholderText(/\/Users\/jonathan\/Documents/),
+      "/Users/jonathan/Documents/personal/jobai",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Scan project/ }));
+    await waitFor(() => expect(scanCalled).toBe(true));
+  });
+
+  it("captures typing into every project-scan optional field", async () => {
+    renderPage();
+    await userEvent.click(screen.getByText(/Scan a local git project/));
+    const nameInput = screen.getByPlaceholderText(/^jobai$/) as HTMLInputElement;
+    const emailInput = screen.getByPlaceholderText(/you@example.com/) as HTMLInputElement;
+    const tagsInput = screen.getByPlaceholderText(
+      /project:jobai, role:engineering/,
+    ) as HTMLInputElement;
+    const noteInput = screen.getByPlaceholderText(
+      /main job-hunting project/,
+    ) as HTMLInputElement;
+    await userEvent.type(nameInput, "myproj");
+    await userEvent.type(emailInput, "me@example.com");
+    await userEvent.type(tagsInput, "alpha");
+    await userEvent.type(noteInput, "note text");
+    expect(nameInput.value).toBe("myproj");
+    expect(emailInput.value).toBe("me@example.com");
+    expect(tagsInput.value).toBe("alpha");
+    expect(noteInput.value).toBe("note text");
+  });
+
+  it("disables the project-scan submit until a path is entered", async () => {
+    renderPage();
+    await userEvent.click(screen.getByText(/Scan a local git project/));
+    expect(screen.getByRole("button", { name: /Scan project/ })).toBeDisabled();
+    await userEvent.type(
+      screen.getByPlaceholderText(/\/Users\/jonathan\/Documents/),
+      "/x",
+    );
+    expect(screen.getByRole("button", { name: /Scan project/ })).not.toBeDisabled();
+  });
+
+  it("surfaces the path-required error if submit somehow fires on a blank form", async () => {
+    // The submit button is disabled when path is blank, but the form's
+    // own onSubmit guard is the second line of defence. Bypass the
+    // disable to confirm the guard still fires its own error message.
+    const { fireEvent } = await import("@testing-library/react");
+    renderPage();
+    await userEvent.click(screen.getByText(/Scan a local git project/));
+    const form = screen
+      .getByRole("button", { name: /Scan project/ })
+      .closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
+    expect(
+      await screen.findByText(/Absolute path is required\./),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a project-scan sibling error", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/context/project")) {
+        return new Response("nope", { status: 502 });
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await userEvent.click(screen.getByText(/Scan a local git project/));
+    await userEvent.type(
+      screen.getByPlaceholderText(/\/Users\/jonathan\/Documents/),
+      "/some/path",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Scan project/ }));
+    expect(await screen.findByText(/HTTP 502/)).toBeInTheDocument();
   });
 
   it("keeps the row when the confirm prompt is cancelled", async () => {

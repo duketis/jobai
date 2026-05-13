@@ -343,6 +343,34 @@ export async function uploadContextFile(input: {
   return (await response.json()) as ContextFile;
 }
 
+/** POST /api/context/project — scan a local git repo by absolute path. */
+export async function scanContextProject(input: {
+  path: string;
+  name?: string;
+  author_email?: string;
+  tags?: string;
+  note?: string;
+}): Promise<ContextFile> {
+  const form = new FormData();
+  form.set("path", input.path);
+  if (input.name) form.set("name", input.name);
+  if (input.author_email) form.set("author_email", input.author_email);
+  if (input.tags) form.set("tags", input.tags);
+  if (input.note) form.set("note", input.note);
+  const response = await fetch(`${API_BASE}/context/project`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `POST /context/project → HTTP ${response.status}`,
+      response.status,
+      await response.text(),
+    );
+  }
+  return (await response.json()) as ContextFile;
+}
+
 /** DELETE /api/context/{id} — remove one entry. */
 export async function deleteContextFile(fileId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/context/${fileId}`, { method: "DELETE" });
