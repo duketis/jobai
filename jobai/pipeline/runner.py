@@ -226,7 +226,8 @@ def _start_run(conn: sqlite3.Connection, *, source_id: int, tier: int) -> int:
     )
     conn.commit()
     last_id = cursor.lastrowid
-    if last_id is None:
+    # SQLite always returns lastrowid on a successful INSERT; defensive only.
+    if last_id is None:  # pragma: no cover
         raise RuntimeError("INSERT INTO scrape_runs returned no lastrowid")
     return int(last_id)
 
@@ -316,7 +317,8 @@ def _upsert_job_raw(
         )
         conn.commit()
         last_id = cursor.lastrowid
-        if last_id is None:
+        # SQLite always returns lastrowid on a successful INSERT; defensive only.
+        if last_id is None:  # pragma: no cover
             raise RuntimeError("INSERT INTO jobs_raw returned no lastrowid")
         return (int(last_id), True)
 

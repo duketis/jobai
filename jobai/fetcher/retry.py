@@ -157,7 +157,11 @@ class RetryingFetcher:
         msg = "RetryingFetcher exited the retry loop unexpectedly"
         raise RuntimeError(msg)  # pragma: no cover
 
-    async def run_in_page(self, *args: Any, **kwargs: Any) -> Response:
+    # Forwards to BrowserFetcher.run_in_page, which drives real Playwright
+    # and is itself excluded. Integration-only.
+    async def run_in_page(  # pragma: no cover
+        self, *args: Any, **kwargs: Any
+    ) -> Response:
         """Forward to the inner fetcher's ``run_in_page`` (if browser-tier).
 
         Browser workflows go through Playwright, which already has

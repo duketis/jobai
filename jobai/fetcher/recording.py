@@ -65,7 +65,11 @@ class RecordingFetcher:
             self._record(response)
         return response
 
-    async def run_in_page(self, *args: Any, **kwargs: Any) -> Response:
+    # Forwards to BrowserFetcher.run_in_page, which drives real Playwright
+    # and is itself excluded above. Integration-only.
+    async def run_in_page(  # pragma: no cover
+        self, *args: Any, **kwargs: Any
+    ) -> Response:
         """Forward to the inner fetcher's ``run_in_page`` (browser-only).
 
         Sources that drive Playwright workflows reach for this method;
