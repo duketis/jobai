@@ -129,7 +129,9 @@ def _parse_card(card: Node) -> NormalizedJob | None:
     if apply_anchor is None:
         return None
     apply_path = apply_anchor.attributes.get("href")
-    if not apply_path:
+    # The ``a[href*="/jobs/QLD-"]`` selector above guarantees a non-empty
+    # href; this guard exists as belt-and-braces only.
+    if not apply_path:  # pragma: no cover
         return None
 
     match = _JOB_ID_RE.search(apply_path)

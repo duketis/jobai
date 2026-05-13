@@ -250,3 +250,174 @@ async def test_discover_handles_empty_board() -> None:
             jobs = [j async for j in source.discover(fetcher)]
 
     assert jobs == []
+
+
+async def test_discover_skips_listing_entries_without_uuid_or_id() -> None:
+    """A listing entry missing both ``uuid`` and ``id`` is unusable;
+    the loop continues to the next without crashing."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "offset": 0,
+                    "limit": 100,
+                    "totalFound": 1,
+                    "content": [{"title": "missing-uuid"}],
+                },
+            ),
+        )
+        source = SmartRecruitersSource(account="x")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert jobs == []
+
+
+async def test_discover_stops_when_content_is_not_a_list() -> None:
+    """A 200 whose ``content`` key is non-list ends the pagination
+    rather than crashing on iteration."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings").mock(
+            return_value=httpx.Response(
+                200,
+                json={"offset": 0, "limit": 100, "totalFound": 0, "content": "broken"},
+            ),
+        )
+        source = SmartRecruitersSource(account="x")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert jobs == []
+
+
+async def test_discover_skips_non_dict_content_entries() -> None:
+    """Stray non-dict values in ``content`` skip without crashing."""
+    listing = {
+        "offset": 0,
+        "limit": 100,
+        "totalFound": 1,
+        "content": ["not-a-dict", {"uuid": "u-1", "name": "Engineer"}],
+    }
+    detail = {
+        "id": "u-1",
+        "name": "Engineer",
+        "company": {"name": "Co"},
+        "location": {},
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings").mock(
+            return_value=httpx.Response(200, json=listing),
+        )
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings/u-1").mock(
+            return_value=httpx.Response(200, json=detail),
+        )
+        source = SmartRecruitersSource(account="x")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert len(jobs) == 1
+
+
+async def test_discover_stops_when_total_found_is_not_int() -> None:
+    """If totalFound isn't an int, the loop bails after the first page."""
+    listing = {
+        "offset": 0,
+        "limit": 100,
+        "totalFound": "not-an-int",
+        "content": [{"uuid": "u-1", "name": "Engineer"}],
+    }
+    detail = {
+        "id": "u-1",
+        "name": "Engineer",
+        "company": {"name": "Co"},
+        "location": {},
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings").mock(
+            return_value=httpx.Response(200, json=listing),
+        )
+        router.get("https://api.smartrecruiters.com/v1/companies/x/postings/u-1").mock(
+            return_value=httpx.Response(200, json=detail),
+        )
+        source = SmartRecruitersSource(account="x")
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in source.discover(fetcher)]
+    assert len(jobs) == 1
+
+
+async def test_discover_raises_when_listing_payload_is_not_dict() -> None:
+    """A 200 with a list at the top instead of an envelope raises."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.smartrecruiters.com/v1/companies/wrong/postings").mock(
+            return_value=httpx.Response(200, json=["not-an-envelope"]),
+        )
+        source = SmartRecruitersSource(account="wrong")
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(SmartRecruitersFetchError):
+                async for _ in source.discover(fetcher):
+                    pass
+
+
+def test_extract_label_returns_none_for_non_dict_or_non_string_label() -> None:
+    from jobai.sources.smartrecruiters import _extract_label  # noqa: PLC0415
+
+    assert _extract_label(None) is None
+    assert _extract_label("not-a-dict") is None
+    assert _extract_label({"label": 42}) is None
+    assert _extract_label({"label": "Full Time"}) == "full-time"
+
+
+def test_format_location_falls_back_to_component_join_or_none() -> None:
+    from jobai.sources.smartrecruiters import _format_location  # noqa: PLC0415
+
+    assert _format_location(None) is None
+    assert _format_location("not-a-dict") is None
+    # No fullLocation but city/region/country present.
+    assert (
+        _format_location({"city": "Sydney", "region": "NSW", "country": "AU"})
+        == "Sydney, NSW, AU"
+    )
+    # Entirely empty dict -> None.
+    assert _format_location({}) is None
+
+
+def test_extract_location_field_handles_missing_and_non_string() -> None:
+    from jobai.sources.smartrecruiters import _extract_location_field  # noqa: PLC0415
+
+    assert _extract_location_field({"location": "not-dict"}, "city") is None
+    assert _extract_location_field({"location": {"city": 42}}, "city") is None
+    assert _extract_location_field({"location": {"city": ""}}, "city") is None
+    assert _extract_location_field({"location": {"city": "Sydney"}}, "city") == "Sydney"
+
+
+def test_remote_type_from_location_handles_every_combination() -> None:
+    from jobai.sources.smartrecruiters import _remote_type_from_location  # noqa: PLC0415
+
+    assert _remote_type_from_location(None) is None
+    assert _remote_type_from_location({"remote": True}) == "remote"
+    assert _remote_type_from_location({"hybrid": True}) == "hybrid"
+    assert _remote_type_from_location({"remote": False, "hybrid": False}) == "onsite"
+    assert _remote_type_from_location({}) is None
+
+
+def test_compose_description_html_falls_through_on_missing_blocks() -> None:
+    from jobai.sources.smartrecruiters import _compose_description_html  # noqa: PLC0415
+
+    # No jobAd block at all -> None.
+    assert _compose_description_html({}) is None
+    # jobAd present but sections missing -> None.
+    assert _compose_description_html({"jobAd": {}}) is None
+    # sections present but every key missing or wrong shape -> None.
+    assert _compose_description_html({"jobAd": {"sections": {"x": "not-a-dict"}}}) is None
+    # Section with only a title (no text) -> just <h2>.
+    out = _compose_description_html(
+        {
+            "jobAd": {
+                "sections": {
+                    "companyDescription": {"title": "About", "text": ""},
+                    "jobDescription": {"title": "", "text": "Body."},
+                },
+            },
+        },
+    )
+    assert out is not None
+    assert "<h2>About</h2>" in out
+    assert "Body." in out

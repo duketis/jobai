@@ -174,3 +174,86 @@ def test_default_companies_yaml_loads_against_real_schema(
 
     assert report.upserted >= 5
     assert report.skipped_unknown_kind == []
+
+
+def test_sync_rejects_non_string_kind(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """A YAML mapping whose key isn't a string (eg an int via the !!int
+    tag) raises CompaniesYamlError instead of silently coercing."""
+    # Use a JSON-ish YAML with a numeric key to bypass the natural
+    # string-keying YAML usually applies.
+    yaml_file = tmp_path / "weird.yaml"
+    yaml_file.write_text("? 42\n: []\n", encoding="utf-8")
+    with pytest.raises(CompaniesYamlError, match="non-string kind"):
+        sync_companies_yaml(conn, path=yaml_file)
+
+
+def test_sync_rejects_when_entries_for_kind_not_a_list(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """Each kind's value must be a list; a scalar / mapping at that
+    level raises a clean error."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        """
+        greenhouse: just-a-string
+        """,
+    )
+    with pytest.raises(CompaniesYamlError, match="must be a list"):
+        sync_companies_yaml(conn, path=yaml_file)
+
+
+def test_sync_rejects_non_string_account_field(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """``account`` must be a string (it goes into source.account which
+    is used in URL paths); a non-string raises."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        """
+        greenhouse:
+          - account: 42
+            display_name: Whoops
+        """,
+    )
+    with pytest.raises(CompaniesYamlError, match="account"):
+        sync_companies_yaml(conn, path=yaml_file)
+
+
+def test_sync_rejects_empty_display_name(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """``display_name`` must be a non-empty string."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        """
+        greenhouse:
+          - account: atlassian
+            display_name: ""
+        """,
+    )
+    with pytest.raises(CompaniesYamlError, match="display_name"):
+        sync_companies_yaml(conn, path=yaml_file)
+
+
+def test_sync_rejects_entry_that_is_not_a_mapping(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """An entry that's a scalar (string / list) inside a kind's list
+    isn't a mapping and must be rejected. Covers the
+    ``isinstance(entry, dict)`` False branch of _validate_entry."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        """
+        greenhouse:
+          - just-a-string
+        """,
+    )
+    with pytest.raises(CompaniesYamlError, match="must be a mapping"):
+        sync_companies_yaml(conn, path=yaml_file)

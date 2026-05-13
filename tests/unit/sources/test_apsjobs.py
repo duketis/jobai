@@ -246,3 +246,125 @@ async def test_discover_raises_when_bootstrap_missing_aura_context() -> None:
                 async for _ in APSJobsSource(account="").discover(fetcher):
                     pass
     assert excinfo.value.stage == "bootstrap-parse"
+
+
+def test_decode_aura_response_raises_on_non_success_state() -> None:
+    """When the inner action state isn't SUCCESS, _decode_aura_response
+    surfaces an APSJobsFetchError with stage='apex'."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from jobai.fetcher.base import Response  # noqa: PLC0415
+    from jobai.sources.apsjobs import (  # noqa: PLC0415
+        APSJobsFetchError,
+        _decode_aura_response,
+    )
+
+    body = json.dumps(
+        {
+            "actions": [
+                {
+                    "state": "ERROR",
+                    "error": [{"message": "boom"}],
+                },
+            ],
+        },
+    )
+    response = Response(
+        url="https://apsjobs.example/aura",
+        status_code=200,
+        headers={},
+        body=body.encode("utf-8"),
+        fetched_at=datetime.now(tz=UTC),
+    )
+    with pytest.raises(APSJobsFetchError) as excinfo:
+        _decode_aura_response(response)
+    assert excinfo.value.stage == "apex"
+
+
+def test_parse_listing_returns_none_when_missing_id_or_title() -> None:
+    from jobai.sources.apsjobs import _parse_listing  # noqa: PLC0415
+
+    assert _parse_listing({}) is None
+    assert _parse_listing({"jobId": "1"}) is None
+    assert _parse_listing({"jobName": "Engineer"}) is None
+    assert _parse_listing({"jobId": "1", "jobName": "Engineer"}) is not None
+
+
+def test_join_html_returns_none_when_every_part_is_empty() -> None:
+    from jobai.sources.apsjobs import _join_html  # noqa: PLC0415
+
+    assert _join_html(None, None, "") is None
+    assert _join_html("a", None, "b") == "a\nb"
+
+
+def test_first_segment_returns_none_for_empty_or_comma_only_input() -> None:
+    from jobai.sources.apsjobs import _first_segment  # noqa: PLC0415
+
+    assert _first_segment(None) is None
+    assert _first_segment("") is None
+    assert _first_segment("Canberra, ACT") == "Canberra"
+
+
+def test_to_int_returns_none_on_unparseable_input() -> None:
+    from jobai.sources.apsjobs import _to_int  # noqa: PLC0415
+
+    assert _to_int(None) is None
+    assert _to_int("not-a-number") is None
+    assert _to_int(125_820.0) == 125_820
+
+
+def test_normalise_arrangement_handles_empty_and_unknown_strings() -> None:
+    from jobai.sources.apsjobs import _normalise_arrangement  # noqa: PLC0415
+
+    assert _normalise_arrangement(None) is None
+    assert _normalise_arrangement("") is None
+    # An unknown token alone returns None.
+    assert _normalise_arrangement("Telepathic") is None
+    assert _normalise_arrangement("Hybrid") == "hybrid"
+    assert _normalise_arrangement("Flexible") == "remote"
+    assert _normalise_arrangement("On Site") == "onsite"
+
+
+async def test_discover_exhausts_page_cap_when_every_page_returns_new_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hard _MAX_PAGES ceiling exists so a runaway pagination loop
+    can't spin forever. Shrink it to 2 and feed two pages of unique
+    listings so the for-loop completes all iterations (exit branch)."""
+    from jobai.sources import apsjobs as apsjobs_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(apsjobs_mod, "_MAX_PAGES", 2)
+
+    def _page(job_id: str, new_offset: int) -> dict[str, object]:
+        return {
+            "actions": [
+                {
+                    "state": "SUCCESS",
+                    "returnValue": {
+                        "returnValue": {
+                            "jobListingCount": 1,
+                            "newOffset": new_offset,
+                            "jobListings": [
+                                {
+                                    "jobId": job_id,
+                                    "jobName": f"Engineer {job_id}",
+                                    "jobLocation": "Canberra",
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+        }
+
+    page = _page("unique-1", new_offset=1)
+    page2 = _page("unique-2", new_offset=2)
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BOOTSTRAP_URL).mock(
+            return_value=httpx.Response(200, text=_BOOTSTRAP_HTML),
+        )
+        _aura_route(router, json.dumps(page), json.dumps(page2))
+        async with HttpFetcher() as fetcher:
+            jobs = [j async for j in APSJobsSource(account="").discover(fetcher)]
+    # Both pages yielded distinct jobs; loop hit the _MAX_PAGES ceiling.
+    assert {j.source_external_id for j in jobs} == {"unique-1", "unique-2"}

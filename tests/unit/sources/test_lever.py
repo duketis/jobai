@@ -160,3 +160,51 @@ async def test_discover_skips_non_dict_array_entries() -> None:
             jobs = [j async for j in source.discover(fetcher)]
 
     assert len(jobs) == 1
+
+
+async def test_discover_raises_when_payload_is_not_a_list() -> None:
+    """A 200 with a non-list (eg dict envelope) at the top is a wire-
+    format mismatch; raise rather than silently yield nothing."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://api.lever.co/v0/postings/wrong").mock(
+            return_value=httpx.Response(200, json={"oops": True}),
+        )
+        source = LeverSource(account="wrong")
+        async with HttpFetcher() as fetcher:
+            with pytest.raises(LeverFetchError):
+                async for _ in source.discover(fetcher):
+                    pass
+
+
+def test_normalise_workplace_type_returns_none_when_no_keyword_matches() -> None:
+    """When the workplace string mentions none of remote / hybrid /
+    onsite / office, the helper returns None."""
+    from jobai.sources.lever import _normalise_workplace_type  # noqa: PLC0415
+
+    assert _normalise_workplace_type("on the moon") is None
+    assert _normalise_workplace_type(None) is None  # non-string
+
+
+def test_extract_commitment_handles_non_dict_and_non_string_value() -> None:
+    """``categories`` may be missing entirely or contain a non-string
+    'commitment' value; both branches return None."""
+    from jobai.sources.lever import _extract_commitment  # noqa: PLC0415
+
+    assert _extract_commitment(None) is None
+    assert _extract_commitment("not-a-dict") is None
+    assert _extract_commitment({"commitment": 42}) is None
+    assert _extract_commitment({"commitment": "Full-time"}) == "Full-time"
+
+
+def test_extract_created_at_handles_non_numeric_and_overflow() -> None:
+    """createdAt that isn't an int/float -> None; an absurdly large value
+    that overflows fromtimestamp -> None (the OverflowError except branch)."""
+    from jobai.sources.lever import _extract_created_at  # noqa: PLC0415
+
+    assert _extract_created_at({}) is None
+    assert _extract_created_at({"createdAt": "not-a-number"}) is None
+    # Year ~3000+ ms timestamp overflows on some platforms; use a value
+    # well beyond what fromtimestamp can handle.
+    assert _extract_created_at({"createdAt": 10**20}) is None
+    # Sanity: a normal value still works.
+    assert _extract_created_at({"createdAt": 0}) is not None
