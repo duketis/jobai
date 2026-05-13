@@ -32,6 +32,12 @@ _VALID_REMOTE_TYPES = {"remote", "hybrid", "onsite"}
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 20
 
+#: Cap on the cross-page "give me every matching id" path. A user
+#: explicitly asking to tailor every match is fine, but tens of
+#: thousands of LLM-bound chains is not -- the UI confirms anything
+#: beyond a sane batch, this is the absolute safety stop.
+MAX_IDS = 1000
+
 #: Sort options the API + UI both speak. Map of value → ORDER BY clause.
 #: "relevance" is meaningful only when ``q`` is set; the resolver below
 #: silently falls back to "newest" when q is empty so a user picking
@@ -112,6 +118,61 @@ def search_jobs(
     items = [_row_to_summary(r, sources_by_job.get(int(r[0]), [])) for r in rows]
 
     return JobsListResponse(total=total, limit=limit, offset=offset, items=items)
+
+
+def search_job_ids(
+    conn: sqlite3.Connection,
+    *,
+    q: str | None = None,
+    location: str | None = None,
+    remote_type: str | None = None,
+    employment_type: str | None = None,
+    posted_since: str | None = None,
+    company: str | None = None,
+    source_kind: str | None = None,
+    exclude_title: list[str] | None = None,
+    min_salary: int | None = None,
+    has_salary: bool = False,
+    sort: str | None = None,
+    limit: int = MAX_IDS,
+) -> tuple[list[int], int]:
+    """Return every job id matching the given filters, in the same
+    order :func:`search_jobs` would yield.
+
+    Powers the cross-page "Select all N matching" path -- the UI
+    needs the full id list so the batch endpoint can fire one
+    ``POST /api/tailor/batch`` rather than paginating.
+
+    Caps the returned list at :data:`MAX_IDS` (default 1000). The
+    second element of the return tuple is the *total* matching
+    count, regardless of the cap, so the UI can show
+    ``"showing 1000 of 5247"`` when relevant.
+    """
+    limit = max(1, min(limit, MAX_IDS))
+
+    where, params, fts_join = _build_where(
+        q=q,
+        location=location,
+        remote_type=remote_type,
+        employment_type=employment_type,
+        posted_since=posted_since,
+        company=company,
+        source_kind=source_kind,
+        exclude_title=exclude_title,
+        min_salary=min_salary,
+        has_salary=has_salary,
+    )
+
+    order_by = _resolve_sort(sort, has_q=bool(q))
+    base_query = f"FROM jobs j {fts_join} {where}"
+    total = int(conn.execute(f"SELECT COUNT(DISTINCT j.id) {base_query}", params).fetchone()[0])
+
+    rows = conn.execute(
+        f"SELECT DISTINCT j.id {base_query} ORDER BY {order_by} LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    ids = [int(r[0]) for r in rows]
+    return ids, total
 
 
 def get_job_detail(conn: sqlite3.Connection, job_id: int) -> JobDetail | None:

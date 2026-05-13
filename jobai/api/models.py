@@ -65,6 +65,20 @@ class JobsListResponse(BaseModel):
     items: list[JobSummary]
 
 
+class JobIdsResponse(BaseModel):
+    """Every job id matching the search filters (cross-page select-all).
+
+    The UI requests this when the user clicks "Select all N matching"
+    so the batch-tailor submit can carry the full id list, not just
+    the current page's. Capped at :data:`jobai.api.repository.MAX_IDS`
+    (default 1000) -- callers compare ``len(ids)`` to ``total`` to
+    detect truncation.
+    """
+
+    ids: list[int] = Field(description="Matching job ids, in the requested sort order.")
+    total: int = Field(description="Total matching count regardless of any cap.")
+
+
 class JobStateUpdate(BaseModel):
     """Request body for ``POST /api/jobs/{id}/state``."""
 

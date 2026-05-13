@@ -19,15 +19,18 @@ from fastapi import APIRouter, HTTPException, Query
 from jobai.api.dependencies import ConnDep
 from jobai.api.models import (
     JobDetail,
+    JobIdsResponse,
     JobsListResponse,
     JobStateResponse,
     JobStateUpdate,
 )
 from jobai.api.repository import (
     DEFAULT_LIMIT,
+    MAX_IDS,
     MAX_LIMIT,
     VALID_SORTS,
     get_job_detail,
+    search_job_ids,
     search_jobs,
 )
 
@@ -135,6 +138,56 @@ def list_jobs(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get(
+    "/ids",
+    response_model=JobIdsResponse,
+    summary="Return every job id matching the filters (cross-page select-all)",
+)
+def list_job_ids(
+    conn: ConnDep,
+    q: Annotated[str | None, Query(max_length=500)] = None,
+    location: Annotated[str | None, Query()] = None,
+    remote: Annotated[str | None, Query(pattern="^(remote|hybrid|onsite)$")] = None,
+    employment_type: Annotated[str | None, Query()] = None,
+    posted_since: Annotated[str | None, Query(max_length=64)] = None,
+    company: Annotated[str | None, Query()] = None,
+    source_kind: Annotated[str | None, Query()] = None,
+    exclude_title: Annotated[str | None, Query(max_length=500)] = None,
+    min_salary: Annotated[int | None, Query(ge=0)] = None,
+    has_salary: Annotated[bool, Query()] = False,
+    sort: Annotated[str | None, Query(pattern=_SORT_PATTERN)] = None,
+    limit: Annotated[
+        int,
+        Query(ge=1, le=MAX_IDS, description=f"Cap on returned ids (1-{MAX_IDS})."),
+    ] = MAX_IDS,
+) -> JobIdsResponse:
+    """Powers the "Select all N matching" expansion in the jobs list.
+
+    Mirrors :func:`list_jobs`'s filters exactly so the UI can pass the
+    same query parameters it used for the visible page and trust the
+    returned ids match what the user just confirmed they want. No
+    offset/pagination -- the cap on the returned list is
+    :data:`~jobai.api.repository.MAX_IDS` (default 1000).
+    """
+    exclude_list = [tok for tok in (exclude_title or "").split(",") if tok.strip()] or None
+    ids, total = search_job_ids(
+        conn,
+        q=q,
+        location=location,
+        remote_type=remote,
+        employment_type=employment_type,
+        posted_since=posted_since,
+        company=company,
+        source_kind=source_kind,
+        exclude_title=exclude_list,
+        min_salary=min_salary,
+        has_salary=has_salary,
+        sort=sort,
+        limit=limit,
+    )
+    return JobIdsResponse(ids=ids, total=total)
 
 
 @router.get(

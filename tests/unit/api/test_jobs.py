@@ -461,3 +461,77 @@ def test_search_jobs_exclude_title_skips_empty_after_strip(
     # The 'senior' token is honoured -- Senior Frontend dropped.
     titles = {item.title for item in response.items}
     assert all("senior" not in t.lower() for t in titles)
+
+
+def test_list_job_ids_returns_every_match(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    del seeded_db
+    response = client.get("/api/jobs/ids")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] >= 1
+    assert len(payload["ids"]) == payload["total"]
+
+
+def test_list_job_ids_honours_filters(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """The id endpoint speaks the same filter dialect as list_jobs."""
+    del seeded_db
+    full = client.get("/api/jobs/ids").json()
+    filtered = client.get("/api/jobs/ids?remote=remote").json()
+    assert filtered["total"] < full["total"]
+    assert set(filtered["ids"]).issubset(set(full["ids"]))
+
+
+def test_list_job_ids_caps_returned_list_at_limit(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """Asking for ``limit=1`` returns one id, but ``total`` still
+    reports the real match count -- the UI uses the gap to surface
+    'showing N of M' messaging."""
+    del seeded_db
+    response = client.get("/api/jobs/ids?limit=1").json()
+    assert len(response["ids"]) == 1
+    assert response["total"] >= 1
+
+
+def test_list_job_ids_validates_sort(client: TestClient, seeded_db: Path) -> None:
+    del seeded_db
+    response = client.get("/api/jobs/ids?sort=bogus")
+    assert response.status_code == 422
+
+
+def test_list_job_ids_route_does_not_shadow_get_job(
+    client: TestClient,
+    seeded_db: Path,
+) -> None:
+    """``/api/jobs/ids`` must declare BEFORE ``/api/jobs/{job_id}`` so
+    the literal-path match wins. If the order ever inverts this test
+    fails because /jobs/ids would return 422 (non-int 'ids' for job_id)
+    or 404. We assert the response shape (ids list + total)."""
+    del seeded_db
+    response = client.get("/api/jobs/ids")
+    assert response.status_code == 200
+    assert "ids" in response.json()
+
+
+def test_search_job_ids_exclude_title_filters_at_repo_level(
+    seeded_db: Path,
+) -> None:
+    """Direct repo call matches what list_jobs does: 'senior' tokens
+    drop matching rows from the returned ids."""
+    from jobai.api.repository import search_job_ids  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    try:
+        all_ids, all_total = search_job_ids(conn)
+        filtered_ids, filtered_total = search_job_ids(conn, exclude_title=["senior"])
+    finally:
+        conn.close()
+    assert filtered_total <= all_total
+    assert set(filtered_ids).issubset(set(all_ids))
