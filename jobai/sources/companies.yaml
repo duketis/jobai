@@ -120,11 +120,17 @@ ashby:
     display_name: ElevenLabs
 
 # SmartRecruiters — api.smartrecruiters.com/v1/companies/<slug>/postings.
+# Manual seed kept intentionally small. ``jobai source discover --register``
+# auto-adds any other slugs whose apply URLs we've already scraped via
+# Seek / Indeed / LinkedIn -- it's the right way to keep coverage current
+# without hand-curating the list.
 smartrecruiters:
   - account: visa
     display_name: Visa
   - account: canva
     display_name: Canva
+  - account: SEEK
+    display_name: SEEK (Australia)
 
 # Workable: deliberately empty list. The widget API path we use
 # (``apply.workable.com/api/v1/widget/accounts/{slug}``) still works,
