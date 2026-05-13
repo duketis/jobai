@@ -8,7 +8,7 @@
 
 A local-first AI job-hunting agent for the Australian market. One process scrapes 70+ AU and global job boards on a schedule into a SQLite database, exposes a REST + SSE API, and runs an Anthropic-powered chat agent that uses tools to search and triage roles. The whole thing ships as a single container.
 
-> **Status:** v1.2.x — data layer, agent layer, frontend, Docker deploy, end-to-end resume + cover-letter tailoring with a **final cross-artefact QA pass** (works against both pay-per-token API and Claude Pro/Max subscription billing), and **daily auto-discovery of new ATS slugs** from existing apply URLs. Generic catalogue (no role bias). **Backend at 100% line + branch coverage; tailor UI at 100% line + branch + functions.**
+> **Status:** v1.3.x — data layer, agent layer, frontend, Docker deploy, end-to-end resume + cover-letter tailoring with a **final cross-artefact QA pass** (works against both pay-per-token API and Claude Pro/Max subscription billing), **daily auto-discovery of new ATS slugs** from existing apply URLs, and a **shared user-context pool** UI that proxies through to resumeai so the whole job-hunt workflow lives behind one URL. Generic catalogue (no role bias). **Backend at 100% line + branch coverage; tailor + QA + context UI at 100% line + branch + functions.**
 
 ## What it does
 
@@ -18,6 +18,7 @@ A local-first AI job-hunting agent for the Australian market. One process scrape
 - **Backfills full descriptions** on a slower cadence — LinkedIn guest-mode and Indeed both bypass per-page anti-bot via a session-aware fetch path.
 - **Tailors a resume + cover-letter PDF per job, one click.** A new "Tailor" button on every job row kicks an async chain through the two sibling services [resumeai](https://github.com/duketis/resumeai) and [coverletterai](https://github.com/duketis/coverletterai): jobai POSTs the JD URL → resumeai produces a tailored resume → jobai feeds that resume id to coverletterai → coverletterai produces a matching cover letter → a **final QA agent** reads both artefacts back against the JD and emits a structured assessment (coverage / consistency / format scores 0–100, plus must-fix and nice-to-fix issue lists). The QA agent honours the same backend selector as the chat agent — it routes through your Claude Pro/Max quota under `JOBAI_AGENT_BACKEND=subscription` or pay-per-token under `api`, picked up live from the Settings UI without a restart. Both PDFs stream straight back through jobai. A batch mode lets you tick N jobs and queue them all (capped at 3 concurrent chains so the LLM-bound renderers don't pile up). A dedicated `/tailor-runs` page shows the lifecycle of every chain; the QA verdict shows up as a clickable badge that opens a drill-in panel with the full assessment.
 - **Auto-discovers new ATS slugs once a day.** APScheduler runs the discovery job alongside the hourly scrapes (24h cadence): it mines every job's `apply_url` for Greenhouse / Lever / Ashby / SmartRecruiters / Workable slugs that aren't already seeded in `companies.yaml`, then upserts them as enabled sources so the next scrape picks them up. Zero manual maintenance — if a company shows up in a job we already ingested, we'll discover their full board within 24 hours.
+- **Manages the shared user-context pool from one place.** A new `/context` page lists every snippet / file / project audit resumeai + coverletterai use during tailoring, with add-snippet + upload-file forms inline. The source of truth still lives on the resumeai sibling; jobai proxies through so the full job-hunt workflow (browse → tailor → curate context) stays behind one URL.
 - **Serves a single-page React app** at `/` for browsing, filtering, and chatting with the agent. The Jobs header surfaces a live "updated X mins ago" freshness chip so you can see the data is current at a glance. The agent is an Anthropic SDK client driving 5 tools against the local DB; responses stream over SSE with full per-token visibility.
 
 ## Quick start (Docker)
@@ -143,6 +144,7 @@ Full OpenAPI spec at <http://localhost:8421/docs>. The headline endpoints:
 ├─ jobai/pipeline/        scrape runner, schema-change detection, description backfill
 ├─ jobai/agent/           Anthropic SDK agent — 5 tools, manual loop, SSE streaming
 ├─ jobai/tailor/          orchestrator + Protocol-based sibling clients for resumeai/coverletterai + QA agent
+├─ jobai/context/         user-context pool proxy (lists / snippets / uploads / deletes forwarded to resumeai)
 ├─ jobai/api/             FastAPI app: /api/* + the React SPA mounted at /
 ├─ jobai/scheduler.py     APScheduler runs in the FastAPI lifespan
 └─ frontend/              React + Vite + TypeScript + Tailwind v4 SPA
@@ -158,16 +160,16 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 982 tests pass
+pytest -q                       # 1016 tests pass
 pytest --cov=jobai --cov-branch --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
 
 (cd frontend && npm ci && npm run build)        # TypeScript strict, Vite production build
-(cd frontend && npm run test:coverage)          # Vitest -- 33 tests, 100% on tailor + QA UI
+(cd frontend && npm run test:coverage)          # Vitest -- 53 tests, 100% on tailor + QA + context UI
 ```
 
-CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. **The Python backend is at 100.0% combined line + branch coverage** (982 tests, every module). Lines that genuinely cannot be exercised under unit tests (real Chromium / Patchright via Playwright, the `claude` CLI subprocess in subscription mode, defensive guards for SQLite invariants like `cursor.lastrowid is None`) are excluded via `# pragma: no cover` with a one-line reason; everything else lives behind tests. The tailor UI (`TailorButton`, `TailorStatusPill`, `QABadge`, `useLatestTailorRunsByJob`, `TailorRunsPage`) is at 100% line + branch + functions under Vitest.
+CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. **The Python backend is at 100.0% combined line + branch coverage** (1016 tests, every module). Lines that genuinely cannot be exercised under unit tests (real Chromium / Patchright via Playwright, the `claude` CLI subprocess in subscription mode, defensive guards for SQLite invariants like `cursor.lastrowid is None`) are excluded via `# pragma: no cover` with a one-line reason; everything else lives behind tests. The tailor + QA + context UI (`TailorButton`, `TailorStatusPill`, `QABadge`, `useLatestTailorRunsByJob`, `TailorRunsPage`, `ContextPage`) is at 100% line + branch + functions under Vitest.
 
 ## Known limitations
 
