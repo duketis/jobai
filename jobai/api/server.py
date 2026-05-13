@@ -31,6 +31,7 @@ from jobai.api.routes import (
     jobs,
     notifications,
     sources,
+    tailor,
 )
 from jobai.api.routes import (
     settings as settings_routes,
@@ -42,6 +43,11 @@ from jobai.scheduler import (
     register_sources,
     shutdown,
 )
+from jobai.tailor.client import (
+    HttpxCoverletteraiClient,
+    HttpxResumeaiClient,
+)
+from jobai.tailor.worker import TailorPool
 
 #: Built-frontend directory. Vite emits ``index.html`` + ``assets/*`` here
 #: when ``npm run build`` runs in ``frontend/``. The directory is gitignored
@@ -68,13 +74,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Disabled by ``JOBAI_DISABLE_SCHEDULER=1`` for tests and for
     multi-process deployments where one worker owns the scheduler.
     """
+    settings = get_settings()
+
+    # Tailor wiring runs regardless of the scheduler flag — the chain
+    # routes are useful in tests too, and the pool / clients are cheap.
+    app.state.resume_client = HttpxResumeaiClient(base_url=settings.resumeai_url)
+    app.state.letter_client = HttpxCoverletteraiClient(base_url=settings.coverletterai_url)
+    tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
+    app.state.tailor_pool = tailor_pool
+
     if os.environ.get(_DISABLE_FLAG):
         _log.info("scheduler_disabled_via_env", extra={"flag": _DISABLE_FLAG})
         app.state.scheduler = None
-        yield
+        try:
+            yield
+        finally:
+            await tailor_pool.drain()
         return
 
-    settings = get_settings()
     scheduler = build_scheduler()
     try:
         registered = register_sources(scheduler, db_path=settings.db_path)
@@ -88,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await shutdown(scheduler)
+        await tailor_pool.drain()
         _log.info("scheduler_stopped")
 
 
@@ -121,6 +139,7 @@ def create_app() -> FastAPI:
         prefix="/api/settings",
         tags=["settings"],
     )
+    application.include_router(tailor.router, prefix="/api/tailor", tags=["tailor"])
     _mount_frontend(application)
     return application
 
