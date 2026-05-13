@@ -38,6 +38,19 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    networks:
+      - default
 
 volumes:
   jobai-data:
+
+# Attach to the shared ``ai-tailor-network`` so the tailor routes can reach
+# resumeai (:8765) + coverletterai (:8766) by service name. Whichever sibling
+# you bring up first creates the network; if jobai is first and the network
+# doesn't exist yet, ``docker compose up`` fails fast with a clear message --
+# bring up the siblings first, or pre-create the network with
+# ``docker network create ai-tailor-network``.
+networks:
+  default:
+    name: ai-tailor-network
+    external: true
