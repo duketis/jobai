@@ -8,7 +8,7 @@
 
 A local-first AI job-hunting agent for the Australian market. One process scrapes 70+ AU and global job boards on a schedule into a SQLite database, exposes a REST + SSE API, and runs an Anthropic-powered chat agent that uses tools to search and triage roles. The whole thing ships as a single container.
 
-> **Status:** v1.1.x — data layer, agent layer, frontend, Docker deploy, AND end-to-end resume + cover-letter tailoring all live. Generic catalogue (no role bias).
+> **Status:** v1.1.x — data layer, agent layer, frontend, Docker deploy, AND end-to-end resume + cover-letter tailoring all live. Generic catalogue (no role bias). **Backend at 100% line + branch coverage.**
 
 ## What it does
 
@@ -152,7 +152,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 759 tests pass
+pytest -q                       # 937 tests pass
 pytest --cov=jobai --cov-branch --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
@@ -161,7 +161,7 @@ ruff check . && ruff format --check .
 (cd frontend && npm run test:coverage)          # Vitest -- 22 tests, 100% on new tailor UI
 ```
 
-CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. New code lands at 100% line + branch coverage on the modules it touches; the `jobai.tailor` package (+ the matching `/api/tailor` routes) and the new tailor UI (`TailorButton`, `TailorStatusPill`, `useLatestTailorRunsByJob`, `TailorRunsPage`) are all at 100%. Older fetcher/source modules that drive real Chromium can't be reached in unit tests — they live behind the integration-soak harness, which `docker compose up -d` exercises end-to-end on every release.
+CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. **The Python backend is at 100.0% combined line + branch coverage** (937 tests, every module). Lines that genuinely cannot be exercised under unit tests (real Chromium / Patchright via Playwright, the `claude` CLI subprocess in subscription mode, defensive guards for SQLite invariants like `cursor.lastrowid is None`) are excluded via `# pragma: no cover` with a one-line reason; everything else lives behind tests. The new tailor UI (`TailorButton`, `TailorStatusPill`, `useLatestTailorRunsByJob`, `TailorRunsPage`) is at 100% line + branch + functions under Vitest.
 
 ## Known limitations
 
