@@ -101,16 +101,21 @@ class QAAssessment(BaseModel):
 class TailorRunRecord(BaseModel):
     """One row from ``tailor_runs`` shaped for HTTP responses.
 
-    ``job_id`` is the canonical jobai job id; the sibling run ids
-    (``resume_run_id`` / ``letter_run_id``) are opaque strings the
-    siblings hand back. ``error`` is non-null only when ``status`` is
-    ``failed`` — surface it directly so the UI can render the cause
-    without an extra round-trip. ``qa_status`` + ``qa_assessment`` are
-    populated by the final cross-artefact QA pass.
+    ``job_id`` is the canonical jobai job id when the chain was kicked
+    against a catalogue row; ``jd_url`` carries the URL directly when
+    the chain came in via ``POST /api/tailor/url`` for a JD jobai
+    never scraped. Exactly one of the two is set per row (DB-level
+    CHECK enforces). The sibling run ids (``resume_run_id`` /
+    ``letter_run_id``) are opaque strings the siblings hand back.
+    ``error`` is non-null only when ``status`` is ``failed`` — surface
+    it directly so the UI can render the cause without an extra
+    round-trip. ``qa_status`` + ``qa_assessment`` are populated by
+    the final cross-artefact QA pass.
     """
 
     id: int
-    job_id: int
+    job_id: int | None = None
+    jd_url: str | None = None
     status: TailorRunStatus
     resume_run_id: str | None = None
     resume_status: str | None = None
@@ -136,6 +141,46 @@ class KickOneResponse(BaseModel):
     tailor_run_id: int = Field(description="The jobai-internal tailor_runs.id.")
     job_id: int
     status: TailorRunStatus
+
+
+class KickByUrlRequest(BaseModel):
+    """Request body for ``POST /api/tailor/url``.
+
+    The endpoint accepts a bare JD URL and tries to resolve it to an
+    existing catalogue job first (so the run lands on the normal
+    catalogue path with full metadata + tracking). When no match is
+    found, the chain still runs -- the URL is forwarded directly to
+    resumeai and the row carries it on ``tailor_runs.jd_url``.
+    """
+
+    jd_url: str = Field(min_length=1, max_length=2000)
+
+
+class KickByUrlResponse(BaseModel):
+    """Response to ``POST /api/tailor/url``.
+
+    Tells the caller which path the kick took so the UI can show
+    "matched existing job" vs "tailoring directly from the URL".
+    """
+
+    tailor_run_id: int
+    status: TailorRunStatus
+    matched_job_id: int | None = Field(
+        default=None,
+        description=(
+            "Set when the URL matched a catalogue job; the chain ran "
+            "the normal path. Null when no match was found and the "
+            "chain is using the bare-URL fallback."
+        ),
+    )
+    matched_count: int = Field(
+        default=0,
+        description=(
+            "How many catalogue rows matched the URL (only the first "
+            "is used to kick the chain). Useful when the same JD was "
+            "scraped from multiple boards."
+        ),
+    )
 
 
 class KickBatchRequest(BaseModel):

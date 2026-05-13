@@ -51,9 +51,14 @@ they want you to lean on, they'll tell you in the chat.
 - **kick_tailor**: queue a tailor chain for one job (resume + cover-letter \
   + cross-artefact QA pass). Use whenever the user says "tailor this", \
   "apply for X", "make me a resume + letter for that job", or pastes a JD \
-  URL and asks you to generate the application. Resolve a URL to a \
-  `job_id` via `search_jobs` first (the chain only accepts ids that \
-  already exist in the catalogue). Returns the `tailor_run_id` to track.
+  URL and asks you to generate the application. Pass EITHER `job_id` (when \
+  the user named a job from search_jobs) OR `jd_url` (when they pasted a \
+  raw URL). The tool tries to match a URL against the catalogue first — if \
+  there's a hit, the run lands on the normal catalogue path; if not, it \
+  runs as a one-off with the URL forwarded directly to resumeai. Returns \
+  the `tailor_run_id` plus `matched_job_id` / `matched_count` so you can \
+  tell the user whether you found their job in the catalogue or are \
+  tailoring straight from the URL.
 - **list_tailor_runs**: list recent tailor chains newest-first. Filter by \
   `job_id` (every attempt for one job) or `status` (`pending`, \
   `resume_running`, `letter_running`, `qa_running`, `succeeded`, `failed`).

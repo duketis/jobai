@@ -151,6 +151,58 @@ def test_kick_batch_handles_large_id_list_via_chunked_lookup(
     assert len(body["items"]) == 1_500
 
 
+def test_kick_by_url_matches_catalogue_when_url_exists(
+    client: TestClient,
+    app_with_overrides: tuple[FastAPI, ScriptedResumeClient, ScriptedLetterClient],
+) -> None:
+    """When the pasted URL is already in the catalogue, the run uses
+    the normal job_id path and reports the matched_job_id back."""
+    del app_with_overrides
+    response = client.post(
+        "/api/tailor/url",
+        json={"jd_url": "https://example.com/jd-1"},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["matched_job_id"] == 1
+    assert body["matched_count"] == 1
+    assert body["status"] == "pending"
+
+
+def test_kick_by_url_strips_query_params_for_catalogue_match(
+    client: TestClient,
+) -> None:
+    """A URL with tracking params still matches the canonical row."""
+    response = client.post(
+        "/api/tailor/url",
+        json={"jd_url": "https://example.com/jd-1?trid=abc&utm_source=email"},
+    )
+    assert response.status_code == 202
+    assert response.json()["matched_job_id"] == 1
+
+
+def test_kick_by_url_falls_back_to_url_when_no_catalogue_match(
+    client: TestClient,
+) -> None:
+    """An off-network URL with no catalogue hit still kicks a chain;
+    the response reports matched_job_id=null so the UI can label the
+    flow correctly."""
+    response = client.post(
+        "/api/tailor/url",
+        json={"jd_url": "https://strange.example.com/some-new-jd/abc"},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["matched_job_id"] is None
+    assert body["matched_count"] == 0
+    assert body["status"] == "pending"
+
+
+def test_kick_by_url_rejects_empty_url(client: TestClient) -> None:
+    response = client.post("/api/tailor/url", json={"jd_url": ""})
+    assert response.status_code == 422
+
+
 # -- listing + detail ------------------------------------------------------
 
 

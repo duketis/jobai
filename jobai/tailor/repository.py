@@ -25,18 +25,34 @@ def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
-def create_tailor_run(conn: sqlite3.Connection, *, job_id: int) -> TailorRunRecord:
-    """Insert a fresh tailor_run for ``job_id`` in ``pending`` status."""
+def create_tailor_run(
+    conn: sqlite3.Connection,
+    *,
+    job_id: int | None = None,
+    jd_url: str | None = None,
+) -> TailorRunRecord:
+    """Insert a fresh tailor_run in ``pending`` status.
+
+    Exactly one of ``job_id`` (catalogue path) or ``jd_url`` (one-off
+    URL path) must be set. The DB-level CHECK constraint enforces
+    this; we surface a clear error here too so the caller doesn't
+    rely on the SQL exception message.
+    """
+    if (job_id is None) == (jd_url is None):
+        msg = "create_tailor_run requires exactly one of job_id / jd_url"
+        raise ValueError(msg)
     now = _now()
     cursor = conn.execute(
-        "INSERT INTO tailor_runs (job_id, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (job_id, TailorRunStatus.PENDING.value, now, now),
+        "INSERT INTO tailor_runs (job_id, jd_url, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (job_id, jd_url, TailorRunStatus.PENDING.value, now, now),
     )
     conn.commit()
     new_id = int(cursor.lastrowid or 0)
     return TailorRunRecord(
         id=new_id,
         job_id=job_id,
+        jd_url=jd_url,
         status=TailorRunStatus.PENDING,
         created_at=now,
         updated_at=now,
@@ -44,7 +60,7 @@ def create_tailor_run(conn: sqlite3.Connection, *, job_id: int) -> TailorRunReco
 
 
 _SELECT_COLUMNS = (
-    "id, job_id, status, resume_run_id, resume_status, "
+    "id, job_id, jd_url, status, resume_run_id, resume_status, "
     "letter_run_id, letter_status, qa_status, qa_assessment_json, error, "
     "created_at, updated_at, finished_at"
 )
@@ -141,9 +157,11 @@ def update_status(
 def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
     qa_status_raw = row["qa_status"]
     qa_assessment_raw = row["qa_assessment_json"]
+    raw_job_id = row["job_id"]
     return TailorRunRecord(
         id=int(row["id"]),
-        job_id=int(row["job_id"]),
+        job_id=int(raw_job_id) if raw_job_id is not None else None,
+        jd_url=row["jd_url"],
         status=TailorRunStatus(row["status"]),
         resume_run_id=row["resume_run_id"],
         resume_status=row["resume_status"],

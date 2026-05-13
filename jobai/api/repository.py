@@ -122,6 +122,50 @@ def search_jobs(
     return JobsListResponse(total=total, limit=limit, offset=offset, items=items)
 
 
+def find_jobs_by_url(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    limit: int = 5,
+) -> list[JobSummary]:
+    """Return catalogue jobs whose ``apply_url`` matches ``url``.
+
+    Powers the "Tailor from URL" path -- the user pastes a JD URL,
+    we try to drop them onto the existing job row so the tailor
+    chain runs through the normal catalogue path (and the job stays
+    discoverable in /jobs going forward).
+
+    Matching strategy:
+
+    1. Exact ``apply_url = ?`` -- works for any URL we already have.
+    2. Query-string-stripped match -- handles tracking parameters
+       (``?trid=...&rsid=...`` on SmartRecruiters, etc) that change
+       per visitor but point at the same job.
+
+    Returns at most ``limit`` matches, newest-first by ``last_seen_at``,
+    so the UI can show "we found N matches" if more than one row
+    fingerprints to the same URL (which happens when the same job
+    surfaces on multiple boards).
+    """
+    limit = max(1, limit)
+    stripped = url.split("?", 1)[0].rstrip("/")
+    # Match against either the full apply_url OR its query-stripped
+    # form so old listings with a different ``?trid=`` still hit.
+    sql = f"""
+        SELECT {_SUMMARY_COLUMNS}
+        FROM jobs j
+        WHERE j.apply_url = ?
+           OR SUBSTR(j.apply_url, 1, INSTR(j.apply_url || '?', '?') - 1)
+                IN (?, ? || '/')
+        ORDER BY j.last_seen_at DESC
+        LIMIT ?
+    """  # noqa: S608  - column lists are module-level constants
+    rows = conn.execute(sql, (url, stripped, stripped, limit)).fetchall()
+    job_ids = [int(r[0]) for r in rows]
+    sources_by_job = _load_source_links(conn, job_ids)
+    return [_row_to_summary(r, sources_by_job.get(int(r[0]), [])) for r in rows]
+
+
 def search_job_ids(
     conn: sqlite3.Connection,
     *,

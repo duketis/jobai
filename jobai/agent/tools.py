@@ -196,10 +196,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "resume to the JD) + coverletterai (write a matching cover letter) "
             "+ the cross-artefact QA pass. Use whenever the user says 'tailor "
             "this job', 'apply for this', 'make me a resume + cover letter for "
-            "job N', or pastes a JD URL and asks you to generate the application. "
-            "Returns the tailor_run_id the user can track via list_tailor_runs / "
-            "get_tailor_run -- check status='succeeded' before pointing them at "
-            "the PDFs."
+            "job N', or pastes a JD URL and asks you to generate the "
+            "application. Returns the tailor_run_id the user can track via "
+            "list_tailor_runs / get_tailor_run -- check status='succeeded' "
+            "before pointing them at the PDFs.\n\n"
+            "Pass EITHER ``job_id`` (canonical catalogue path) OR ``jd_url`` "
+            "(one-off path; the tool tries to match the URL against the "
+            "catalogue first and falls back to a direct URL kick when no "
+            "match is found). Don't pass both."
         ),
         "input_schema": {
             "type": "object",
@@ -207,13 +211,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "job_id": {
                     "type": "integer",
                     "description": (
-                        "Canonical jobs.id to tailor for. Resolve a JD URL to "
-                        "an id via search_jobs first; the chain refuses to "
-                        "start for unknown ids."
+                        "Canonical jobs.id to tailor for. Use when the user "
+                        "already named a job from search_jobs / get_job_detail."
+                    ),
+                },
+                "jd_url": {
+                    "type": "string",
+                    "description": (
+                        "JD URL when the user pasted one directly. The tool "
+                        "matches it against the catalogue first (so the "
+                        "normal catalogue path runs when possible); otherwise "
+                        "kicks a one-off chain with the URL forwarded to "
+                        "resumeai directly."
                     ),
                 },
             },
-            "required": ["job_id"],
         },
     },
     {
@@ -459,18 +471,25 @@ class ToolExecutor:
     # ---- tailor handlers ----
 
     def _kick_tailor(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        """Start a tailor chain for ``args['job_id']`` (resume -> letter -> QA).
+        """Start a tailor chain (resume -> letter -> QA).
 
-        Equivalent to ``POST /api/tailor/jobs/{id}`` but driven from the
-        chat agent: it inserts a tailor_runs row + queues the chain on
-        the lifespan-owned pool, then returns the run id so the model
-        can follow up with ``list_tailor_runs`` / ``get_tailor_run``.
+        Equivalent to ``POST /api/tailor/jobs/{id}`` or
+        ``POST /api/tailor/url`` depending on which argument the
+        agent passes. URL submissions try to resolve to an existing
+        catalogue job first; when they match, the row is created
+        with the catalogue job_id so the run lands on the normal
+        path. When they don't match, the row carries the URL on
+        ``jd_url`` and the orchestrator forwards it directly to
+        resumeai.
         """
-        try:
-            job_id = int(args["job_id"])
-        except (KeyError, TypeError, ValueError) as exc:
-            msg = "job_id (integer) is required"
-            raise ValueError(msg) from exc
+        raw_job_id = args.get("job_id")
+        raw_url = args.get("jd_url")
+        if raw_job_id is None and not raw_url:
+            msg = "kick_tailor requires either job_id or jd_url"
+            raise ValueError(msg)
+        if raw_job_id is not None and raw_url:
+            msg = "kick_tailor accepts job_id OR jd_url, not both"
+            raise ValueError(msg)
 
         if (
             self._tailor_pool is None
@@ -487,10 +506,31 @@ class ToolExecutor:
                 ),
             }
 
-        if self._conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is None:
-            return {"error": f"job {job_id} not found"}
+        matched_job_id: int | None = None
+        matched_count = 0
 
-        record = create_tailor_run(self._conn, job_id=job_id)
+        if raw_job_id is not None:
+            try:
+                job_id = int(raw_job_id)
+            except (TypeError, ValueError) as exc:
+                msg = "job_id must be an integer"
+                raise ValueError(msg) from exc
+            if self._conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is None:
+                return {"error": f"job {job_id} not found"}
+            record = create_tailor_run(self._conn, job_id=job_id)
+        else:
+            # URL path -- match against the catalogue first.
+            from jobai.api.repository import find_jobs_by_url  # noqa: PLC0415
+
+            jd_url = str(raw_url)
+            matches = find_jobs_by_url(self._conn, jd_url)
+            matched_count = len(matches)
+            if matches:
+                matched_job_id = matches[0].id
+                record = create_tailor_run(self._conn, job_id=matched_job_id)
+            else:
+                record = create_tailor_run(self._conn, jd_url=jd_url)
+
         cfg = get_effective_agent_config(self._conn)
         qa_client = build_qa_client(cfg)
 
@@ -523,7 +563,10 @@ class ToolExecutor:
         return {
             "tailor_run_id": record.id,
             "job_id": record.job_id,
+            "jd_url": record.jd_url,
             "status": record.status.value,
+            "matched_job_id": matched_job_id,
+            "matched_count": matched_count,
         }
 
     def _list_tailor_runs(self, args: Mapping[str, Any]) -> dict[str, Any]:

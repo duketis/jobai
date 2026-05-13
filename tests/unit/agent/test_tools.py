@@ -485,14 +485,81 @@ def test_kick_tailor_returns_error_for_unknown_job(
     assert pool.submitted == []
 
 
-def test_kick_tailor_raises_when_job_id_missing(
+def test_kick_tailor_raises_when_neither_job_id_nor_jd_url(
     seeded_conn: sqlite3.Connection,
     tmp_path: Path,
 ) -> None:
     pool = _FakePool()
     executor = _build_executor(seeded_conn, pool=pool, db_path=tmp_path / "test.db")
-    with pytest.raises(ValueError, match="job_id"):
+    with pytest.raises(ValueError, match="job_id or jd_url"):
         executor.execute("kick_tailor", {})
+
+
+def test_kick_tailor_raises_when_both_job_id_and_jd_url(
+    seeded_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    pool = _FakePool()
+    executor = _build_executor(seeded_conn, pool=pool, db_path=tmp_path / "test.db")
+    with pytest.raises(ValueError, match="not both"):
+        executor.execute(
+            "kick_tailor",
+            {"job_id": 1, "jd_url": "https://example.com/jd"},
+        )
+
+
+def test_kick_tailor_raises_when_job_id_not_an_int(
+    seeded_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    pool = _FakePool()
+    executor = _build_executor(seeded_conn, pool=pool, db_path=tmp_path / "test.db")
+    with pytest.raises(ValueError, match="integer"):
+        executor.execute("kick_tailor", {"job_id": "not-an-int"})
+
+
+def test_kick_tailor_jd_url_matches_catalogue(
+    seeded_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """When the URL hits a catalogue row, the run uses the normal
+    job_id path and reports matched_job_id."""
+    # Seed a job with an apply_url we can target.
+    seeded_conn.execute(
+        "UPDATE jobs SET apply_url = ? WHERE id = ?",
+        ("https://example.com/jd-1", 1),
+    )
+    seeded_conn.commit()
+    pool = _FakePool()
+    executor = _build_executor(seeded_conn, pool=pool, db_path=tmp_path / "test.db")
+    result = executor.execute(
+        "kick_tailor",
+        {"jd_url": "https://example.com/jd-1?trid=abc"},
+    )
+    assert result["matched_job_id"] == 1
+    assert result["matched_count"] == 1
+    assert result["job_id"] == 1
+    assert result["jd_url"] is None
+    assert len(pool.submitted) == 1
+
+
+def test_kick_tailor_jd_url_falls_back_when_no_catalogue_match(
+    seeded_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """URLs that don't hit the catalogue still kick a chain; the row
+    carries the URL directly."""
+    pool = _FakePool()
+    executor = _build_executor(seeded_conn, pool=pool, db_path=tmp_path / "test.db")
+    result = executor.execute(
+        "kick_tailor",
+        {"jd_url": "https://strange.example/never-scraped"},
+    )
+    assert result["matched_job_id"] is None
+    assert result["matched_count"] == 0
+    assert result["job_id"] is None
+    assert result["jd_url"] == "https://strange.example/never-scraped"
+    assert len(pool.submitted) == 1
 
 
 def test_list_tailor_runs_returns_empty_when_none_kicked(

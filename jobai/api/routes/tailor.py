@@ -25,11 +25,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from jobai.api.dependencies import ConnDep, get_db_path
+from jobai.api.repository import find_jobs_by_url
 from jobai.api.runtime_settings import get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.models import (
     KickBatchRequest,
     KickBatchResponse,
+    KickByUrlRequest,
+    KickByUrlResponse,
     KickOneResponse,
     TailorRunRecord,
     TailorRunsListResponse,
@@ -154,6 +157,10 @@ async def kick_one(
         letter_client=letter_client,
         qa_client=qa_client,
     )
+    # The catalogue-path create_tailor_run always sets job_id; the
+    # assert is for mypy's benefit since the typed field is Optional
+    # (URL-only runs leave it None).
+    assert record.job_id is not None  # noqa: S101
     return KickOneResponse(
         tailor_run_id=record.id,
         job_id=record.job_id,
@@ -218,6 +225,8 @@ async def kick_batch(
             letter_client=letter_client,
             qa_client=qa_client,
         )
+        # Batch always uses the catalogue path; narrow for mypy.
+        assert record.job_id is not None  # noqa: S101
         items.append(
             KickOneResponse(
                 tailor_run_id=record.id,
@@ -226,6 +235,73 @@ async def kick_batch(
             )
         )
     return KickBatchResponse(items=items)
+
+
+@router.post(
+    "/url",
+    response_model=KickByUrlResponse,
+    summary="Kick off a tailor chain for a bare JD URL (catalogue or one-off)",
+    status_code=202,
+)
+async def kick_by_url(
+    conn: ConnDep,
+    pool: PoolDep,
+    resume_client: ResumeDep,
+    letter_client: LetterDep,
+    qa_client: QADep,
+    db_path: DbPathDep,
+    body: KickByUrlRequest,
+) -> KickByUrlResponse:
+    """Kick a tailor chain for a JD URL.
+
+    Resolution order:
+
+    1. Try to match the URL against the catalogue (exact + query-
+       string-stripped). If found, kick the chain on that job_id --
+       the normal catalogue path, full metadata, run shows up in
+       /tailor-runs joined to the job row.
+    2. No match? Kick the chain with the URL on the row directly.
+       The siblings still get the JD URL; the run shows up in
+       /tailor-runs without a catalogue job (jd_url visible
+       instead). Useful for JDs jobai never scraped (LinkedIn DMs,
+       recruiter emails, anything off-network).
+    """
+    matches = find_jobs_by_url(conn, body.jd_url)
+    if matches:
+        # Catalogue hit -- use the normal path so the run is fully
+        # tracked against the existing job row.
+        record = create_tailor_run(conn, job_id=matches[0].id)
+        _schedule_chain(
+            pool=pool,
+            tailor_run_id=record.id,
+            db_path=db_path,
+            resume_client=resume_client,
+            letter_client=letter_client,
+            qa_client=qa_client,
+        )
+        return KickByUrlResponse(
+            tailor_run_id=record.id,
+            status=record.status,
+            matched_job_id=matches[0].id,
+            matched_count=len(matches),
+        )
+
+    # No catalogue match -- fall back to the bare-URL path.
+    record = create_tailor_run(conn, jd_url=body.jd_url)
+    _schedule_chain(
+        pool=pool,
+        tailor_run_id=record.id,
+        db_path=db_path,
+        resume_client=resume_client,
+        letter_client=letter_client,
+        qa_client=qa_client,
+    )
+    return KickByUrlResponse(
+        tailor_run_id=record.id,
+        status=record.status,
+        matched_job_id=None,
+        matched_count=0,
+    )
 
 
 @router.get(

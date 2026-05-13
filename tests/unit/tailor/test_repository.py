@@ -126,3 +126,29 @@ def test_list_tailor_runs_filters_by_status(conn: sqlite3.Connection) -> None:
     pend = list_tailor_runs(conn, status=TailorRunStatus.PENDING)
     assert len(succ) == 1
     assert pend == []
+
+
+def test_create_tailor_run_accepts_jd_url_when_no_job_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """One-off URL path: job_id stays null, jd_url carries the URL."""
+    record = create_tailor_run(conn, jd_url="https://example.com/jd")
+    assert record.job_id is None
+    assert record.jd_url == "https://example.com/jd"
+    assert record.status is TailorRunStatus.PENDING
+
+    # Reading the row back preserves both fields.
+    fetched = get_tailor_run(conn, record.id)
+    assert fetched is not None
+    assert fetched.job_id is None
+    assert fetched.jd_url == "https://example.com/jd"
+
+
+def test_create_tailor_run_rejects_no_args(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ValueError, match="exactly one of job_id / jd_url"):
+        create_tailor_run(conn)
+
+
+def test_create_tailor_run_rejects_both_args(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ValueError, match="exactly one of job_id / jd_url"):
+        create_tailor_run(conn, job_id=1, jd_url="https://example.com/jd")

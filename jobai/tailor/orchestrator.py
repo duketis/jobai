@@ -302,16 +302,40 @@ async def _poll_until_terminal(
 
 
 def _load_apply_url(db_path: Path, tailor_run_id: int) -> str:
-    """Resolve the JD URL we send to the siblings from the tailor row's job.
+    """Resolve the JD URL we send to the siblings.
 
-    Surfaces a clean error if the row or its job has been deleted out
-    from under us so the chain aborts rather than calling the sibling
-    with a NULL URL.
+    Two paths exist:
+
+    * Catalogue path (``tailor_runs.job_id`` set) -- join to
+      ``jobs.apply_url`` like before. Most rows hit this path.
+    * One-off URL path (``tailor_runs.jd_url`` set) -- the row
+      carries the URL directly because the user kicked the chain
+      from a JD jobai never scraped (``POST /api/tailor/url``).
+
+    Surfaces a clean error if the row is missing, the joined job
+    has been deleted out from under us, or neither column is
+    populated (the DB-level CHECK should prevent the last case,
+    but we re-check here so the error message is actionable).
     """
     with connect(db_path) as conn:
         record = get_tailor_run(conn, tailor_run_id)
         if record is None:
             msg = f"tailor_run {tailor_run_id} not found"
+            raise TailorChainError(msg)
+        # Prefer the URL on the row when present -- it's the
+        # authoritative source for one-off chains and skips a join.
+        if record.jd_url:
+            return record.jd_url
+        # pragma: no cover -- the DB-level CHECK on tailor_runs forbids
+        # rows with neither field set. The Python guard is here so a
+        # future schema-relaxation can't trigger a NULL URL to a
+        # sibling, but exercising it requires bypassing the CHECK in
+        # ways that aren't reachable from any production code path.
+        if record.job_id is None:  # pragma: no cover
+            msg = (
+                f"tailor_run {tailor_run_id} carries neither job_id nor jd_url; "
+                "cannot resolve a JD URL for the chain"
+            )
             raise TailorChainError(msg)
         row: sqlite3.Row | None = conn.execute(
             "SELECT apply_url FROM jobs WHERE id = ?",

@@ -535,3 +535,63 @@ def test_search_job_ids_exclude_title_filters_at_repo_level(
         conn.close()
     assert filtered_total <= all_total
     assert set(filtered_ids).issubset(set(all_ids))
+
+
+def test_find_jobs_by_url_exact_match(seeded_db: Path) -> None:
+    """A URL that's already in the catalogue resolves to that job."""
+    from jobai.api.repository import find_jobs_by_url  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        matches = find_jobs_by_url(conn, "https://example.com/1")
+    finally:
+        conn.close()
+    assert len(matches) == 1
+    assert matches[0].apply_url == "https://example.com/1"
+
+
+def test_find_jobs_by_url_strips_query_string_to_match(seeded_db: Path) -> None:
+    """SmartRecruiters / similar boards append tracking params to the
+    apply URL each visit -- the matcher strips ?... so the canonical
+    row still resolves."""
+    from jobai.api.repository import find_jobs_by_url  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        matches = find_jobs_by_url(
+            conn,
+            "https://example.com/1?trid=abc&rsid=xyz",
+        )
+    finally:
+        conn.close()
+    assert len(matches) == 1
+    assert matches[0].apply_url == "https://example.com/1"
+
+
+def test_find_jobs_by_url_returns_empty_when_no_match(seeded_db: Path) -> None:
+    from jobai.api.repository import find_jobs_by_url  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        matches = find_jobs_by_url(conn, "https://nothing.example/jd/12345")
+    finally:
+        conn.close()
+    assert matches == []
+
+
+def test_find_jobs_by_url_respects_limit(seeded_db: Path) -> None:
+    """The limit parameter caps the returned matches (defensive sanity
+    check; same URL on multiple boards would yield more than one row)."""
+    from jobai.api.repository import find_jobs_by_url  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        # limit=0 clamps up to 1 so the query stays well-formed.
+        matches = find_jobs_by_url(conn, "https://example.com/1", limit=0)
+    finally:
+        conn.close()
+    assert len(matches) <= 1

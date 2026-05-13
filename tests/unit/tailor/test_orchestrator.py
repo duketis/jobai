@@ -410,3 +410,15 @@ def test_load_apply_url_raises_when_job_deleted(tailor_db_path: Path) -> None:
 
     with pytest.raises(TailorChainError, match="no longer exists"):
         _load_apply_url(tailor_db_path, orphan_id)
+
+
+def test_load_apply_url_returns_jd_url_when_present(tailor_db_path: Path) -> None:
+    """One-off URL-tailor rows carry the JD URL on tailor_runs.jd_url;
+    the loader prefers that over the jobs join so the chain works for
+    JDs jobai never scraped."""
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, jd_url="https://example.com/off-network")
+    assert _load_apply_url(tailor_db_path, record.id) == "https://example.com/off-network"
