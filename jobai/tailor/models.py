@@ -18,14 +18,15 @@ from pydantic import BaseModel, Field
 class TailorRunStatus(StrEnum):
     """Lifecycle states the orchestrator walks per chain.
 
-    Matches the CHECK constraint on ``tailor_runs.status`` (migration
-    0005). Stored as a TEXT column so the value is human-readable in
-    ad-hoc SQLite browsing.
+    Matches the CHECK constraint on ``tailor_runs.status`` (migrations
+    0005 + 0006). Stored as a TEXT column so the value is human-
+    readable in ad-hoc SQLite browsing.
     """
 
     PENDING = "pending"
     RESUME_RUNNING = "resume_running"
     LETTER_RUNNING = "letter_running"
+    QA_RUNNING = "qa_running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -37,6 +38,66 @@ TERMINAL_STATUSES: frozenset[TailorRunStatus] = frozenset(
 )
 
 
+class QAStatus(StrEnum):
+    """Outcome of the final cross-artefact QA pass.
+
+    Not the same axis as :class:`TailorRunStatus` -- a row's
+    ``qa_status`` is ``running`` while the LLM is thinking and one of
+    pass / concerns / fail when the assessment returns. The row's
+    overall ``status`` is ``qa_running`` during this stage and lands at
+    ``succeeded`` regardless of the QA outcome (we surface the
+    assessment, we don't gatekeep the artefact).
+    """
+
+    RUNNING = "running"
+    PASS = "pass"  # noqa: S105 - 'pass' is a QA verdict label, not a credential
+    CONCERNS = "concerns"
+    FAIL = "fail"
+
+
+class QAIssue(BaseModel):
+    """One structured issue from the cross-artefact QA agent."""
+
+    severity: str = Field(
+        description=(
+            "'must_fix' for application-breaking issues (contradictions, "
+            "missing must-have keywords) or 'nice_to_fix' for polish."
+        ),
+    )
+    category: str = Field(
+        description=(
+            "'coverage' (JD requirements not addressed), 'consistency' "
+            "(resume/letter contradict), 'format' (visual / tonal "
+            "inconsistency between the two), or 'content' (weak prose / "
+            "buzzwords)."
+        ),
+    )
+    summary: str = Field(description="One-line description of the issue.")
+    detail: str | None = Field(
+        default=None,
+        description="Longer explanation including the offending text or location.",
+    )
+
+
+class QAAssessment(BaseModel):
+    """Structured output the QA agent returns.
+
+    Scores are 0-100. ``status`` is the headline derived from the
+    issues + scores (pass ≥ 80 with no must-fix; concerns 60-79 or
+    any nice-to-fix; fail < 60 or any must-fix).
+    """
+
+    status: QAStatus
+    coverage_score: int = Field(ge=0, le=100)
+    consistency_score: int = Field(ge=0, le=100)
+    format_score: int = Field(ge=0, le=100)
+    must_fix_issues: list[QAIssue] = Field(default_factory=list)
+    nice_to_fix_issues: list[QAIssue] = Field(default_factory=list)
+    summary: str = Field(
+        description="One-paragraph human-readable verdict shown in the UI tooltip.",
+    )
+
+
 class TailorRunRecord(BaseModel):
     """One row from ``tailor_runs`` shaped for HTTP responses.
 
@@ -44,7 +105,8 @@ class TailorRunRecord(BaseModel):
     (``resume_run_id`` / ``letter_run_id``) are opaque strings the
     siblings hand back. ``error`` is non-null only when ``status`` is
     ``failed`` — surface it directly so the UI can render the cause
-    without an extra round-trip.
+    without an extra round-trip. ``qa_status`` + ``qa_assessment`` are
+    populated by the final cross-artefact QA pass.
     """
 
     id: int
@@ -54,6 +116,8 @@ class TailorRunRecord(BaseModel):
     resume_status: str | None = None
     letter_run_id: str | None = None
     letter_status: str | None = None
+    qa_status: QAStatus | None = None
+    qa_assessment: QAAssessment | None = None
     error: str | None = None
     created_at: str
     updated_at: str

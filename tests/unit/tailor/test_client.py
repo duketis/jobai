@@ -121,3 +121,50 @@ def test_client_strips_trailing_slash_in_base_url() -> None:
     """``http://x:8765/`` and ``http://x:8765`` should produce identical requests."""
     assert HttpxResumeaiClient("http://x:8765/")._base_url == "http://x:8765"
     assert HttpxCoverletteraiClient("http://x:8766/")._base_url == "http://x:8766"
+
+
+async def test_resume_get_run_returns_full_payload() -> None:
+    """The QA stage needs the full run record (``requirements`` +
+    ``tailored``) -- ``get_run`` returns the parsed JSON dict."""
+    client = HttpxResumeaiClient(base_url="http://resumeai:8765")
+    payload = {
+        "id": "rs_99",
+        "status": "succeeded",
+        "requirements": {"title": "Engineer"},
+        "tailored": {"name": "Jane Doe", "summary": "..."},
+    }
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/runs/rs_99").mock(return_value=httpx.Response(200, json=payload))
+        out = await client.get_run("rs_99")
+    assert out == payload
+
+
+async def test_resume_get_run_normalises_non_dict_payload_to_empty() -> None:
+    """A future API version that returns a list at the top would crash
+    the QA stage; the client defensively coerces to ``{}``."""
+    client = HttpxResumeaiClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/runs/rs_x").mock(return_value=httpx.Response(200, json=["weird"]))
+        out = await client.get_run("rs_x")
+    assert out == {}
+
+
+async def test_letter_get_run_returns_full_payload() -> None:
+    client = HttpxCoverletteraiClient(base_url="http://coverletterai:8766")
+    payload = {
+        "id": "ls_88",
+        "status": "succeeded",
+        "tailored": {"opening": "Dear...", "body_paragraphs": ["...", "..."]},
+    }
+    with respx.mock(base_url="http://coverletterai:8766") as router:
+        router.get("/api/runs/ls_88").mock(return_value=httpx.Response(200, json=payload))
+        out = await client.get_run("ls_88")
+    assert out == payload
+
+
+async def test_letter_get_run_normalises_non_dict_payload_to_empty() -> None:
+    client = HttpxCoverletteraiClient(base_url="http://coverletterai:8766")
+    with respx.mock(base_url="http://coverletterai:8766") as router:
+        router.get("/api/runs/ls_x").mock(return_value=httpx.Response(200, json=42))
+        out = await client.get_run("ls_x")
+    assert out == {}

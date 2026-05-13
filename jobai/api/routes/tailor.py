@@ -35,6 +35,7 @@ from jobai.tailor.models import (
     TailorRunStatus,
 )
 from jobai.tailor.orchestrator import run_chain
+from jobai.tailor.qa import QAClient
 from jobai.tailor.repository import (
     create_tailor_run,
     get_tailor_run,
@@ -75,9 +76,20 @@ def get_letter_client(request: Request) -> CoverletteraiClient:
     return client
 
 
+def get_qa_client(request: Request) -> QAClient | None:
+    """Pull the lifespan-owned QA client off ``app.state``.
+
+    Returns ``None`` (not 503) when the QA client isn't configured --
+    the chain still produces both PDFs without the QA stage, so a
+    missing API key doesn't block kicking a tailor.
+    """
+    return getattr(request.app.state, "qa_client", None)
+
+
 PoolDep = Annotated[TailorPool, Depends(get_tailor_pool)]
 ResumeDep = Annotated[ResumeaiClient, Depends(get_resume_client)]
 LetterDep = Annotated[CoverletteraiClient, Depends(get_letter_client)]
+QADep = Annotated["QAClient | None", Depends(get_qa_client)]
 DbPathDep = Annotated[Path, Depends(get_db_path)]
 
 
@@ -91,6 +103,7 @@ def _schedule_chain(
     db_path: Path,
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
+    qa_client: QAClient | None,
 ) -> None:
     """Submit a chain coroutine to the pool with all collaborators bound."""
 
@@ -101,6 +114,7 @@ def _schedule_chain(
             resume_client=resume_client,
             letter_client=letter_client,
             sleeper=asyncio.sleep,
+            qa_client=qa_client,
         )
 
     pool.submit(_factory)
@@ -120,6 +134,7 @@ async def kick_one(
     pool: PoolDep,
     resume_client: ResumeDep,
     letter_client: LetterDep,
+    qa_client: QADep,
     db_path: DbPathDep,
     job_id: int,
 ) -> KickOneResponse:
@@ -133,6 +148,7 @@ async def kick_one(
         db_path=db_path,
         resume_client=resume_client,
         letter_client=letter_client,
+        qa_client=qa_client,
     )
     return KickOneResponse(
         tailor_run_id=record.id,
@@ -152,6 +168,7 @@ async def kick_batch(
     pool: PoolDep,
     resume_client: ResumeDep,
     letter_client: LetterDep,
+    qa_client: QADep,
     db_path: DbPathDep,
     body: KickBatchRequest,
 ) -> KickBatchResponse:
@@ -181,6 +198,7 @@ async def kick_batch(
             db_path=db_path,
             resume_client=resume_client,
             letter_client=letter_client,
+            qa_client=qa_client,
         )
         items.append(
             KickOneResponse(

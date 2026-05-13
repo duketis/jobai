@@ -7,10 +7,17 @@ state transition, not for an UPDATE statement.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 
-from jobai.tailor.models import TERMINAL_STATUSES, TailorRunRecord, TailorRunStatus
+from jobai.tailor.models import (
+    TERMINAL_STATUSES,
+    QAAssessment,
+    QAStatus,
+    TailorRunRecord,
+    TailorRunStatus,
+)
 
 
 def _now() -> str:
@@ -36,13 +43,17 @@ def create_tailor_run(conn: sqlite3.Connection, *, job_id: int) -> TailorRunReco
     )
 
 
+_SELECT_COLUMNS = (
+    "id, job_id, status, resume_run_id, resume_status, "
+    "letter_run_id, letter_status, qa_status, qa_assessment_json, error, "
+    "created_at, updated_at, finished_at"
+)
+
+
 def get_tailor_run(conn: sqlite3.Connection, tailor_run_id: int) -> TailorRunRecord | None:
     """Return the run record for ``tailor_run_id`` or ``None`` if not found."""
     row = conn.execute(
-        "SELECT id, job_id, status, resume_run_id, resume_status, "
-        "       letter_run_id, letter_status, error, "
-        "       created_at, updated_at, finished_at "
-        "FROM tailor_runs WHERE id = ?",
+        f"SELECT {_SELECT_COLUMNS} FROM tailor_runs WHERE id = ?",  # noqa: S608 - column list is a module-level literal
         (tailor_run_id,),
     ).fetchone()
     if row is None:
@@ -70,12 +81,7 @@ def list_tailor_runs(
     params.append(int(limit))
     # ``where`` is built from a closed set of literal clauses above; all
     # user-supplied values are bound via params.
-    base = (
-        "SELECT id, job_id, status, resume_run_id, resume_status, "
-        "       letter_run_id, letter_status, error, "
-        "       created_at, updated_at, finished_at "
-        "FROM tailor_runs "
-    )
+    base = f"SELECT {_SELECT_COLUMNS} FROM tailor_runs "  # noqa: S608 - column list is a module-level literal
     sql = f"{base}{where} ORDER BY created_at DESC LIMIT ?"
     rows = conn.execute(sql, params).fetchall()
     return [_row_to_record(row) for row in rows]
@@ -90,6 +96,8 @@ def update_status(
     resume_status: str | None = None,
     letter_run_id: str | None = None,
     letter_status: str | None = None,
+    qa_status: QAStatus | None = None,
+    qa_assessment: QAAssessment | None = None,
     error: str | None = None,
 ) -> None:
     """Persist a state-machine transition.
@@ -97,7 +105,7 @@ def update_status(
     Only fields that are not ``None`` overwrite existing values, so callers
     can advance one slice (e.g. just resume_status) without clobbering
     others. ``finished_at`` is set automatically when ``status`` is
-    terminal.
+    terminal. ``qa_assessment`` is JSON-serialised on the way in.
     """
     now = _now()
     sets = ["status = ?", "updated_at = ?"]
@@ -112,6 +120,12 @@ def update_status(
     _maybe("resume_status", resume_status)
     _maybe("letter_run_id", letter_run_id)
     _maybe("letter_status", letter_status)
+    if qa_status is not None:
+        sets.append("qa_status = ?")
+        params.append(qa_status.value)
+    if qa_assessment is not None:
+        sets.append("qa_assessment_json = ?")
+        params.append(qa_assessment.model_dump_json())
     _maybe("error", error)
 
     if status in TERMINAL_STATUSES:
@@ -125,6 +139,8 @@ def update_status(
 
 
 def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
+    qa_status_raw = row["qa_status"]
+    qa_assessment_raw = row["qa_assessment_json"]
     return TailorRunRecord(
         id=int(row["id"]),
         job_id=int(row["job_id"]),
@@ -133,6 +149,12 @@ def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
         resume_status=row["resume_status"],
         letter_run_id=row["letter_run_id"],
         letter_status=row["letter_status"],
+        qa_status=QAStatus(qa_status_raw) if qa_status_raw else None,
+        qa_assessment=(
+            QAAssessment.model_validate(json.loads(qa_assessment_raw))
+            if qa_assessment_raw
+            else None
+        ),
         error=row["error"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

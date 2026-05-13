@@ -14,7 +14,7 @@ so the rest of the package never has to think about it.
 
 from __future__ import annotations
 
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 import httpx
 
@@ -51,6 +51,14 @@ class ResumeaiClient(Protocol):
         """GET ``/api/runs/{run_id}`` and return ``id`` + ``status``."""
         ...
 
+    async def get_run(self, run_id: str) -> dict[str, Any]:
+        """GET ``/api/runs/{run_id}`` and return the full record dict.
+
+        Used by the QA step to pull the structured ``requirements``
+        + ``tailored`` JSON the LLM needs to grade the application.
+        """
+        ...
+
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         """GET the PDF endpoint and return the raw streaming response.
 
@@ -75,6 +83,10 @@ class CoverletteraiClient(Protocol):
 
     async def poll(self, run_id: str) -> SiblingRunSnapshot:
         """GET ``/api/runs/{run_id}`` and return ``id`` + ``status``."""
+        ...
+
+    async def get_run(self, run_id: str) -> dict[str, Any]:
+        """GET ``/api/runs/{run_id}`` and return the full record dict."""
         ...
 
     async def stream_pdf(self, run_id: str) -> httpx.Response:
@@ -103,6 +115,13 @@ class HttpxResumeaiClient:
             response = await client.get(f"{self._base_url}/api/runs/{run_id}")
             response.raise_for_status()
             return SiblingRunSnapshot.model_validate(response.json())
+
+    async def get_run(self, run_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            response = await client.get(f"{self._base_url}/api/runs/{run_id}")
+            response.raise_for_status()
+            payload = response.json()
+            return dict(payload) if isinstance(payload, dict) else {}
 
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         # resumeai's PDF route lives at /runs/{id}/pdf, NOT under /api.
@@ -134,6 +153,13 @@ class HttpxCoverletteraiClient:
             response = await client.get(f"{self._base_url}/api/runs/{run_id}")
             response.raise_for_status()
             return SiblingRunSnapshot.model_validate(response.json())
+
+    async def get_run(self, run_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            response = await client.get(f"{self._base_url}/api/runs/{run_id}")
+            response.raise_for_status()
+            payload = response.json()
+            return dict(payload) if isinstance(payload, dict) else {}
 
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         # coverletterai's PDF route IS under /api (different from resumeai).

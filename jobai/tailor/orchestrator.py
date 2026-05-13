@@ -26,10 +26,12 @@ from jobai.db.connection import connect
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.models import (
     CoverletteraiTailorRequest,
+    QAStatus,
     ResumeaiTailorRequest,
     SiblingRunSnapshot,
     TailorRunStatus,
 )
+from jobai.tailor.qa import QAClient, assess
 from jobai.tailor.repository import get_tailor_run, update_status
 
 _log = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ async def run_chain(
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
     sleeper: Sleeper,
+    qa_client: QAClient | None = None,
+    qa_model: str | None = None,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     max_polls: int = DEFAULT_MAX_POLLS,
 ) -> None:
@@ -76,6 +80,12 @@ async def run_chain(
     ``TailorChainError`` is caught here, recorded as ``failed`` on the
     row, and never re-raised — the worker's task wrapper would otherwise
     log an unhandled exception that's not actionable.
+
+    ``qa_client`` is optional. When supplied, the chain runs an extra
+    QA stage (``qa_running``) after both PDFs render; the assessment
+    lands on the row's ``qa_status`` + ``qa_assessment_json`` fields.
+    When ``None``, the chain terminates at ``succeeded`` immediately
+    after the letter -- tests that don't care about QA can omit it.
     """
     try:
         await _run_chain_inner(
@@ -84,6 +94,8 @@ async def run_chain(
             resume_client=resume_client,
             letter_client=letter_client,
             sleeper=sleeper,
+            qa_client=qa_client,
+            qa_model=qa_model,
             poll_interval_s=poll_interval_s,
             max_polls=max_polls,
         )
@@ -105,6 +117,8 @@ async def _run_chain_inner(
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
     sleeper: Sleeper,
+    qa_client: QAClient | None,
+    qa_model: str | None,
     poll_interval_s: float,
     max_polls: int,
 ) -> None:
@@ -168,9 +182,71 @@ async def _run_chain_inner(
         msg = f"coverletterai run {letter_run_id} ended in status {letter_snapshot.status!r}"
         raise TailorChainError(msg)
 
+    # ---- QA (cross-artefact pass) --------------------------------------
+    if qa_client is not None:
+        await _run_qa_stage(
+            tailor_run_id=tailor_run_id,
+            db_path=db_path,
+            resume_client=resume_client,
+            letter_client=letter_client,
+            resume_run_id=resume_run_id,
+            letter_run_id=letter_run_id,
+            qa_client=qa_client,
+            qa_model=qa_model,
+        )
+
     # ---- terminal success ----------------------------------------------
     with connect(db_path) as conn:
         update_status(conn, tailor_run_id, status=TailorRunStatus.SUCCEEDED)
+
+
+async def _run_qa_stage(
+    *,
+    tailor_run_id: int,
+    db_path: Path,
+    resume_client: ResumeaiClient,
+    letter_client: CoverletteraiClient,
+    resume_run_id: str,
+    letter_run_id: str,
+    qa_client: QAClient,
+    qa_model: str | None,
+) -> None:
+    """Pull both sibling run records and run the cross-artefact QA pass.
+
+    The orchestrator catches the run-level exception in :func:`run_chain`
+    so a QA-stage failure won't kill the chain -- the PDFs still ship
+    with a failed QA assessment attached.
+    """
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RUNNING,
+            qa_status=QAStatus.RUNNING,
+        )
+
+    resume_record = await resume_client.get_run(resume_run_id)
+    letter_record = await letter_client.get_run(letter_run_id)
+    jd = resume_record.get("requirements")
+    resume_tailored = resume_record.get("tailored")
+    letter_tailored = letter_record.get("tailored")
+
+    assessment = await assess(
+        jd=jd if isinstance(jd, dict) else None,
+        resume_tailored=resume_tailored if isinstance(resume_tailored, dict) else None,
+        letter_tailored=letter_tailored if isinstance(letter_tailored, dict) else None,
+        client=qa_client,
+        model=qa_model,
+    )
+
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RUNNING,
+            qa_status=assessment.status,
+            qa_assessment=assessment,
+        )
 
 
 async def _poll_until_terminal(
@@ -195,6 +271,7 @@ async def _poll_until_terminal(
     for attempt in range(max_polls):
         snapshot = await poll(run_id)
         with connect(db_path) as conn:
+            kwargs: dict[str, str] = {status_field: snapshot.status}
             update_status(
                 conn,
                 tailor_run_id,
@@ -203,7 +280,7 @@ async def _poll_until_terminal(
                     if status_field == "resume_status"
                     else TailorRunStatus.LETTER_RUNNING
                 ),
-                **{status_field: snapshot.status},
+                **kwargs,  # type: ignore[arg-type] # narrow string-keyed dict spread
             )
         if snapshot.status in _TERMINAL_SUCCESS or snapshot.status in _TERMINAL_FAILURE:
             return snapshot

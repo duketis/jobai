@@ -39,6 +39,7 @@ from jobai.api.routes import (
 from jobai.config import get_settings
 from jobai.scheduler import (
     build_scheduler,
+    register_ats_discovery,
     register_description_backfill,
     register_sources,
     shutdown,
@@ -47,6 +48,7 @@ from jobai.tailor.client import (
     HttpxCoverletteraiClient,
     HttpxResumeaiClient,
 )
+from jobai.tailor.qa import AnthropicQAClient
 from jobai.tailor.worker import TailorPool
 
 #: Built-frontend directory. Vite emits ``index.html`` + ``assets/*`` here
@@ -82,6 +84,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.letter_client = HttpxCoverletteraiClient(base_url=settings.coverletterai_url)
     tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
     app.state.tailor_pool = tailor_pool
+    # The QA client uses the same AsyncAnthropic that the agent loop builds.
+    # Lazy-built so missing API keys don't break boot; QA stage is skipped
+    # when the client cannot be built. The chain still produces both PDFs.
+    app.state.qa_client = _build_qa_client(settings)
 
     if os.environ.get(_DISABLE_FLAG):
         _log.info("scheduler_disabled_via_env", extra={"flag": _DISABLE_FLAG})
@@ -96,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         registered = register_sources(scheduler, db_path=settings.db_path)
         register_description_backfill(scheduler, db_path=settings.db_path)
+        register_ats_discovery(scheduler, db_path=settings.db_path)
         scheduler.start()
         _log.info(
             "scheduler_started",
@@ -181,6 +188,25 @@ def _mount_frontend(application: FastAPI) -> None:
         # Otherwise hand back index.html and let React Router decide.
         del request
         return FileResponse(_STATIC_DIR / "index.html")
+
+
+def _build_qa_client(settings: object) -> AnthropicQAClient | None:
+    """Construct the QA client from the configured Anthropic credentials.
+
+    Returns ``None`` if no key is present anywhere -- the chain still
+    works in that case, it just skips the QA stage. Lazy-imported so a
+    missing ``anthropic`` install doesn't break boot in test envs.
+    """
+    from anthropic import AsyncAnthropic  # noqa: PLC0415
+
+    api_key = getattr(settings, "anthropic_api_key", None) or os.environ.get(
+        "ANTHROPIC_API_KEY",
+    )
+    if not api_key:
+        return None
+    client = AsyncAnthropic(api_key=api_key)
+    model = getattr(settings, "anthropic_model", "claude-opus-4-7")
+    return AnthropicQAClient(client=client, default_model=model)
 
 
 #: Module-level ASGI app for ``uvicorn jobai.api.server:app``.

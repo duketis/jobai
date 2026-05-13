@@ -91,15 +91,23 @@ class ScriptedResumeClient:
         poll_statuses: list[str] | None = None,
         stream_response: httpx.Response | None = None,
         kick_error: Exception | None = None,
+        run_record: dict[str, object] | None = None,
     ) -> None:
         self.resume_run_id = resume_run_id
         self._poll_statuses = list(poll_statuses or ["succeeded"])
         self._poll_index = 0
         self._stream_response = stream_response
         self._kick_error = kick_error
+        self._run_record = run_record or {
+            "id": resume_run_id,
+            "status": "succeeded",
+            "requirements": {"title": "Engineer"},
+            "tailored": {"name": "Jane Doe", "summary": "resume body"},
+        }
         self.kick_requests: list[ResumeaiTailorRequest] = []
         self.poll_calls: list[str] = []
         self.stream_calls: list[str] = []
+        self.get_run_calls: list[str] = []
 
     async def kick(self, request: ResumeaiTailorRequest) -> str:
         self.kick_requests.append(request)
@@ -112,6 +120,10 @@ class ScriptedResumeClient:
         status = self._poll_statuses[min(self._poll_index, len(self._poll_statuses) - 1)]
         self._poll_index += 1
         return SiblingRunSnapshot(id=run_id, status=status)
+
+    async def get_run(self, run_id: str) -> dict[str, object]:
+        self.get_run_calls.append(run_id)
+        return dict(self._run_record)
 
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         self.stream_calls.append(run_id)
@@ -131,15 +143,22 @@ class ScriptedLetterClient:
         poll_statuses: list[str] | None = None,
         stream_response: httpx.Response | None = None,
         kick_error: Exception | None = None,
+        run_record: dict[str, object] | None = None,
     ) -> None:
         self.letter_run_id = letter_run_id
         self._poll_statuses = list(poll_statuses or ["succeeded"])
         self._poll_index = 0
         self._stream_response = stream_response
         self._kick_error = kick_error
+        self._run_record = run_record or {
+            "id": letter_run_id,
+            "status": "succeeded",
+            "tailored": {"opening": "Dear hiring manager,", "closing": "Thanks."},
+        }
         self.kick_requests: list[CoverletteraiTailorRequest] = []
         self.poll_calls: list[str] = []
         self.stream_calls: list[str] = []
+        self.get_run_calls: list[str] = []
 
     async def kick(self, request: CoverletteraiTailorRequest) -> str:
         self.kick_requests.append(request)
@@ -152,6 +171,10 @@ class ScriptedLetterClient:
         status = self._poll_statuses[min(self._poll_index, len(self._poll_statuses) - 1)]
         self._poll_index += 1
         return SiblingRunSnapshot(id=run_id, status=status)
+
+    async def get_run(self, run_id: str) -> dict[str, object]:
+        self.get_run_calls.append(run_id)
+        return dict(self._run_record)
 
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         self.stream_calls.append(run_id)
