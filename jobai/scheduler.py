@@ -58,6 +58,17 @@ _BACKFILL_JOB_ID = "jobai.backfill.descriptions"
 _BACKFILL_INTERVAL_SECONDS = 600
 _BACKFILL_LIMIT_PER_TICK = 25
 
+#: ID for the singleton ATS-discovery job. Mines apply URLs from every
+#: scrape cycle for company slugs we don't yet have a direct ATS feed
+#: for and upserts them as enabled sources.
+_DISCOVERY_JOB_ID = "jobai.discovery.ats_slugs"
+
+#: Discovery cadence in seconds. 24h is the right cadence: companies
+#: don't switch ATS providers overnight, and the apply-URL corpus only
+#: changes after a full ``--enabled`` cycle (~hourly) populates new
+#: rows. Daily catches new entrants without spamming the DB.
+_DISCOVERY_INTERVAL_SECONDS = 86_400
+
 
 def build_scheduler() -> AsyncIOScheduler:
     """Construct an unstarted :class:`AsyncIOScheduler`.
@@ -168,6 +179,65 @@ async def _run_description_backfill(db_path: Path, *, limit: int) -> None:
     finally:
         with suppress(Exception):
             await fetcher.aclose()
+
+
+def register_ats_discovery(
+    scheduler: AsyncIOScheduler,
+    *,
+    db_path: Path,
+    interval_seconds: int = _DISCOVERY_INTERVAL_SECONDS,
+) -> None:
+    """Add the singleton ATS-slug discovery job to the scheduler.
+
+    The job runs ``discover_slugs`` + ``diff_against_seeded`` against
+    the live DB on a daily cadence and upserts every newly-observed
+    slug as an enabled source. This means new Greenhouse / Lever /
+    Ashby / SmartRecruiters / Workable employer pages get a direct
+    feed automatically, without any operator action.
+    """
+    if scheduler.get_job(_DISCOVERY_JOB_ID) is not None:
+        scheduler.remove_job(_DISCOVERY_JOB_ID)
+
+    async def _run() -> None:
+        await _run_ats_discovery(db_path)
+
+    scheduler.add_job(
+        _run,
+        trigger=IntervalTrigger(seconds=interval_seconds),
+        id=_DISCOVERY_JOB_ID,
+        name="ats slug discovery",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        jitter=_INITIAL_JITTER_SECONDS,
+    )
+
+
+async def _run_ats_discovery(db_path: Path) -> None:
+    """Discovery body, called by the scheduled job each tick."""
+    from jobai.sources.ats_discovery import (  # noqa: PLC0415
+        diff_against_seeded,
+        discover_slugs,
+        load_seeded_accounts,
+    )
+    from jobai.sources.repository import upsert_source  # noqa: PLC0415
+
+    with connect(db_path) as conn:
+        discovered = discover_slugs(conn)
+        seeded = load_seeded_accounts(conn)
+        new = diff_against_seeded(discovered, seeded)
+        for entry in new:
+            upsert_source(
+                conn,
+                kind=entry.kind,
+                account=entry.account,
+                display_name=entry.account,
+                cadence_seconds=3600,
+            )
+        _log.info(
+            "ats_discovery_tick",
+            extra={"new_slugs": len(new), "kinds": sorted({s.kind for s in new})},
+        )
 
 
 def _default_job_factory(

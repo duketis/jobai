@@ -12,8 +12,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from jobai.db.migrations import apply_pending
 from jobai.scheduler import (
     _BACKFILL_JOB_ID,
+    _DISCOVERY_JOB_ID,
     _JOB_ID_PREFIX,
     build_scheduler,
+    register_ats_discovery,
     register_description_backfill,
     register_sources,
     run_source_by_id,
@@ -220,6 +222,104 @@ def test_register_description_backfill_uses_configurable_interval(
     job = scheduler.get_job(_BACKFILL_JOB_ID)
     assert job is not None
     assert job.trigger.interval.total_seconds() == 900
+
+
+# ---------------------------------------------------------------------------
+# register_ats_discovery
+# ---------------------------------------------------------------------------
+
+
+def test_register_ats_discovery_adds_singleton_job(seeded_db: Path) -> None:
+    scheduler = build_scheduler()
+    register_ats_discovery(scheduler, db_path=seeded_db)
+    assert scheduler.get_job(_DISCOVERY_JOB_ID) is not None
+
+
+def test_register_ats_discovery_is_idempotent(seeded_db: Path) -> None:
+    scheduler = build_scheduler()
+    register_ats_discovery(scheduler, db_path=seeded_db)
+    register_ats_discovery(scheduler, db_path=seeded_db)
+    jobs = [j for j in scheduler.get_jobs() if j.id == _DISCOVERY_JOB_ID]
+    assert len(jobs) == 1
+
+
+def test_register_ats_discovery_uses_configurable_interval(seeded_db: Path) -> None:
+    scheduler = build_scheduler()
+    register_ats_discovery(scheduler, db_path=seeded_db, interval_seconds=3600)
+    job = scheduler.get_job(_DISCOVERY_JOB_ID)
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 3600
+
+
+async def test_register_ats_discovery_inner_run_invokes_discovery(
+    seeded_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inner ``_run`` coroutine ``register_ats_discovery`` schedules
+    just delegates to ``_run_ats_discovery``. Pulling the job out of
+    the scheduler and invoking its target covers that line."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    seen: list[Path] = []
+
+    async def fake_run(db_path: Path) -> None:
+        seen.append(db_path)
+
+    monkeypatch.setattr(scheduler_mod, "_run_ats_discovery", fake_run)
+    scheduler = build_scheduler()
+    register_ats_discovery(scheduler, db_path=seeded_db, interval_seconds=60)
+    job = scheduler.get_job(_DISCOVERY_JOB_ID)
+    assert job is not None
+    await job.func()
+    assert seen == [seeded_db]
+
+
+async def test_run_ats_discovery_upserts_new_slugs(
+    seeded_db: Path,
+) -> None:
+    """The scheduled tick body finds ATS slugs in apply_url and
+    upserts each as an enabled source. Seeds one Greenhouse + one
+    Lever apply URL the seed doesn't cover, then asserts both are
+    registered after a single tick."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+
+    conn = sqlite3.connect(seeded_db)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO sources (kind, account, display_name, cadence_seconds) "
+            "VALUES ('seek', 'jobs/in-AU', 'Seek (Aus)', 3600)",
+        )
+        source_id = int(cursor.lastrowid or 0)
+        for ext, url in (
+            ("g1", "https://boards.greenhouse.io/newco/jobs/1"),
+            ("l1", "https://jobs.lever.co/anotherco/role-x"),
+        ):
+            conn.execute(
+                "INSERT INTO jobs_raw (source_id, source_external_id, raw_json, raw_sha256, "
+                "first_seen_at, last_seen_at) "
+                "VALUES (?, ?, '{}', 'sha', datetime('now'), datetime('now'))",
+                (source_id, ext),
+            )
+            conn.execute(
+                "INSERT INTO jobs (dedup_key, title, company, company_norm, apply_url, "
+                "first_seen_at, last_seen_at) "
+                "VALUES (?, 't', 'c', 'c', ?, datetime('now'), datetime('now'))",
+                (ext, url),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    await scheduler_mod._run_ats_discovery(seeded_db)
+
+    conn = sqlite3.connect(seeded_db)
+    try:
+        accounts = {(row[0], row[1]) for row in conn.execute("SELECT kind, account FROM sources")}
+    finally:
+        conn.close()
+    # The discovery tick added these two from the apply URLs we seeded.
+    assert ("greenhouse", "newco") in accounts
+    assert ("lever", "anotherco") in accounts
 
 
 # ---------------------------------------------------------------------------
