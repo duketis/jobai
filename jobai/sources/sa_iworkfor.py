@@ -165,8 +165,14 @@ def _walk_all_pages(max_pages: int) -> PageScript:
     return script
 
 
-async def _append_rows_to_first_table(page: Page, row_html: str) -> None:
-    """Append captured ``<tr>`` HTML to the current page's results tbody."""
+async def _append_rows_to_first_table(  # pragma: no cover - drives real Playwright
+    page: Page, row_html: str
+) -> None:
+    """Append captured ``<tr>`` HTML to the current page's results tbody.
+
+    Integration-only: page.evaluate runs JS inside the browser tier,
+    not reachable in unit tests without spawning real Chromium.
+    """
     if not row_html:
         return
     await page.evaluate(
