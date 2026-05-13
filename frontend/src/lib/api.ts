@@ -21,6 +21,7 @@ import type {
   JobStateResponse,
   JobsListResponse,
   KickBatchResponse,
+  KickByUrlResponse,
   KickOneResponse,
   SettingsView,
   SourceSummary,
@@ -200,6 +201,22 @@ export async function tailorJobBatch(jobIds: number[]): Promise<KickBatchRespons
   return fetchJson<KickBatchResponse>("/tailor/batch", {
     method: "POST",
     body: JSON.stringify({ job_ids: jobIds }),
+  });
+}
+
+/**
+ * Kick off a tailor chain for a bare JD URL.
+ *
+ * The endpoint tries to match the URL against the catalogue first
+ * (so the run uses the normal catalogue path and the job becomes
+ * trackable in /jobs going forward). When no match is found it
+ * falls back to a direct URL kick -- resumeai gets the URL, the
+ * run shows up in /tailor-runs with ``jd_url`` set.
+ */
+export async function tailorFromUrl(jdUrl: string): Promise<KickByUrlResponse> {
+  return fetchJson<KickByUrlResponse>("/tailor/url", {
+    method: "POST",
+    body: JSON.stringify({ jd_url: jdUrl }),
   });
 }
 

@@ -151,10 +151,15 @@ export interface QAAssessment {
   summary: string;
 }
 
-/** One row in tailor_runs as exposed via /api/tailor/runs[/:id]. */
+/** One row in tailor_runs as exposed via /api/tailor/runs[/:id].
+ *
+ * Either ``job_id`` (catalogue path) or ``jd_url`` (one-off URL
+ * path) is set; the DB CHECK constraint enforces "exactly one".
+ */
 export interface TailorRunRecord {
   id: number;
-  job_id: number;
+  job_id: number | null;
+  jd_url: string | null;
   status: TailorRunStatus;
   resume_run_id: string | null;
   resume_status: string | null;
@@ -183,6 +188,14 @@ export interface KickOneResponse {
 /** 202 response to POST /api/tailor/batch. */
 export interface KickBatchResponse {
   items: KickOneResponse[];
+}
+
+/** 202 response to POST /api/tailor/url. */
+export interface KickByUrlResponse {
+  tailor_run_id: number;
+  status: TailorRunStatus;
+  matched_job_id: number | null;
+  matched_count: number;
 }
 
 /**

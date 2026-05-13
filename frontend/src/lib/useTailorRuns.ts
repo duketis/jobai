@@ -33,7 +33,10 @@ export function useLatestTailorRunsByJob(): {
   const latestByJob = new Map<number, TailorRunRecord>();
   for (const run of query.data?.items ?? []) {
     // listTailorRuns returns newest-first; we keep the first observation
-    // per job, which is the most recent.
+    // per job, which is the most recent. URL-only runs (no job_id) are
+    // skipped here -- the jobs list keys rows by job_id, so there's
+    // nothing to attach them to.
+    if (run.job_id === null) continue;
     if (!latestByJob.has(run.job_id)) {
       latestByJob.set(run.job_id, run);
     }

@@ -12,6 +12,7 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
   return {
     id: 1,
     job_id: 1,
+    jd_url: null,
     status: "succeeded",
     resume_run_id: "rs_1",
     resume_status: "succeeded",

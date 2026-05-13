@@ -10,6 +10,7 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
   return {
     id: 1,
     job_id: 1,
+    jd_url: null,
     status: "pending",
     resume_run_id: null,
     resume_status: null,
@@ -70,6 +71,26 @@ describe("useLatestTailorRunsByJob", () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.latestByJob.get(7)?.id).toBe(30);
     expect(result.current.latestByJob.get(9)?.id).toBe(10);
+  });
+
+  it("skips URL-only runs (job_id is null) when building the map", async () => {
+    // One-off URL-tailor runs carry job_id=null because no catalogue
+    // row was matched. The latestByJob map is keyed by job_id and
+    // exists to attach status pills to /jobs cards -- the URL-only
+    // runs have nothing to attach to, so they must be skipped.
+    stubFetch([
+      makeRun({ id: 100, job_id: null, jd_url: "https://example/jd" }),
+      makeRun({ id: 99, job_id: 5, status: "succeeded" }),
+    ]);
+    const client = makeQueryClient();
+    const { result } = renderHook(() => useLatestTailorRunsByJob(), {
+      wrapper: ({ children }) => (
+        <WithQueryClient client={client}>{children}</WithQueryClient>
+      ),
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.latestByJob.size).toBe(1);
+    expect(result.current.latestByJob.get(5)?.id).toBe(99);
   });
 
   it("schedules a poll when at least one run is non-terminal", async () => {
