@@ -26,10 +26,11 @@ import { useLatestTailorRunsByJob } from "@/lib/useTailorRuns";
 import { cn } from "@/lib/utils";
 
 //: When the user submits a batch larger than this, we surface a
-//: confirm() before kicking. Three concurrent chains × ~3 min each
-//: means 25 jobs is already ~25 min of LLM-bound work; anything
-//: bigger usually means the user wanted to filter further first.
-const BATCH_CONFIRM_THRESHOLD = 25;
+//: confirm() before kicking. The TailorPool queues everything above
+//: its concurrency cap (3 concurrent by default) -- the confirm is
+//: an info dialog, not a quota, so the user knows the runtime cost
+//: before kicking off thousands of LLM chains.
+const BATCH_CONFIRM_THRESHOLD = 50;
 
 const PAGE_SIZE = 25;
 
@@ -221,8 +222,10 @@ export function JobsListPage() {
     },
   });
 
-  // "Select all N matching" -- runs lazily when the user clicks the
-  // banner so we don't pay the round-trip on every page load.
+  // "Select all matching" -- fetches every id matching the current
+  // filters, not just the visible page. Triggered directly from the
+  // master checkbox when the result set is bigger than what's
+  // visible, so the user gets the full set in one click.
   const expandMutation = useMutation({
     mutationFn: () => listJobIds(params),
     onSuccess: (response) => {
@@ -243,25 +246,34 @@ export function JobsListPage() {
     () => (data?.items ?? []).map((job) => job.id),
     [data?.items],
   );
-  const allVisibleSelected =
-    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
-  const someVisibleSelected =
-    visibleIds.some((id) => selectedIds.has(id)) && !allVisibleSelected;
+  // Master-checkbox state model:
+  //   - "all"   -- every matching job is selected (selectedIds.size === total)
+  //   - "some"  -- at least one job is selected but not all matching
+  //   - "none"  -- selection is empty
+  // The checkbox is checked only when ALL matching are in the set;
+  // any partial state shows as indeterminate so the user always
+  // knows whether they have the whole match set or just a slice.
+  const masterState: "all" | "some" | "none" =
+    selectedIds.size === 0
+      ? "none"
+      : total > 0 && selectedIds.size >= total
+        ? "all"
+        : "some";
 
-  function toggleAllVisible() {
-    if (allVisibleSelected) {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        for (const id of visibleIds) next.delete(id);
-        return next;
-      });
-    } else {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        for (const id of visibleIds) next.add(id);
-        return next;
-      });
+  function toggleAllMatching() {
+    if (masterState === "all") {
+      // Clear everything -- one click off.
+      setSelectedIds(new Set());
+      return;
     }
+    if (total <= visibleIds.length) {
+      // Whole result set fits on this page; no extra round trip needed.
+      setSelectedIds(new Set(visibleIds));
+      return;
+    }
+    // Result spans multiple pages -- pull every matching id from the
+    // server so the batch carries the full set, not just this page.
+    expandMutation.mutate();
   }
 
   function submitBatch() {
@@ -423,14 +435,11 @@ export function JobsListPage() {
         <>
           {selectionMode && visibleIds.length > 0 ? (
             <ListSelectAllRow
-              allSelected={allVisibleSelected}
-              someSelected={someVisibleSelected}
-              visibleCount={visibleIds.length}
+              state={masterState}
               total={total}
               selectedCount={selectedIds.size}
               expanding={expandMutation.isPending}
-              onToggleVisible={toggleAllVisible}
-              onExpandToAll={() => expandMutation.mutate()}
+              onToggle={toggleAllMatching}
             />
           ) : null}
           <ul className="space-y-3">
@@ -632,87 +641,78 @@ function BatchActionBar({
 }
 
 /**
- * Gmail-pattern master row at the top of the jobs list:
+ * Master checkbox at the top of the jobs list.
  *
- *  ☐  Select all 25 on this page                        25 of 247
+ *  ☐  Select all 22,986 matching            0 of 22,986
  *
- * After the user toggles the master checkbox to "all visible
- * selected", a banner appears offering to expand the selection to
- * every matching job across all pages -- one explicit second click,
- * not a hidden default. The banner only shows when the result set
- * is bigger than the visible page.
+ * One click selects every job matching the current search/filters
+ * across all pages -- no two-step page-first dance, no banner to
+ * find. The label adapts to the situation:
+ *
+ *   - state="none" + total > 0   → "Select all N matching"
+ *   - state="some"                → "N selected — click to select all"
+ *   - state="all"                 → "All N matching selected"
+ *
+ * The TailorPool handles the long-tail concurrency for huge batches
+ * (everything above its concurrency cap queues up and processes in
+ * order), so "select 5000 and kick" is a valid workflow -- the
+ * confirm dialog at submit time tells the user the expected runtime
+ * before they commit.
  */
 function ListSelectAllRow({
-  allSelected,
-  someSelected,
-  visibleCount,
+  state,
   total,
   selectedCount,
   expanding,
-  onToggleVisible,
-  onExpandToAll,
+  onToggle,
 }: {
-  allSelected: boolean;
-  someSelected: boolean;
-  visibleCount: number;
+  state: "all" | "some" | "none";
   total: number;
   selectedCount: number;
   expanding: boolean;
-  onToggleVisible: () => void;
-  onExpandToAll: () => void;
+  onToggle: () => void;
 }) {
-  const showExpandBanner =
-    allSelected && total > visibleCount && selectedCount < total;
+  const label =
+    state === "all"
+      ? `All ${total.toLocaleString()} matching selected`
+      : state === "some"
+        ? `${selectedCount.toLocaleString()} selected — click to select all ${total.toLocaleString()}`
+        : `Select all ${total.toLocaleString()} matching`;
   return (
-    <div className="space-y-2">
-      <label className="flex items-center gap-3 px-3 py-2 rounded-md border border-border bg-card text-sm">
-        <input
-          type="checkbox"
-          checked={allSelected}
-          ref={(node) => {
-            // Tri-state: some-but-not-all visible selected → indeterminate.
-            if (node) node.indeterminate = someSelected;
-          }}
-          onChange={onToggleVisible}
-          aria-label={
-            allSelected
-              ? "Deselect every job on this page"
-              : "Select every job on this page"
-          }
-          className="size-4 cursor-pointer"
-        />
-        <span className="font-medium">
-          {allSelected
-            ? `All ${visibleCount} on this page selected`
-            : someSelected
-              ? `${selectedCount} selected`
-              : `Select all ${visibleCount} on this page`}
-        </span>
-        <div className="flex-1" />
-        <span className="text-xs text-muted-foreground">
-          {selectedCount} of {total.toLocaleString()}
-        </span>
-      </label>
-      {showExpandBanner ? (
-        <button
-          type="button"
-          onClick={onExpandToAll}
-          disabled={expanding}
-          className="w-full text-left px-3 py-2 rounded-md border border-foreground/30 bg-secondary/40 text-sm hover:bg-secondary/60 transition-colors disabled:opacity-60 inline-flex items-center gap-2"
-        >
-          {expanding ? (
+    <label className="flex items-center gap-3 px-3 py-2 rounded-md border border-border bg-card text-sm cursor-pointer hover:bg-card/80 transition-colors">
+      <input
+        type="checkbox"
+        checked={state === "all"}
+        ref={(node) => {
+          // Tri-state: some-but-not-all selected → indeterminate so
+          // the user can tell at a glance whether they have the full
+          // match set or a slice of it.
+          if (node) node.indeterminate = state === "some";
+        }}
+        onChange={onToggle}
+        disabled={expanding || total === 0}
+        aria-label={
+          state === "all"
+            ? "Deselect every matching job"
+            : `Select every matching job (${total})`
+        }
+        className="size-4 cursor-pointer"
+      />
+      <span className="font-medium inline-flex items-center gap-2">
+        {expanding ? (
+          <>
             <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Sparkles className="size-3.5" />
-          )}
-          <span>
-            {expanding
-              ? "Loading all matching jobs…"
-              : `Select all ${total.toLocaleString()} matching →`}
-          </span>
-        </button>
-      ) : null}
-    </div>
+            Loading all {total.toLocaleString()} matching…
+          </>
+        ) : (
+          label
+        )}
+      </span>
+      <div className="flex-1" />
+      <span className="text-xs text-muted-foreground">
+        {selectedCount.toLocaleString()} of {total.toLocaleString()}
+      </span>
+    </label>
   );
 }
 
