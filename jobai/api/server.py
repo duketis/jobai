@@ -26,6 +26,7 @@ from starlette.responses import Response
 from jobai import __version__
 from jobai.api.routes import (
     agent,
+    context,
     conversations,
     health,
     jobs,
@@ -37,6 +38,7 @@ from jobai.api.routes import (
     settings as settings_routes,
 )
 from jobai.config import get_settings
+from jobai.context.client import HttpxContextClient
 from jobai.scheduler import (
     build_scheduler,
     register_ats_discovery,
@@ -83,6 +85,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.letter_client = HttpxCoverletteraiClient(base_url=settings.coverletterai_url)
     tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
     app.state.tailor_pool = tailor_pool
+    # The context pool lives in resumeai; jobai proxies through so the
+    # whole job-hunt workflow (browse -> tailor -> manage context) is
+    # behind one URL.
+    context_client = HttpxContextClient(base_url=settings.resumeai_url)
+    app.state.context_client = context_client
 
     if os.environ.get(_DISABLE_FLAG):
         _log.info("scheduler_disabled_via_env", extra={"flag": _DISABLE_FLAG})
@@ -91,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             yield
         finally:
             await tailor_pool.drain()
+            await context_client.aclose()
         return
 
     scheduler = build_scheduler()
@@ -108,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await shutdown(scheduler)
         await tailor_pool.drain()
+        await context_client.aclose()
         _log.info("scheduler_stopped")
 
 
@@ -142,6 +151,7 @@ def create_app() -> FastAPI:
         tags=["settings"],
     )
     application.include_router(tailor.router, prefix="/api/tailor", tags=["tailor"])
+    application.include_router(context.router, prefix="/api/context", tags=["context"])
     _mount_frontend(application)
     return application
 

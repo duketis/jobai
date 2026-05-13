@@ -1,0 +1,238 @@
+"""Coverage for ``jobai.context.client``.
+
+Uses respx to mock the resumeai sibling so the real httpx code paths
+(URL construction, multipart assembly, post-create list scrape) run
+without touching the wire.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+import respx
+
+from jobai.context.client import (
+    ContextFile,
+    HttpxContextClient,
+    SnippetCreate,
+)
+
+
+def _file_payload(name: str, file_id: str = "ctx_a", text: str = "") -> dict[str, object]:
+    return {
+        "id": file_id,
+        "name": name,
+        "kind": "text",
+        "extracted_text": text,
+        "byte_size": len(text),
+        "tags": [],
+        "uploaded_at": "2026-05-14T00:00:00Z",
+        "note": None,
+    }
+
+
+async def test_list_files_unwraps_files_wrapper() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={"files": [_file_payload("a", "ctx_1"), _file_payload("b", "ctx_2")]},
+            ),
+        )
+        items = await client.list_files()
+    assert [item.id for item in items] == ["ctx_1", "ctx_2"]
+    assert isinstance(items[0], ContextFile)
+    await client.aclose()
+
+
+async def test_list_files_accepts_bare_array_response() -> None:
+    """Older resumeai builds returned the array directly rather than
+    a ``{"files": [...]}`` envelope; the client copes with both."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context").mock(
+            return_value=httpx.Response(200, json=[_file_payload("only", "ctx_x")]),
+        )
+        items = await client.list_files()
+    assert [item.id for item in items] == ["ctx_x"]
+    await client.aclose()
+
+
+async def test_list_files_returns_empty_when_no_data() -> None:
+    """A ``{"files": null}`` or empty body shouldn't crash the page."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context").mock(return_value=httpx.Response(200, json={"files": None}))
+        items = await client.list_files()
+    assert items == []
+    await client.aclose()
+
+
+async def test_list_files_raises_on_5xx() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with (
+        respx.mock(base_url="http://resumeai:8765") as router,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        router.get("/api/context").mock(return_value=httpx.Response(502))
+        await client.list_files()
+    await client.aclose()
+
+
+async def test_get_file_returns_single_record() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context/ctx_1").mock(
+            return_value=httpx.Response(200, json=_file_payload("only", "ctx_1", "hello")),
+        )
+        item = await client.get_file("ctx_1")
+    assert item.id == "ctx_1"
+    assert item.extracted_text == "hello"
+    await client.aclose()
+
+
+async def test_add_snippet_posts_form_and_returns_just_created_entry() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        post_route = router.post("/context/snippet").mock(
+            return_value=httpx.Response(303, headers={"location": "/context"}),
+        )
+        # Post-create the client lists the pool to fetch the JSON shape.
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={"files": [_file_payload("Snippet One", "ctx_new")]},
+            ),
+        )
+        out = await client.add_snippet(
+            SnippetCreate(name="Snippet One", text="some content", tags=["a", "b"]),
+        )
+    assert out.id == "ctx_new"
+    assert out.name == "Snippet One"
+    # Confirm the form-encoded payload carried the joined tag string;
+    # httpx uses application/x-www-form-urlencoded for plain ``data=``
+    # so spaces become ``+`` and commas become ``%2C``.
+    sent = post_route.calls[0].request
+    body_text = sent.read().decode("utf-8")
+    assert "name=Snippet+One" in body_text
+    assert "text=some+content" in body_text
+    assert "tags=a%2Cb" in body_text
+    await client.aclose()
+
+
+async def test_add_snippet_iterates_past_non_matching_entries() -> None:
+    """When the just-created entry isn't first in the listing (a race
+    where another snippet was added more recently), the lookup keeps
+    walking until it finds the requested name."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.post("/context/snippet").mock(return_value=httpx.Response(303))
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "files": [
+                        _file_payload("Older Note", "ctx_other"),
+                        _file_payload("Target Note", "ctx_target"),
+                        _file_payload("Even Older", "ctx_oldest"),
+                    ],
+                },
+            ),
+        )
+        out = await client.add_snippet(SnippetCreate(name="Target Note", text="x"))
+    assert out.id == "ctx_target"
+    await client.aclose()
+
+
+async def test_add_snippet_falls_back_to_newest_on_name_collision() -> None:
+    """When the just-created snippet shares a name with an older entry,
+    pick the newest (which is what resumeai's newest-first listing
+    serves first)."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.post("/context/snippet").mock(return_value=httpx.Response(303))
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "files": [
+                        _file_payload("Note", "ctx_new"),
+                        _file_payload("Note", "ctx_old"),
+                    ],
+                },
+            ),
+        )
+        out = await client.add_snippet(SnippetCreate(name="Note", text="x"))
+    assert out.id == "ctx_new"
+    await client.aclose()
+
+
+async def test_add_snippet_raises_when_resumeai_rejects_form() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with (
+        respx.mock(base_url="http://resumeai:8765") as router,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        router.post("/context/snippet").mock(return_value=httpx.Response(400))
+        await client.add_snippet(SnippetCreate(name="x", text="y"))
+    await client.aclose()
+
+
+async def test_upload_file_streams_body_and_form_fields() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        post_route = router.post("/context").mock(return_value=httpx.Response(303))
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={"files": [_file_payload("resume.pdf", "ctx_pdf")]},
+            ),
+        )
+        out = await client.upload_file(
+            filename="resume.pdf",
+            content_type="application/pdf",
+            body=b"%PDF-1.5\n%%EOF",
+            tags=["resume", "primary"],
+            note="primary resume",
+        )
+    assert out.id == "ctx_pdf"
+    # File upload is true multipart (because ``files=`` is set), so the
+    # form fields land as plain text alongside the file part rather
+    # than URL-encoded.
+    sent_body = post_route.calls[0].request.read().decode("utf-8", errors="replace")
+    assert "resume.pdf" in sent_body
+    assert "resume,primary" in sent_body
+    assert "primary resume" in sent_body
+    await client.aclose()
+
+
+async def test_delete_file_passes_through_to_resumeai() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        route = router.delete("/api/context/ctx_x").mock(return_value=httpx.Response(204))
+        await client.delete_file("ctx_x")
+    assert route.called
+    await client.aclose()
+
+
+async def test_delete_file_raises_on_404() -> None:
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with (
+        respx.mock(base_url="http://resumeai:8765") as router,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        router.delete("/api/context/missing").mock(return_value=httpx.Response(404))
+        await client.delete_file("missing")
+    await client.aclose()
+
+
+async def test_base_url_trailing_slash_is_stripped() -> None:
+    """``base_url`` with a trailing slash shouldn't produce a double slash
+    in the assembled URL -- respx's matcher is strict."""
+    client = HttpxContextClient(base_url="http://resumeai:8765/")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context").mock(return_value=httpx.Response(200, json={"files": []}))
+        items = await client.list_files()
+    assert items == []
+    await client.aclose()
