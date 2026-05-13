@@ -8,7 +8,7 @@
 
 A local-first AI job-hunting agent for the Australian market. One process scrapes 70+ AU and global job boards on a schedule into a SQLite database, exposes a REST + SSE API, and runs an Anthropic-powered chat agent that uses tools to search and triage roles. The whole thing ships as a single container.
 
-> **Status:** v1.6.x — data layer, agent layer, frontend, Docker deploy, end-to-end resume + cover-letter tailoring with a **final cross-artefact QA pass** (works against both pay-per-token API and Claude Pro/Max subscription billing), **daily auto-discovery of new ATS slugs** from existing apply URLs, a **shared user-context pool** UI proxied through to resumeai (with **snippet + multi-file/folder upload + local git-project scan**), **chat-driven tailor kicks** (the agent has `kick_tailor` / `list_tailor_runs` / `get_tailor_run` tools so you can say "tailor this for me"), and a **Gmail-pattern Select-all** in batch mode (master checkbox + page-then-expand banner to queue every matching job across pagination, capped + confirmed). Generic catalogue (no role bias). **Backend at 100% line + branch coverage; tailor + QA + context UI at 100% line + branch + functions.**
+> **Status:** v1.7.x — data layer, agent layer, frontend, Docker deploy, end-to-end resume + cover-letter tailoring with a **final cross-artefact QA pass** (works against both pay-per-token API and Claude Pro/Max subscription billing), **daily auto-discovery of new ATS slugs** from existing apply URLs, a **shared user-context pool** UI proxied through to resumeai (with **snippet + multi-file/folder upload + local git-project scan**), **chat-driven tailor kicks** (the agent has `kick_tailor` / `list_tailor_runs` / `get_tailor_run` tools so you can say "tailor this for me"), **batch + cross-page Select-all** in selection mode (one click queues every matching job across pagination, up to 10k), and **Tailor-from-URL** for any JD URL (paste it; the system matches to the catalogue when it can, or tailors directly when it can't). Generic catalogue (no role bias). **Backend at 100% line + branch coverage; tailor + QA + context UI at 100% line + branch + functions.**
 
 ## What it does
 
@@ -124,6 +124,7 @@ Full OpenAPI spec at <http://localhost:8421/docs>. The headline endpoints:
 | `POST` | `/api/tailor/jobs/{id}` | Kick off a tailor chain for one job (resumeai + coverletterai). |
 | `GET` | `/api/jobs/ids` | Every job id matching the same filters as `/api/jobs` (powers "Select all N matching" — capped at 1000). |
 | `POST` | `/api/tailor/batch` | Kick off chains for many jobs at once. Body: `{job_ids: [...]}`. |
+| `POST` | `/api/tailor/url` | Kick a tailor chain for a bare JD URL. Body: `{jd_url}`. Tries the catalogue first (best-match by URL with query-string-stripping); falls back to a direct URL kick when nothing matches. Response reports `matched_job_id`/`matched_count` so the UI can label the flow. |
 | `GET` | `/api/tailor/runs` | List tailor runs, newest first; filterable by `job_id` / `status`. |
 | `GET` | `/api/tailor/runs/{id}` | Inspect one tailor run (state, sibling run ids, error). |
 | `GET` | `/api/tailor/runs/{id}/resume.pdf` | Stream the tailored resume PDF (proxied from resumeai). |
@@ -162,7 +163,7 @@ A few decisions worth pulling out:
 ## Development
 
 ```bash
-pytest -q                       # 1047 tests pass
+pytest -q                       # 1066 tests pass
 pytest --cov=jobai --cov-branch --cov-report=term-missing
 mypy jobai tests                # strict
 ruff check . && ruff format --check .
@@ -171,7 +172,7 @@ ruff check . && ruff format --check .
 (cd frontend && npm run test:coverage)          # Vitest -- 53 tests, 100% on tailor + QA + context UI
 ```
 
-CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. **The Python backend is at 100.0% combined line + branch coverage** (1047 tests, every module). Lines that genuinely cannot be exercised under unit tests (real Chromium / Patchright via Playwright, the `claude` CLI subprocess in subscription mode, defensive guards for SQLite invariants like `cursor.lastrowid is None`) are excluded via `# pragma: no cover` with a one-line reason; everything else lives behind tests. The tailor + QA + context UI (`TailorButton`, `TailorStatusPill`, `QABadge`, `useLatestTailorRunsByJob`, `TailorRunsPage`, `ContextPage`) is at 100% line + branch + functions under Vitest.
+CI runs ruff, mypy, pytest, and the frontend build on every push to `main`. All commits are GPG-signed. **The Python backend is at 100.0% combined line + branch coverage** (1066 tests, every module). Lines that genuinely cannot be exercised under unit tests (real Chromium / Patchright via Playwright, the `claude` CLI subprocess in subscription mode, defensive guards for SQLite invariants like `cursor.lastrowid is None`) are excluded via `# pragma: no cover` with a one-line reason; everything else lives behind tests. The tailor + QA + context UI (`TailorButton`, `TailorStatusPill`, `QABadge`, `useLatestTailorRunsByJob`, `TailorRunsPage`, `ContextPage`) is at 100% line + branch + functions under Vitest.
 
 ## Known limitations
 
