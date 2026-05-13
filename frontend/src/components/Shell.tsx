@@ -1,7 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Briefcase, FolderOpen, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useNavigate, useSearchParams } from "react-router";
+import {
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router";
 
 import { ChatDock } from "@/components/ChatDock";
 import { deleteConversation, listConversations } from "@/lib/api";
@@ -16,20 +22,23 @@ import { cn } from "@/lib/utils";
  *   │          │  chat dock (resizable)      │
  *   └──────────┴─────────────────────────────┘
  *
- * The chat dock is always mounted so the active conversation survives
- * navigation between /jobs and /jobs/:id, and so the agent's tool
- * calls (search_jobs, get_job_detail, …) can drive the upper view.
+ * The chat dock only renders on the Jobs routes (``/jobs`` and
+ * ``/jobs/:id``). The agent's tools — search_jobs, get_job_detail,
+ * kick_tailor — all drive the upper view there, so the dock is
+ * useful. On /context and /tailor-runs there's nothing for the
+ * agent to manipulate, so the dock would just steal screen space.
  *
  * Dock height is user-tunable via a horizontal drag handle on the
  * top edge of the dock; the value persists in localStorage so the
  * preference rides across reloads.
  *
  * The active conversation id is carried in the URL as ``?chat=<id>``
- * (preserved across route changes by the dock's nav handlers); a
- * missing param means "fresh chat".
+ * which survives navigation away and back (because the query param
+ * stays on the URL even when the dock unmounts).
  */
 export function Shell() {
   const [dockHeight, setDockHeight] = useResizableDock();
+  const showChat = useShowChatDock();
   return (
     <div className="flex h-full bg-background text-foreground">
       <Sidebar />
@@ -37,16 +46,30 @@ export function Shell() {
         <main className="flex-1 overflow-y-auto min-h-0">
           <Outlet />
         </main>
-        <DockResizeHandle dockHeight={dockHeight} setDockHeight={setDockHeight} />
-        <div
-          className="shrink-0 flex flex-col min-h-0 border-t border-border"
-          style={{ height: `${dockHeight}px` }}
-        >
-          <ChatDock />
-        </div>
+        {showChat && (
+          <>
+            <DockResizeHandle dockHeight={dockHeight} setDockHeight={setDockHeight} />
+            <div
+              className="shrink-0 flex flex-col min-h-0 border-t border-border"
+              style={{ height: `${dockHeight}px` }}
+            >
+              <ChatDock />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * Routes that surface the chat dock. The chat's tools are job-centric
+ * (search / detail / tailor); other pages don't benefit from it and
+ * the dock would just shrink their working area.
+ */
+function useShowChatDock(): boolean {
+  const { pathname } = useLocation();
+  return pathname === "/" || pathname === "/jobs" || pathname.startsWith("/jobs/");
 }
 
 const DOCK_HEIGHT_KEY = "jobai:dockHeight";
