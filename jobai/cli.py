@@ -32,6 +32,11 @@ from jobai.observability.logging import configure_logging, get_logger
 from jobai.pipeline.remote_inference import backfill_remote_types
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.pipeline.salary_inference import backfill_salaries
+from jobai.sources.ats_discovery import (
+    diff_against_seeded,
+    discover_slugs,
+    load_seeded_accounts,
+)
 from jobai.sources.base import BaseSource
 from jobai.sources.loader import DEFAULT_COMPANIES_YAML, sync_companies_yaml
 from jobai.sources.registry import get_source_class
@@ -275,6 +280,62 @@ def source_disable(
     """Disable a source."""
     _toggle(name, enabled=False)
     typer.echo(f"disabled {name}")
+
+
+@source_app.command("discover")
+def source_discover(
+    min_count: int = typer.Option(
+        1,
+        "--min-count",
+        help="Only report slugs seen in at least this many distinct apply URLs.",
+    ),
+    register: bool = typer.Option(
+        False,
+        "--register",
+        help=(
+            "When set, upsert every newly-discovered (kind, account) into the "
+            "``sources`` table immediately (enabled=true, default tier=1, "
+            "cadence=3600s). Without this flag the command only reports."
+        ),
+    ),
+) -> None:
+    """Mine ``jobs.apply_url`` for ATS slugs we haven't seeded yet.
+
+    Seek / Indeed / LinkedIn scrapes capture apply URLs that often
+    point straight at a Greenhouse / Lever / Ashby / SmartRecruiters /
+    Workable employer page. This command finds every slug embedded in
+    those URLs that isn't already a row in ``sources``, lets you sanity
+    check it, and (with ``--register``) wires each as a new source.
+
+    Run after a fresh scrape cycle to keep direct-ATS coverage current
+    without hand-editing companies.yaml.
+    """
+    from jobai.sources.repository import upsert_source  # noqa: PLC0415
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    with connect(settings.db_path) as conn:
+        discovered = discover_slugs(conn)
+        seeded = load_seeded_accounts(conn)
+        new = [s for s in diff_against_seeded(discovered, seeded) if s.count >= min_count]
+        if not new:
+            typer.echo("discover: no new slugs (every observed slug is already seeded).")
+            return
+        typer.echo(f"discover: {len(new)} new slug(s) above min_count={min_count}:")
+        for entry in new:
+            typer.echo(f"  {entry.kind}:{entry.account}  (seen in {entry.count} apply URLs)")
+        if not register:
+            typer.echo("\nRe-run with --register to add them as enabled sources.")
+            return
+        for entry in new:
+            upsert_source(
+                conn,
+                kind=entry.kind,
+                account=entry.account,
+                display_name=entry.account,
+                cadence_seconds=3600,
+            )
+        typer.echo(f"discover: registered {len(new)} new source(s).")
 
 
 # ---------------------------------------------------------------------------

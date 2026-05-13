@@ -369,6 +369,163 @@ def test_run_one_source_command_executes_runner_and_echoes_result(
     assert "status=success" in result.output
 
 
+def test_source_discover_reports_new_slugs_without_register(
+    _isolated_db: Path,
+) -> None:
+    """``source discover`` finds ATS slugs in apply_url and lists them
+    when ``--register`` is omitted. No sources are added in this mode."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        # Seed a 'seek' source so jobs_raw / jobs can hang off it.
+        cursor = conn.execute(
+            "INSERT INTO sources (kind, account, display_name, cadence_seconds) "
+            "VALUES ('seek', 'jobs/in-AU', 'Seek', 3600)",
+        )
+        source_id = int(cursor.lastrowid or 0)
+        conn.execute(
+            "INSERT INTO jobs_raw (source_id, source_external_id, raw_json, raw_sha256, "
+            "first_seen_at, last_seen_at) "
+            "VALUES (?, 'x1', '{}', 'sha', datetime('now'), datetime('now'))",
+            (source_id,),
+        )
+        conn.execute(
+            "INSERT INTO jobs (dedup_key, title, company, company_norm, apply_url, "
+            "first_seen_at, last_seen_at) "
+            "VALUES ('k1', 't', 'c', 'c', "
+            "'https://boards.greenhouse.io/anthropic/jobs/1', "
+            "datetime('now'), datetime('now'))",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["source", "discover"])
+    assert result.exit_code == 0, result.output
+    assert "greenhouse:anthropic" in result.output
+    assert "Re-run with --register" in result.output
+
+    # No new source row was inserted -- still just the seed.
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_source_discover_registers_new_slugs_with_flag(_isolated_db: Path) -> None:
+    """``source discover --register`` upserts every new slug as an
+    enabled source so the next ``jobai run`` picks it up."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO sources (kind, account, display_name, cadence_seconds) "
+            "VALUES ('seek', 'jobs/in-AU', 'Seek', 3600)",
+        )
+        source_id = int(cursor.lastrowid or 0)
+        for i, url in enumerate(
+            [
+                "https://jobs.lever.co/palantir/role",
+                "https://jobs.ashbyhq.com/openai/role-x",
+            ]
+        ):
+            conn.execute(
+                "INSERT INTO jobs_raw (source_id, source_external_id, raw_json, raw_sha256, "
+                "first_seen_at, last_seen_at) "
+                "VALUES (?, ?, '{}', 'sha', datetime('now'), datetime('now'))",
+                (source_id, f"x-{i}"),
+            )
+            conn.execute(
+                "INSERT INTO jobs (dedup_key, title, company, company_norm, apply_url, "
+                "first_seen_at, last_seen_at) "
+                "VALUES (?, 't', 'c', 'c', ?, datetime('now'), datetime('now'))",
+                (f"k-{i}", url),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["source", "discover", "--register"])
+    assert result.exit_code == 0, result.output
+    assert "registered 2 new source(s)" in result.output
+
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        rows = conn.execute(
+            "SELECT kind, account FROM sources WHERE kind IN ('lever', 'ashby')"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert sorted(rows) == [("ashby", "openai"), ("lever", "palantir")]
+
+
+def test_source_discover_no_new_slugs_message(_isolated_db: Path) -> None:
+    """When every observed slug is already in ``sources``, the command
+    short-circuits with the all-good message."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        # Seed the slug we're about to observe so the diff is empty.
+        cursor = conn.execute(
+            "INSERT INTO sources (kind, account, display_name, cadence_seconds) "
+            "VALUES ('greenhouse', 'anthropic', 'Anthropic', 3600)",
+        )
+        source_id = int(cursor.lastrowid or 0)
+        conn.execute(
+            "INSERT INTO jobs_raw (source_id, source_external_id, raw_json, raw_sha256, "
+            "first_seen_at, last_seen_at) "
+            "VALUES (?, 'x', '{}', 'sha', datetime('now'), datetime('now'))",
+            (source_id,),
+        )
+        conn.execute(
+            "INSERT INTO jobs (dedup_key, title, company, company_norm, apply_url, "
+            "first_seen_at, last_seen_at) "
+            "VALUES ('k', 't', 'c', 'c', "
+            "'https://boards.greenhouse.io/anthropic/jobs/1', "
+            "datetime('now'), datetime('now'))",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    result = runner.invoke(app, ["source", "discover"])
+    assert result.exit_code == 0, result.output
+    assert "no new slugs" in result.output
+
+
+def test_source_discover_respects_min_count(_isolated_db: Path) -> None:
+    """``--min-count 5`` filters out slugs seen in fewer URLs."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO sources (kind, account, display_name, cadence_seconds) "
+            "VALUES ('seek', 'jobs/in-AU', 'Seek', 3600)",
+        )
+        source_id = int(cursor.lastrowid or 0)
+        # One distinct URL -> count=1, below the threshold.
+        conn.execute(
+            "INSERT INTO jobs_raw (source_id, source_external_id, raw_json, raw_sha256, "
+            "first_seen_at, last_seen_at) "
+            "VALUES (?, 'x', '{}', 'sha', datetime('now'), datetime('now'))",
+            (source_id,),
+        )
+        conn.execute(
+            "INSERT INTO jobs (dedup_key, title, company, company_norm, apply_url, "
+            "first_seen_at, last_seen_at) "
+            "VALUES ('k', 't', 'c', 'c', "
+            "'https://jobs.lever.co/onlyonce/role', "
+            "datetime('now'), datetime('now'))",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    result = runner.invoke(app, ["source", "discover", "--min-count", "5"])
+    assert result.exit_code == 0, result.output
+    assert "no new slugs" in result.output
+
+
 def test_run_enabled_walks_every_enabled_source(
     _isolated_db: Path,
     monkeypatch: pytest.MonkeyPatch,
