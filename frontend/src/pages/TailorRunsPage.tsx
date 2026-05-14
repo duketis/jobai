@@ -256,6 +256,18 @@ function TailorRunDetail({ run }: { run: TailorRunRecord }) {
           ) : null}
         </span>
       </DetailRow>
+      {run.qa_attempts > 0 ? (
+        <DetailRow label="QA attempts">
+          <span>
+            {run.qa_attempts}
+            {run.qa_attempts > 1 ? (
+              <span className="ml-2 text-muted-foreground">
+                (auto-fix: orchestrator re-tailored the letter with QA feedback)
+              </span>
+            ) : null}
+          </span>
+        </DetailRow>
+      ) : null}
       {run.qa_assessment ? (
         <DetailRow label="QA summary">
           <span>{run.qa_assessment.summary}</span>

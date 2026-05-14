@@ -17,6 +17,7 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
     letter_status: null,
     qa_status: null,
     qa_assessment: null,
+    qa_attempts: 0,
     error: null,
     created_at: "2026-05-13T00:00:00Z",
     updated_at: "2026-05-13T00:00:00Z",
@@ -35,6 +36,8 @@ describe("TailorStatusPill", () => {
     { status: "pending", label: "Queued" },
     { status: "resume_running", label: "Resume" },
     { status: "letter_running", label: "Cover letter" },
+    { status: "qa_running", label: "QA" },
+    { status: "qa_retry_running", label: "QA fix" },
     { status: "succeeded", label: "Done" },
     { status: "failed", label: "Failed" },
   ])("renders the $label label for status=$status", ({ status, label }) => {

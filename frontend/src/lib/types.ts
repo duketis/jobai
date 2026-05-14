@@ -128,6 +128,7 @@ export type TailorRunStatus =
   | "resume_running"
   | "letter_running"
   | "qa_running"
+  | "qa_retry_running"
   | "succeeded"
   | "failed";
 
@@ -167,6 +168,7 @@ export interface TailorRunRecord {
   letter_status: string | null;
   qa_status: QAStatus | null;
   qa_assessment: QAAssessment | null;
+  qa_attempts: number;
   error: string | null;
   created_at: string;
   updated_at: string;

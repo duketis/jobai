@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, FileText, FileWarning, Loader2 } from "lucide-react";
+import { CheckCircle2, Clock, FileText, FileWarning, Loader2, RefreshCcw } from "lucide-react";
 
 import type { TailorRunRecord, TailorRunStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -54,6 +54,18 @@ function pillFor(status: TailorRunStatus): PillStyling {
         tone: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
         icon: <Loader2 className="size-3 animate-spin" />,
         label: "Cover letter",
+      };
+    case "qa_running":
+      return {
+        tone: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+        icon: <Loader2 className="size-3 animate-spin" />,
+        label: "QA",
+      };
+    case "qa_retry_running":
+      return {
+        tone: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+        icon: <RefreshCcw className="size-3 animate-spin" />,
+        label: "QA fix",
       };
     case "succeeded":
       return {

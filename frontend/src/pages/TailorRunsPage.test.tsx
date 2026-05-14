@@ -20,6 +20,7 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
     letter_status: "succeeded",
     qa_status: null,
     qa_assessment: null,
+    qa_attempts: 0,
     error: null,
     created_at: new Date(Date.now() - 30 * 1000).toISOString(),
     updated_at: new Date().toISOString(),
@@ -266,6 +267,54 @@ describe("TailorRunsPage", () => {
     expect(screen.getAllByText("—")).toHaveLength(2);
     // No Finished row.
     expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+  });
+
+  it("renders the QA attempts row + auto-fix note in the detail panel", async () => {
+    stubFetch([
+      makeRun({
+        id: 80,
+        job_id: 1,
+        status: "succeeded",
+        qa_status: "pass",
+        qa_attempts: 2,
+        qa_assessment: {
+          status: "pass",
+          coverage_score: 90,
+          consistency_score: 85,
+          format_score: 88,
+          must_fix_issues: [],
+          nice_to_fix_issues: [],
+          summary: "Auto-fix succeeded.",
+        },
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#80");
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 80/ }),
+    );
+    expect(screen.getByText(/QA attempts/)).toBeInTheDocument();
+    expect(screen.getByText(/auto-fix:/i)).toBeInTheDocument();
+    expect(screen.getByText("Auto-fix succeeded.")).toBeInTheDocument();
+  });
+
+  it("renders attempt count without the auto-fix note for single-attempt runs", async () => {
+    stubFetch([
+      makeRun({
+        id: 81,
+        job_id: 1,
+        status: "succeeded",
+        qa_status: "pass",
+        qa_attempts: 1,
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#81");
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 81/ }),
+    );
+    expect(screen.getByText(/QA attempts/)).toBeInTheDocument();
+    expect(screen.queryByText(/auto-fix:/i)).not.toBeInTheDocument();
   });
 
   it("renders the QA summary in the detail panel when present", async () => {
