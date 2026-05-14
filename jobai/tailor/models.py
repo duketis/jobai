@@ -19,14 +19,21 @@ class TailorRunStatus(StrEnum):
     """Lifecycle states the orchestrator walks per chain.
 
     Matches the CHECK constraint on ``tailor_runs.status`` (migrations
-    0005 + 0006). Stored as a TEXT column so the value is human-
+    0005, 0006, 0008). Stored as a TEXT column so the value is human-
     readable in ad-hoc SQLite browsing.
+
+    ``qa_retry_running`` fires when QA returned must-fix issues and the
+    orchestrator is re-kicking the cover letter with the QA feedback
+    appended to the JD prompt. Distinct from ``letter_running`` so the
+    UI can show "QA fix attempt 2/2" rather than treating a retry as
+    a fresh chain.
     """
 
     PENDING = "pending"
     RESUME_RUNNING = "resume_running"
     LETTER_RUNNING = "letter_running"
     QA_RUNNING = "qa_running"
+    QA_RETRY_RUNNING = "qa_retry_running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -123,6 +130,14 @@ class TailorRunRecord(BaseModel):
     letter_status: str | None = None
     qa_status: QAStatus | None = None
     qa_assessment: QAAssessment | None = None
+    qa_attempts: int = Field(
+        default=0,
+        description=(
+            "How many QA passes have run for this chain. 0 means QA hasn't "
+            "fired yet; 1 is the initial verdict; 2 means a retry happened "
+            "(orchestrator re-kicked the letter with QA feedback)."
+        ),
+    )
     error: str | None = None
     created_at: str
     updated_at: str

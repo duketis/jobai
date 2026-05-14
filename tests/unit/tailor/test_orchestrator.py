@@ -610,3 +610,300 @@ def test_build_resume_request_falls_back_to_jd_url() -> None:
     letter = _build_letter_request(payload, resume_run_id="rs_1")
     assert letter.jd_url == "https://example.com/x"
     assert letter.jd_text is None
+
+
+# ---------------------------------------------------------------------------
+# QA auto-fix loop: re-kick the letter with feedback on must-fix issues
+# ---------------------------------------------------------------------------
+
+
+def _qa_fail_then_pass_responses() -> list[str]:
+    """First QA pass returns a fail with a must-fix; second returns pass.
+
+    Drives the orchestrator's retry path: QA must-fix → letter re-kick
+    with feedback → re-poll → second QA → pass → succeeded."""
+    import json  # noqa: PLC0415
+
+    fail = json.dumps(
+        {
+            "status": "fail",
+            "coverage_score": 80,
+            "consistency_score": 50,
+            "format_score": 90,
+            "must_fix_issues": [
+                {
+                    "severity": "must_fix",
+                    "category": "consistency",
+                    "summary": "letter overstates X",
+                    "detail": "the letter claims X but the resume puts X at a client engagement",
+                },
+            ],
+            "nice_to_fix_issues": [],
+            "summary": "fix the X attribution",
+        },
+    )
+    return [fail, _good_qa_json()]
+
+
+class _SequencedQAClient:
+    """Returns scripted responses in order; raises if asked too many times."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(self, *, system: str, user: str, model: str | None = None) -> str:
+        self.calls.append({"system": system, "user": user, "model": model})
+        return self._responses.pop(0)
+
+
+async def test_qa_must_fix_triggers_letter_rekick_with_feedback(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """QA returns must-fix → orchestrator re-kicks the letter with the
+    feedback in the JD payload → re-polls → re-runs QA → passes →
+    chain settles succeeded."""
+    _, sleeper = recording_sleeper
+    qa = _SequencedQAClient(_qa_fail_then_pass_responses())
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.qa_status is QAStatus.PASS
+    assert final.qa_attempts == 2
+    # Letter was kicked twice: initial + retry. Second kick carries
+    # the QA feedback appended to the JD text.
+    assert len(scripted_letter_client.kick_requests) == 2
+    retry_request = scripted_letter_client.kick_requests[1]
+    assert retry_request.jd_text is not None
+    assert "QA FEEDBACK FROM PREVIOUS ATTEMPT" in retry_request.jd_text
+    assert "letter overstates X" in retry_request.jd_text
+
+
+async def test_qa_must_fix_stops_after_max_attempts(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """When QA still flags must-fix after the retry, the chain stops
+    at max_qa_attempts rather than looping forever. Row still settles
+    succeeded -- the PDFs ship with the failing QA verdict attached."""
+    _, sleeper = recording_sleeper
+    # Both QA passes return the same fail; orchestrator should give
+    # up after attempts == max_qa_attempts.
+    qa = _SequencedQAClient(
+        [_qa_fail_then_pass_responses()[0]] * 2,
+    )
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        max_qa_attempts=2,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.qa_status is QAStatus.FAIL
+    assert final.qa_attempts == 2
+    # Letter kicked twice (initial + 1 retry) -- not 3 times.
+    assert len(scripted_letter_client.kick_requests) == 2
+
+
+async def test_qa_pass_first_try_does_not_retry(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """When QA accepts the first attempt, the orchestrator stops
+    immediately -- qa_attempts is 1 and the letter is kicked once."""
+    _, sleeper = recording_sleeper
+    qa = _SequencedQAClient([_good_qa_json()])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.qa_attempts == 1
+    assert len(scripted_letter_client.kick_requests) == 1
+
+
+async def test_qa_concerns_with_only_nice_to_fix_does_not_retry(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """A ``concerns`` verdict with ONLY nice-to-fix issues isn't worth
+    re-burning LLM time on -- retry triggers on must-fix only."""
+    import json  # noqa: PLC0415
+
+    _, sleeper = recording_sleeper
+    concerns_only_nice = json.dumps(
+        {
+            "status": "concerns",
+            "coverage_score": 75,
+            "consistency_score": 80,
+            "format_score": 85,
+            "must_fix_issues": [],
+            "nice_to_fix_issues": [
+                {
+                    "severity": "nice_to_fix",
+                    "category": "format",
+                    "summary": "date format differs slightly",
+                },
+            ],
+            "summary": "minor polish only",
+        },
+    )
+    qa = _SequencedQAClient([concerns_only_nice])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.qa_attempts == 1
+    assert final.qa_status is QAStatus.CONCERNS
+    assert len(scripted_letter_client.kick_requests) == 1
+
+
+async def test_qa_retry_letter_failure_marks_row_failed(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If the retry-kicked letter fails (sibling returned ``failed``),
+    the chain falls into the ``failed`` row state rather than running
+    another QA pass over a stale artefact."""
+    _, sleeper = recording_sleeper
+    # Letter succeeds on first kick, fails on second.
+    letter_client = ScriptedLetterClient(
+        poll_statuses=["succeeded", "failed"],
+    )
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.FAILED
+    assert final.error is not None
+    assert "retry" in final.error
+
+
+def test_augment_payload_with_feedback_appends_must_fix_to_jd_text() -> None:
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _augment_payload_with_feedback,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://x", jd_text="JD body")
+    assessment = QAAssessment(
+        status=QAStatus.FAIL,
+        coverage_score=80,
+        consistency_score=50,
+        format_score=90,
+        must_fix_issues=[
+            QAIssue(
+                severity="must_fix",
+                category="consistency",
+                summary="letter overstates X",
+                detail="x detail",
+            ),
+        ],
+        nice_to_fix_issues=[],
+        summary="fix X",
+    )
+    augmented = _augment_payload_with_feedback(payload, assessment)
+    assert augmented.jd_url == "https://x"
+    assert augmented.jd_text is not None
+    assert "JD body" in augmented.jd_text
+    assert "QA FEEDBACK FROM PREVIOUS ATTEMPT" in augmented.jd_text
+    assert "letter overstates X" in augmented.jd_text
+    assert "x detail" in augmented.jd_text
+
+
+def test_augment_payload_with_feedback_inlines_url_when_no_jd_text() -> None:
+    """One-off URL path (no jd_text) -- the feedback block surfaces
+    the URL inline so the LLM has SOME context for the retry."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _augment_payload_with_feedback,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://example.com/jd", jd_text=None)
+    assessment = QAAssessment(
+        status=QAStatus.FAIL,
+        coverage_score=70,
+        consistency_score=60,
+        format_score=80,
+        must_fix_issues=[
+            QAIssue(
+                severity="must_fix",
+                category="content",
+                summary="missing tone match",
+            ),
+        ],
+        nice_to_fix_issues=[],
+        summary="tone",
+    )
+    augmented = _augment_payload_with_feedback(payload, assessment)
+    assert augmented.jd_text is not None
+    assert "https://example.com/jd" in augmented.jd_text
+    assert "missing tone match" in augmented.jd_text

@@ -29,6 +29,7 @@ from jobai.db.connection import connect
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.models import (
     CoverletteraiTailorRequest,
+    QAAssessment,
     QAStatus,
     ResumeaiTailorRequest,
     SiblingRunSnapshot,
@@ -52,6 +53,13 @@ DEFAULT_POLL_INTERVAL_S: float = 10.0
 #: well beyond the ~3-minute upper bound for a normal run.
 DEFAULT_MAX_POLLS: int = 180
 
+#: Cap on total QA passes per chain. The first pass is the initial
+#: grade; subsequent passes happen after the orchestrator re-kicks the
+#: cover letter with QA feedback. Anything above 2 burns LLM time
+#: without meaningful new signal (the model either gets it on the
+#: retry or it can't).
+DEFAULT_MAX_QA_ATTEMPTS: int = 2
+
 # Sleeper signature: ``await sleeper(seconds)``. Defaults to ``asyncio.sleep``
 # in production; tests supply a recorder that records the requested delay and
 # returns immediately.
@@ -73,6 +81,7 @@ async def run_chain(
     qa_model: str | None = None,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     max_polls: int = DEFAULT_MAX_POLLS,
+    max_qa_attempts: int = DEFAULT_MAX_QA_ATTEMPTS,
 ) -> None:
     """Drive one tailor chain to terminal state.
 
@@ -101,6 +110,7 @@ async def run_chain(
             qa_model=qa_model,
             poll_interval_s=poll_interval_s,
             max_polls=max_polls,
+            max_qa_attempts=max_qa_attempts,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
         _log.exception("tailor_chain_failed", extra={"tailor_run_id": tailor_run_id})
@@ -124,6 +134,7 @@ async def _run_chain_inner(
     qa_model: str | None,
     poll_interval_s: float,
     max_polls: int,
+    max_qa_attempts: int,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
 
@@ -185,18 +196,59 @@ async def _run_chain_inner(
         msg = f"coverletterai run {letter_run_id} ended in status {letter_snapshot.status!r}"
         raise TailorChainError(msg)
 
-    # ---- QA (cross-artefact pass) --------------------------------------
+    # ---- QA + auto-fix loop --------------------------------------------
+    #
+    # First pass grades the initial resume + letter. If the verdict
+    # flags must-fix issues AND we have attempts left, re-kick the
+    # cover letter with the QA feedback appended to the JD payload --
+    # the LLM sees "here's the JD, and here's what went wrong last
+    # time, do better" and produces a corrected letter. Then re-run
+    # QA. Loops until QA accepts or the attempt cap is hit. The
+    # current ``letter_run_id`` always points at the LATEST attempt
+    # so PDF downloads + the UI reflect the final artefact.
     if qa_client is not None:
-        await _run_qa_stage(
-            tailor_run_id=tailor_run_id,
-            db_path=db_path,
-            resume_client=resume_client,
-            letter_client=letter_client,
-            resume_run_id=resume_run_id,
-            letter_run_id=letter_run_id,
-            qa_client=qa_client,
-            qa_model=qa_model,
-        )
+        attempts = 0
+        # The natural-exit branch (condition false on a recheck) is
+        # unreachable: every iteration breaks before incrementing past
+        # the cap. Pragma'd so the False branch doesn't drag coverage
+        # while the True branch is exercised normally.
+        while attempts < max_qa_attempts:  # pragma: no branch
+            attempts += 1
+            assessment = await _run_qa_stage(
+                tailor_run_id=tailor_run_id,
+                db_path=db_path,
+                resume_client=resume_client,
+                letter_client=letter_client,
+                resume_run_id=resume_run_id,
+                letter_run_id=letter_run_id,
+                qa_client=qa_client,
+                qa_model=qa_model,
+                attempts=attempts,
+            )
+            # Stop if QA passed, or if we have no must-fix work to drive
+            # a retry against (concerns + only nice-to-fix is acceptable),
+            # or if we've burned our retry budget.
+            if not assessment.must_fix_issues or attempts >= max_qa_attempts:
+                break
+
+            # Re-kick the cover letter with the QA feedback so the LLM
+            # has a concrete list of what to fix. The resume is left
+            # alone -- the resume is constrained to verifiable career
+            # data, while the letter is the freer-form artefact where
+            # hallucinations tend to land. (V2 could also retry the
+            # resume when QA flags coverage gaps the resume should
+            # address; punt that until we see it in the wild.)
+            letter_run_id = await _rekick_letter_with_feedback(
+                tailor_run_id=tailor_run_id,
+                db_path=db_path,
+                letter_client=letter_client,
+                payload=payload,
+                resume_run_id=resume_run_id,
+                assessment=assessment,
+                sleeper=sleeper,
+                poll_interval_s=poll_interval_s,
+                max_polls=max_polls,
+            )
 
     # ---- terminal success ----------------------------------------------
     with connect(db_path) as conn:
@@ -213,12 +265,14 @@ async def _run_qa_stage(
     letter_run_id: str,
     qa_client: QAClient,
     qa_model: str | None,
-) -> None:
-    """Pull both sibling run records and run the cross-artefact QA pass.
+    attempts: int,
+) -> QAAssessment:
+    """Run one QA pass against the current resume + letter artefacts.
 
-    The orchestrator catches the run-level exception in :func:`run_chain`
-    so a QA-stage failure won't kill the chain -- the PDFs still ship
-    with a failed QA assessment attached.
+    Returns the assessment so the orchestrator can decide whether to
+    retry (must-fix issues + attempts left) or settle. The chain-
+    level exception handler in :func:`run_chain` catches QA failures
+    so the row still ships with whatever PDFs were generated.
     """
     with connect(db_path) as conn:
         update_status(
@@ -226,6 +280,7 @@ async def _run_qa_stage(
             tailor_run_id,
             status=TailorRunStatus.QA_RUNNING,
             qa_status=QAStatus.RUNNING,
+            qa_attempts=attempts,
         )
 
     resume_record = await resume_client.get_run(resume_run_id)
@@ -249,7 +304,101 @@ async def _run_qa_stage(
             status=TailorRunStatus.QA_RUNNING,
             qa_status=assessment.status,
             qa_assessment=assessment,
+            qa_attempts=attempts,
         )
+    return assessment
+
+
+async def _rekick_letter_with_feedback(
+    *,
+    tailor_run_id: int,
+    db_path: Path,
+    letter_client: CoverletteraiClient,
+    payload: _JDPayload,
+    resume_run_id: str,
+    assessment: QAAssessment,
+    sleeper: Sleeper,
+    poll_interval_s: float,
+    max_polls: int,
+) -> str:
+    """Re-tailor the cover letter with the QA must-fix list appended.
+
+    Returns the new ``letter_run_id`` so the caller can re-run QA
+    against the corrected artefact. The row transitions through
+    ``qa_retry_running`` (distinct from ``letter_running`` so the UI
+    can show "auto-fix attempt") and back to a polled ``letter_status``.
+    """
+    feedback_payload = _augment_payload_with_feedback(payload, assessment)
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RETRY_RUNNING,
+        )
+
+    new_letter_run_id = await letter_client.kick(
+        _build_letter_request(feedback_payload, resume_run_id=resume_run_id),
+    )
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RETRY_RUNNING,
+            letter_run_id=new_letter_run_id,
+        )
+
+    snapshot = await _poll_until_terminal(
+        kind="letter",
+        run_id=new_letter_run_id,
+        poll=letter_client.poll,
+        sleeper=sleeper,
+        poll_interval_s=poll_interval_s,
+        max_polls=max_polls,
+        db_path=db_path,
+        tailor_run_id=tailor_run_id,
+        status_field="letter_status",
+        outer_status=TailorRunStatus.QA_RETRY_RUNNING,
+    )
+    if snapshot.status not in _TERMINAL_SUCCESS:
+        # Retry letter failed -- raise so the row falls into 'failed'
+        # rather than running another QA pass over a stale artefact.
+        msg = f"coverletterai retry {new_letter_run_id} ended in status {snapshot.status!r}"
+        raise TailorChainError(msg)
+    return new_letter_run_id
+
+
+def _augment_payload_with_feedback(
+    payload: _JDPayload,
+    assessment: QAAssessment,
+) -> _JDPayload:
+    """Append the QA must-fix list to the JD text so the LLM sees both
+    the requirements AND the prior attempt's problems.
+
+    When the original payload had no jd_text (one-off URL path with no
+    catalogue match), this also surfaces the URL inline so the
+    feedback block isn't orphaned from any context.
+    """
+    base = payload.jd_text or f"JOB URL: {payload.jd_url}\n(JD content not pre-fetched)"
+    must_fix_lines = [
+        f"- ({issue.category}) {issue.summary}" + (f": {issue.detail}" if issue.detail else "")
+        for issue in assessment.must_fix_issues
+    ]
+    feedback_block = "\n".join(
+        [
+            "",
+            "QA FEEDBACK FROM PREVIOUS ATTEMPT — must address:",
+            *must_fix_lines,
+            "",
+            (
+                "When tailoring this cover letter, ground every claim in the "
+                "candidate's actual context. Do NOT attribute features to "
+                "projects that don't have them, and do NOT invent metrics. "
+                "If a JD requirement isn't backed by the candidate's "
+                "experience, address it honestly rather than overstating."
+            ),
+        ],
+    )
+    return _JDPayload(jd_url=payload.jd_url, jd_text=base + feedback_block)
 
 
 async def _poll_until_terminal(
@@ -263,6 +412,7 @@ async def _poll_until_terminal(
     db_path: Path,
     tailor_run_id: int,
     status_field: str,
+    outer_status: TailorRunStatus | None = None,
 ) -> SiblingRunSnapshot:
     """Poll ``poll(run_id)`` until the sibling returns a terminal status.
 
@@ -270,7 +420,22 @@ async def _poll_until_terminal(
     onto the matching column (``resume_status`` or ``letter_status``)
     so the UI sees the progression. Raises :class:`TailorChainError` if
     the poll cap is hit without a terminal state.
+
+    ``outer_status`` overrides the row-level ``status`` value written
+    during each poll. Defaults to deriving from ``status_field``
+    (``RESUME_RUNNING`` / ``LETTER_RUNNING``); the QA-retry path passes
+    ``QA_RETRY_RUNNING`` so the UI keeps distinguishing the retry from
+    the initial letter render.
     """
+    derived_status = (
+        outer_status
+        if outer_status is not None
+        else (
+            TailorRunStatus.RESUME_RUNNING
+            if status_field == "resume_status"
+            else TailorRunStatus.LETTER_RUNNING
+        )
+    )
     for attempt in range(max_polls):
         snapshot = await poll(run_id)
         with connect(db_path) as conn:
@@ -278,11 +443,7 @@ async def _poll_until_terminal(
             update_status(
                 conn,
                 tailor_run_id,
-                status=(
-                    TailorRunStatus.RESUME_RUNNING
-                    if status_field == "resume_status"
-                    else TailorRunStatus.LETTER_RUNNING
-                ),
+                status=derived_status,
                 **kwargs,  # type: ignore[arg-type] # narrow string-keyed dict spread
             )
         if snapshot.status in _TERMINAL_SUCCESS or snapshot.status in _TERMINAL_FAILURE:
