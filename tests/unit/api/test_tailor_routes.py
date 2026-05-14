@@ -600,6 +600,32 @@ async def test_schedule_chain_wires_refresh_closure_with_url(
     assert seen_urls == ["http://resumeai:8765"]
 
 
+def test_letter_client_dep_503_when_attribute_missing() -> None:
+    """The letter-client DI helper guards against a partially-wired
+    lifespan (resume client present, letter client missing). Adding a
+    new resume-client dep in front of the letter PDF route masked the
+    end-to-end exercise of this branch, so cover it directly."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from jobai.api.routes.tailor import get_letter_client  # noqa: PLC0415
+
+    class _StubState:
+        pass  # no letter_client attribute
+
+    class _StubApp:
+        def __init__(self) -> None:
+            self.state = _StubState()
+
+    class _StubRequest:
+        def __init__(self) -> None:
+            self.app = _StubApp()
+
+    request: Any = _StubRequest()
+    with pytest.raises(HTTPException) as exc:
+        get_letter_client(request)
+    assert exc.value.status_code == 503
+
+
 def test_resume_and_letter_client_di_return_lifespan_object() -> None:
     """The DI helpers return whatever the lifespan stashed on app.state.
 
@@ -625,3 +651,313 @@ def test_resume_and_letter_client_di_return_lifespan_object() -> None:
     request: Any = _StubRequest()
     assert get_resume_client(request) is request.app.state.resume_client
     assert get_letter_client(request) is request.app.state.letter_client
+
+
+# -- PDF filename composition ----------------------------------------------
+
+
+def test_pdf_filename_catalogue_path(
+    tailor_app_db: Path,
+    app_with_overrides: tuple[FastAPI, ScriptedResumeClient, ScriptedLetterClient],
+) -> None:
+    """For a catalogue run, the streamed PDF carries a
+    ``<Name>-<JobTitle>-<Company>-<Resume|CoverLetter>.pdf`` filename
+    in Content-Disposition. Title + company come from the ``jobs`` row;
+    name comes from the resumeai sibling's tailored payload."""
+    app, _, _ = app_with_overrides
+
+    def _mk_pdf() -> httpx.Response:
+        return httpx.Response(
+            200, content=b"%PDF x", headers={"content-type": "application/pdf"}
+        )
+
+    scripted_resume = ScriptedResumeClient(stream_response=_mk_pdf())
+    scripted_letter = ScriptedLetterClient(stream_response=_mk_pdf())
+    app.dependency_overrides[get_resume_client] = lambda: scripted_resume
+    app.dependency_overrides[get_letter_client] = lambda: scripted_letter
+
+    with TestClient(app) as test_client:
+        kick = test_client.post("/api/tailor/jobs/1")
+        run_id = kick.json()["tailor_run_id"]
+
+    scripted_resume._stream_response = _mk_pdf()
+    scripted_letter._stream_response = _mk_pdf()
+
+    with TestClient(app) as test_client:
+        resume = test_client.get(f"/api/tailor/runs/{run_id}/resume.pdf")
+        letter = test_client.get(f"/api/tailor/runs/{run_id}/letter.pdf")
+
+    # Seeded job: title='Engineer', company='Acme'.
+    # ScriptedResumeClient default tailored.name = 'Jane Doe'.
+    assert "Jane_Doe-Engineer-Acme-Resume.pdf" in resume.headers["content-disposition"]
+    assert "Jane_Doe-Engineer-Acme-CoverLetter.pdf" in letter.headers["content-disposition"]
+
+
+def test_pdf_filename_url_only_falls_back_to_sibling_requirements(
+    tailor_app_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare-URL run with no catalogue match has no ``jobs`` row to
+    pull title/company from -- they come from the sibling's parsed
+    ``requirements`` instead."""
+    monkeypatch.setenv("JOBAI_DISABLE_SCHEDULER", "1")
+
+    async def _noop_refresh(_url: str) -> tuple[int, int]:
+        return (0, 0)
+
+    monkeypatch.setattr("jobai.scheduler.refresh_project_scans", _noop_refresh)
+
+    def _mk_pdf() -> httpx.Response:
+        return httpx.Response(
+            200, content=b"%PDF x", headers={"content-type": "application/pdf"}
+        )
+
+    scripted_resume = ScriptedResumeClient(
+        stream_response=_mk_pdf(),
+        run_record={
+            "id": "rs_1",
+            "status": "succeeded",
+            "requirements": {"title": "Staff Engineer", "company": "Globex"},
+            "tailored": {"name": "Alex Roe"},
+        },
+    )
+    scripted_letter = ScriptedLetterClient(stream_response=_mk_pdf())
+    application = create_app()
+    application.dependency_overrides[get_db_path] = lambda: tailor_app_db
+    application.dependency_overrides[get_resume_client] = lambda: scripted_resume
+    application.dependency_overrides[get_letter_client] = lambda: scripted_letter
+
+    with TestClient(application) as test_client:
+        kick = test_client.post(
+            "/api/tailor/url",
+            json={"jd_url": "https://example.com/not-in-catalogue"},
+        )
+        run_id = kick.json()["tailor_run_id"]
+
+    scripted_resume._stream_response = _mk_pdf()
+    scripted_letter._stream_response = _mk_pdf()
+
+    with TestClient(application) as test_client:
+        resume = test_client.get(f"/api/tailor/runs/{run_id}/resume.pdf")
+
+    assert "Alex_Roe-Staff_Engineer-Globex-Resume.pdf" in resume.headers["content-disposition"]
+
+
+def test_sanitize_filename_part_strips_path_chars_and_falls_back() -> None:
+    """``_sanitize_filename_part`` drops Windows/macOS-illegal chars,
+    collapses runs of whitespace, ASCII-folds, and returns the
+    fallback when the input sanitises to nothing."""
+    from jobai.api.routes.tailor import _sanitize_filename_part  # noqa: PLC0415
+
+    assert _sanitize_filename_part("My / Job: Title", fallback="Job") == "My Job Title"
+    assert _sanitize_filename_part("   ", fallback="Job") == "Job"
+    assert _sanitize_filename_part(None, fallback="Job") == "Job"
+    assert _sanitize_filename_part("a\x00\x1f\x02b", fallback="Job") == "a b"
+    # ASCII-folding strips non-ASCII glyphs but keeps the meaningful core.
+    assert _sanitize_filename_part("Café Ltd", fallback="Company") == "Caf Ltd"
+    # Trailing dots/spaces are stripped (Windows quirk: trailing
+    # dots in filenames silently become invalid).
+    assert _sanitize_filename_part("Foo...", fallback="Job") == "Foo"
+
+
+async def test_proxy_pdf_omits_content_disposition_when_no_filename() -> None:
+    """``_proxy_pdf`` is also called from places that don't supply a
+    filename (defensive default); skip the Content-Disposition header
+    in that case rather than emitting an empty value."""
+    from jobai.api.routes.tailor import _proxy_pdf  # noqa: PLC0415
+
+    upstream = httpx.Response(
+        200, content=b"%PDF x", headers={"content-type": "application/pdf"}
+    )
+    response = await _proxy_pdf(upstream)
+    assert "content-disposition" not in {k.lower() for k in response.headers}
+
+
+async def test_build_pdf_filename_uses_default_when_job_row_deleted(
+    tailor_app_db: Path,
+) -> None:
+    """If the tailor row points at a job_id that no longer exists
+    (catalogue trimmed, manual delete), the helper falls back to the
+    'Job'/'Company' defaults rather than crashing on a None row."""
+    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+
+    conn = sqlite3.connect(tailor_app_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (job_id, status, resume_run_id, "
+            "                          created_at, updated_at) "
+            "VALUES (4242, 'succeeded', 'rs_x', datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _build_pdf_filename(
+            conn=conn,
+            resume_client=ScriptedResumeClient(
+                run_record={"id": "rs_x", "tailored": {"name": "Sam Doe"}}
+            ),
+            tailor_run_id=new_id,
+            kind="letter",
+        )
+    finally:
+        conn.close()
+
+    assert filename == "Sam_Doe-Job-Company-CoverLetter.pdf"
+
+
+async def test_build_pdf_filename_when_resume_run_id_missing(
+    tailor_app_db: Path,
+) -> None:
+    """A row with no resume_run_id (manually inserted / chain crashed
+    mid-flight) still produces a filename -- title + company come
+    from the jobs row, name falls back to the 'Applicant' default."""
+    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+
+    conn = sqlite3.connect(tailor_app_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (job_id, status, created_at, updated_at) "
+            "VALUES (1, 'pending', datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _build_pdf_filename(
+            conn=conn,
+            resume_client=ScriptedResumeClient(),
+            tailor_run_id=new_id,
+            kind="resume",
+        )
+    finally:
+        conn.close()
+
+    assert filename == "Applicant-Engineer-Acme-Resume.pdf"
+
+
+async def test_build_pdf_filename_handles_weird_sibling_payloads(
+    tailor_app_db: Path,
+) -> None:
+    """The helper type-narrows every sibling field defensively so a
+    sibling returning ``{"tailored": "not-a-dict"}`` or a non-string
+    name/title doesn't break filename construction."""
+    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+
+    class _WeirdResume(ScriptedResumeClient):
+        async def get_run(self, run_id: str) -> dict[str, object]:
+            self.get_run_calls.append(run_id)
+            return {
+                # Wrong type at every layer:
+                "tailored": "not a dict",
+                "requirements": ["also not a dict"],
+            }
+
+    conn = sqlite3.connect(tailor_app_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (status, jd_url, resume_run_id, "
+            "                          created_at, updated_at) "
+            "VALUES ('succeeded', 'https://x.example/jd', 'rs_x', "
+            "        datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _build_pdf_filename(
+            conn=conn,
+            resume_client=_WeirdResume(),
+            tailor_run_id=new_id,
+            kind="resume",
+        )
+    finally:
+        conn.close()
+
+    # All four parts fall back: no job row (URL-only), tailored isn't
+    # a dict (name fallback), requirements isn't a dict (title/company
+    # fallback).
+    assert filename == "Applicant-Job-Company-Resume.pdf"
+
+
+async def test_build_pdf_filename_url_path_with_non_string_fields(
+    tailor_app_db: Path,
+) -> None:
+    """When the bare-URL path runs and the sibling returns a
+    ``requirements`` dict whose ``title``/``company`` aren't strings
+    (numeric ATS code, missing field), the helper keeps the
+    fallbacks rather than coercing surprising types."""
+    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+
+    class _IntFields(ScriptedResumeClient):
+        async def get_run(self, run_id: str) -> dict[str, object]:
+            self.get_run_calls.append(run_id)
+            return {
+                "tailored": {"name": 12345},  # non-string name
+                "requirements": {"title": 42, "company": None},
+            }
+
+    conn = sqlite3.connect(tailor_app_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (status, jd_url, resume_run_id, "
+            "                          created_at, updated_at) "
+            "VALUES ('succeeded', 'https://x.example/jd2', 'rs_y', "
+            "        datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _build_pdf_filename(
+            conn=conn,
+            resume_client=_IntFields(),
+            tailor_run_id=new_id,
+            kind="letter",
+        )
+    finally:
+        conn.close()
+
+    assert filename == "Applicant-Job-Company-CoverLetter.pdf"
+
+
+async def test_build_pdf_filename_swallows_sibling_failure(
+    tailor_app_db: Path,
+) -> None:
+    """If the resumeai sibling 5xx's on ``get_run`` while we're trying
+    to look up the applicant name, the helper returns a filename
+    anyway -- the actual PDF stream is what the user cares about,
+    not a perfect filename."""
+    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+
+    class _BoomResume(ScriptedResumeClient):
+        async def get_run(self, run_id: str) -> dict[str, object]:
+            self.get_run_calls.append(run_id)
+            msg = "sibling unavailable"
+            raise RuntimeError(msg)
+
+    conn = sqlite3.connect(tailor_app_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Insert a tailor_runs row with resume_run_id so the helper
+        # actually tries the sibling call.
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (job_id, status, resume_run_id, "
+            "                          created_at, updated_at) "
+            "VALUES (1, 'succeeded', 'rs_x', datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _build_pdf_filename(
+            conn=conn,
+            resume_client=_BoomResume(),
+            tailor_run_id=new_id,
+            kind="resume",
+        )
+    finally:
+        conn.close()
+
+    # Title + company still come from the seeded jobs row even when
+    # the sibling fails; only the applicant name falls back.
+    assert filename == "Applicant-Engineer-Acme-Resume.pdf"

@@ -15,6 +15,7 @@ just call ``stream_pdf``.
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -377,8 +378,14 @@ async def download_resume_pdf(
 ) -> StreamingResponse:
     """Proxy ``GET /runs/{resume_run_id}/pdf`` on resumeai for this row."""
     resume_run_id = _require_artefact(conn, tailor_run_id, kind="resume")
+    filename = await _build_pdf_filename(
+        conn=conn,
+        resume_client=resume_client,
+        tailor_run_id=tailor_run_id,
+        kind="resume",
+    )
     response = await resume_client.stream_pdf(resume_run_id)
-    return await _proxy_pdf(response)
+    return await _proxy_pdf(response, filename=filename)
 
 
 @router.get(
@@ -387,13 +394,20 @@ async def download_resume_pdf(
 )
 async def download_letter_pdf(
     conn: ConnDep,
+    resume_client: ResumeDep,
     letter_client: LetterDep,
     tailor_run_id: int,
 ) -> StreamingResponse:
     """Proxy ``GET /api/runs/{letter_run_id}/pdf`` on coverletterai for this row."""
     letter_run_id = _require_artefact(conn, tailor_run_id, kind="letter")
+    filename = await _build_pdf_filename(
+        conn=conn,
+        resume_client=resume_client,
+        tailor_run_id=tailor_run_id,
+        kind="letter",
+    )
     response = await letter_client.stream_pdf(letter_run_id)
-    return await _proxy_pdf(response)
+    return await _proxy_pdf(response, filename=filename)
 
 
 # -- Internal helpers -----------------------------------------------------
@@ -414,11 +428,20 @@ def _require_artefact(conn: sqlite3.Connection, tailor_run_id: int, *, kind: str
     return sibling_run_id
 
 
-async def _proxy_pdf(response: httpx.Response) -> StreamingResponse:
+async def _proxy_pdf(
+    response: httpx.Response,
+    *,
+    filename: str | None = None,
+) -> StreamingResponse:
     """Adapt a streaming :class:`httpx.Response` to a FastAPI StreamingResponse.
 
     Surfaces sibling-side 4xx/5xx as 502 so the caller doesn't confuse a
     sibling-missing-file with a missing tailor_run row.
+
+    When ``filename`` is provided, set ``Content-Disposition: inline``
+    so the browser opens the PDF inline but uses the suggested name on
+    "Save as" -- key for batch tailor runs where the user otherwise
+    has to rename ``resume.pdf`` / ``resume (1).pdf`` etc. by hand.
     """
     if response.status_code >= 400:
         status_code = response.status_code
@@ -439,4 +462,104 @@ async def _proxy_pdf(response: httpx.Response) -> StreamingResponse:
             await response.aclose()
 
     media_type = response.headers.get("content-type", "application/pdf")
-    return StreamingResponse(_iter(), media_type=media_type)
+    headers: dict[str, str] = {}
+    if filename:
+        # Content-Disposition needs ASCII; the helper that builds the
+        # filename already strips non-ASCII so a plain ``filename=``
+        # parameter is safe. We deliberately use ``inline`` rather than
+        # ``attachment`` so the browser still previews the PDF -- the
+        # user only needs the right name when they hit "Save as".
+        headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    return StreamingResponse(_iter(), media_type=media_type, headers=headers)
+
+
+_FILENAME_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+_FILENAME_WHITESPACE = re.compile(r"\s+")
+
+
+def _sanitize_filename_part(text: str | None, *, fallback: str) -> str:
+    """Strip path-illegal characters, collapse whitespace, ASCII-fold.
+
+    Returns ``fallback`` when the input is empty / None or sanitises
+    down to nothing -- keeps the final filename non-empty even for
+    bare-URL runs the sibling hasn't tagged with a title yet.
+    """
+    if not text:
+        return fallback
+    # Drop characters illegal on Windows + macOS, then collapse runs
+    # of whitespace to a single space, then ASCII-fold so the
+    # downloaded filename works across browsers and shells.
+    cleaned = _FILENAME_BAD_CHARS.sub(" ", text)
+    cleaned = _FILENAME_WHITESPACE.sub(" ", cleaned).strip(" .")
+    cleaned = cleaned.encode("ascii", "ignore").decode("ascii").strip()
+    return cleaned or fallback
+
+
+async def _build_pdf_filename(
+    *,
+    conn: sqlite3.Connection,
+    resume_client: ResumeaiClient,
+    tailor_run_id: int,
+    kind: str,
+) -> str:
+    """Compose ``<Name>-<JobTitle>-<Company>-<Resume|CoverLetter>.pdf``.
+
+    Identity (applicant name) comes from the sibling's tailored payload
+    -- resumeai owns the identity. Title + company come from the
+    ``jobs`` row for catalogue runs, or from the sibling's parsed
+    requirements for bare-URL runs. Every field has a fallback so a
+    partially-populated row still produces a usable filename.
+
+    ``kind`` is ``"resume"`` or ``"letter"``.
+    """
+    record = get_tailor_run(conn, tailor_run_id)
+    # _require_artefact already validated the row exists when the route
+    # reached us; this is the defensive fallback for direct callers.
+    if record is None:  # pragma: no cover - the route guard runs first
+        suffix = "Resume" if kind == "resume" else "CoverLetter"
+        return f"Applicant-Job-Company-{suffix}.pdf"
+
+    title = "Job"
+    company = "Company"
+    if record.job_id is not None:
+        row = conn.execute(
+            "SELECT title, company FROM jobs WHERE id = ?",
+            (record.job_id,),
+        ).fetchone()
+        if row is not None:
+            title = row[0] or title
+            company = row[1] or company
+
+    # Pull the applicant name (and, for URL-only runs, title+company)
+    # from the sibling's tailored record. Wrapped in a defensive
+    # try/except: a sibling outage here only degrades the filename, it
+    # doesn't break the actual PDF stream the user is waiting on.
+    name = "Applicant"
+    if record.resume_run_id:
+        try:
+            resume_rec = await resume_client.get_run(record.resume_run_id)
+        except Exception:  # noqa: BLE001 - filename is best-effort
+            resume_rec = {}
+        tailored = resume_rec.get("tailored") if isinstance(resume_rec, dict) else None
+        if isinstance(tailored, dict):
+            name_val = tailored.get("name")
+            if isinstance(name_val, str):
+                name = name_val
+        if record.job_id is None:
+            reqs = resume_rec.get("requirements") if isinstance(resume_rec, dict) else None
+            if isinstance(reqs, dict):
+                t = reqs.get("title")
+                c = reqs.get("company")
+                if isinstance(t, str):
+                    title = t
+                if isinstance(c, str):
+                    company = c
+
+    name_s = _sanitize_filename_part(name, fallback="Applicant")
+    title_s = _sanitize_filename_part(title, fallback="Job")
+    company_s = _sanitize_filename_part(company, fallback="Company")
+    suffix = "Resume" if kind == "resume" else "CoverLetter"
+    # Replace spaces inside each part with underscores so the final
+    # filename reads as one hyphen-separated token per field.
+    parts = [p.replace(" ", "_") for p in (name_s, title_s, company_s, suffix)]
+    return "-".join(parts) + ".pdf"
