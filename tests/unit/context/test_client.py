@@ -208,14 +208,45 @@ async def test_upload_file_streams_body_and_form_fields() -> None:
     await client.aclose()
 
 
-async def test_scan_project_posts_form_and_looks_up_by_name() -> None:
+def _project_payload_with_path(
+    file_id: str,
+    *,
+    path: str,
+    name: str = "jobai (project scan)",
+) -> dict[str, object]:
+    return {
+        "id": file_id,
+        "name": name,
+        "kind": "markdown",
+        "extracted_text": f"PROJECT: jobai\nPATH: {path}\n\n## MANIFESTS\n...",
+        "byte_size": 200,
+        "tags": ["source:local_project"],
+        "uploaded_at": "2026-05-14T00:00:00Z",
+        "note": None,
+    }
+
+
+async def test_scan_project_finds_new_entry_by_embedded_path() -> None:
+    """Post-create lookup keys off the PATH header embedded in the
+    fresh row's extracted_text. The name resumeai stores is the
+    input name with '(project scan)' appended, so a name-match
+    would miss; the path is the reliable join."""
     client = HttpxContextClient(base_url="http://resumeai:8765")
     with respx.mock(base_url="http://resumeai:8765") as router:
-        post_route = router.post("/context/project").mock(return_value=httpx.Response(303))
+        post_route = router.post("/context/project").mock(
+            return_value=httpx.Response(303),
+        )
         router.get("/api/context").mock(
             return_value=httpx.Response(
                 200,
-                json={"files": [_file_payload("jobai", "ctx_proj", "summary")]},
+                json={
+                    "files": [
+                        _project_payload_with_path(
+                            "ctx_proj",
+                            path="/Users/jonathan/Documents/personal/jobai",
+                        ),
+                    ],
+                },
             ),
         )
         out = await client.scan_project(
@@ -229,42 +260,61 @@ async def test_scan_project_posts_form_and_looks_up_by_name() -> None:
         )
     assert out.id == "ctx_proj"
     body = post_route.calls[0].request.read().decode("utf-8")
-    assert "path=" in body
     assert "name=jobai" in body
     assert "author_email=jonathan%40example.com" in body
     assert "tags=project%2Cprimary" in body
     await client.aclose()
 
 
-async def test_scan_project_derives_target_name_from_path_when_blank() -> None:
-    """When the user leaves the 'name' field empty, resumeai stores the
-    entry under the path's basename. The client's post-create lookup
-    has to use that same fallback to find the fresh row."""
+async def test_scan_project_skips_unrelated_project_entries_in_listing() -> None:
+    """When the pool holds multiple project entries, the lookup walks
+    past the unrelated ones until it finds the row whose PATH matches
+    the just-scanned path."""
     client = HttpxContextClient(base_url="http://resumeai:8765")
     with respx.mock(base_url="http://resumeai:8765") as router:
         router.post("/context/project").mock(return_value=httpx.Response(303))
         router.get("/api/context").mock(
             return_value=httpx.Response(
                 200,
-                json={"files": [_file_payload("jobai", "ctx_basename")]},
+                json={
+                    "files": [
+                        _project_payload_with_path(
+                            "ctx_other",
+                            path="/Users/jonathan/Documents/personal/algo",
+                            name="algo (project scan)",
+                        ),
+                        _project_payload_with_path(
+                            "ctx_target",
+                            path="/Users/jonathan/Documents/personal/jobai",
+                        ),
+                    ],
+                },
             ),
         )
         out = await client.scan_project(
             ProjectScanCreate(path="/Users/jonathan/Documents/personal/jobai"),
         )
-    assert out.id == "ctx_basename"
+    assert out.id == "ctx_target"
     await client.aclose()
 
 
-async def test_scan_project_strips_trailing_slash_when_deriving_name() -> None:
-    """A trailing slash on the path shouldn't yield an empty basename."""
+async def test_scan_project_tolerates_trailing_slash_in_input_path() -> None:
+    """A trailing slash on the input path must still match a stored
+    PATH header that doesn't have one (or vice versa)."""
     client = HttpxContextClient(base_url="http://resumeai:8765")
     with respx.mock(base_url="http://resumeai:8765") as router:
         router.post("/context/project").mock(return_value=httpx.Response(303))
         router.get("/api/context").mock(
             return_value=httpx.Response(
                 200,
-                json={"files": [_file_payload("jobai", "ctx_trail")]},
+                json={
+                    "files": [
+                        _project_payload_with_path(
+                            "ctx_trail",
+                            path="/Users/jonathan/Documents/personal/jobai",
+                        ),
+                    ],
+                },
             ),
         )
         out = await client.scan_project(

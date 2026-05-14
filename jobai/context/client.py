@@ -218,11 +218,13 @@ class HttpxContextClient:
             f"{self._base_url}/context/project",
             data=form,
         )
-        # resumeai derives the entry name from ``name`` (or the path's
-        # basename when blank); the same lookup pattern as snippet/
-        # upload picks it back out of the freshly-refreshed list.
-        target_name = project.name or project.path.rstrip("/").rsplit("/", 1)[-1]
-        return await self._latest_or_named(response, target_name)
+        # Post-create resumeai's scan endpoint redirects to the HTML
+        # page; the freshly-created row carries our path in its
+        # ``extracted_text`` (as the ``PATH:`` header). That's a more
+        # reliable match key than the name -- resumeai appends
+        # ``(project scan)`` to whatever ``name`` we sent so a
+        # name-based lookup would miss the very row we just made.
+        return await self._latest_with_path(response, project.path)
 
     async def refresh_project(self, file_id: str) -> ContextFile:
         existing = await self.get_file(file_id)
@@ -257,6 +259,40 @@ class HttpxContextClient:
     async def delete_file(self, file_id: str) -> None:
         response = await self._client.delete(f"{self._base_url}/api/context/{file_id}")
         response.raise_for_status()
+
+    async def _latest_with_path(
+        self,
+        create_response: httpx.Response,
+        target_path: str,
+    ) -> ContextFile:
+        """Find the freshly-created project-scan entry by its embedded PATH.
+
+        Project-scan rows store the absolute source path as a
+        ``PATH:`` header in their ``extracted_text``. That's a more
+        reliable match key than the name (resumeai appends
+        ``(project scan)`` to whatever ``name`` we send, so the
+        stored name differs from the input). The list endpoint
+        returns newest-first, so the first row whose path matches
+        ours is the just-created one.
+        """
+        if create_response.status_code >= 400:
+            create_response.raise_for_status()
+        listed = await self.list_files()
+        target = target_path.rstrip("/")
+        for item in listed:
+            embedded = _extract_project_path(item.extracted_text)
+            if embedded and embedded.rstrip("/") == target:
+                return item
+        # pragma: no cover -- resumeai's scan endpoint either returns a
+        # 4xx (raised above) or creates a row we'll find. Reaching this
+        # would mean the row was created and immediately deleted by
+        # another caller mid-list, which the unit-test surface can't
+        # reproduce.
+        msg = (  # pragma: no cover
+            f"resumeai accepted the project scan but no entry with "
+            f"PATH={target!r} appeared in the listing"
+        )
+        raise RuntimeError(msg)  # pragma: no cover
 
     async def _latest_or_named(
         self,
