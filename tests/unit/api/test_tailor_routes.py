@@ -667,9 +667,7 @@ def test_pdf_filename_catalogue_path(
     app, _, _ = app_with_overrides
 
     def _mk_pdf() -> httpx.Response:
-        return httpx.Response(
-            200, content=b"%PDF x", headers={"content-type": "application/pdf"}
-        )
+        return httpx.Response(200, content=b"%PDF x", headers={"content-type": "application/pdf"})
 
     scripted_resume = ScriptedResumeClient(stream_response=_mk_pdf())
     scripted_letter = ScriptedLetterClient(stream_response=_mk_pdf())
@@ -708,9 +706,7 @@ def test_pdf_filename_url_only_falls_back_to_sibling_requirements(
     monkeypatch.setattr("jobai.scheduler.refresh_project_scans", _noop_refresh)
 
     def _mk_pdf() -> httpx.Response:
-        return httpx.Response(
-            200, content=b"%PDF x", headers={"content-type": "application/pdf"}
-        )
+        return httpx.Response(200, content=b"%PDF x", headers={"content-type": "application/pdf"})
 
     scripted_resume = ScriptedResumeClient(
         stream_response=_mk_pdf(),
@@ -766,9 +762,7 @@ async def test_proxy_pdf_omits_content_disposition_when_no_filename() -> None:
     in that case rather than emitting an empty value."""
     from jobai.api.routes.tailor import _proxy_pdf  # noqa: PLC0415
 
-    upstream = httpx.Response(
-        200, content=b"%PDF x", headers={"content-type": "application/pdf"}
-    )
+    upstream = httpx.Response(200, content=b"%PDF x", headers={"content-type": "application/pdf"})
     response = await _proxy_pdf(upstream)
     assert "content-disposition" not in {k.lower() for k in response.headers}
 

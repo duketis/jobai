@@ -85,6 +85,7 @@ async def run_chain(
     max_polls: int = DEFAULT_MAX_POLLS,
     max_qa_attempts: int = DEFAULT_MAX_QA_ATTEMPTS,
     refresh_context_scans: Callable[[], Awaitable[None]] | None = None,
+    fetch_qa_context: Callable[[], Awaitable[str | None]] | None = None,
 ) -> None:
     """Drive one tailor chain to terminal state.
 
@@ -115,6 +116,7 @@ async def run_chain(
             max_polls=max_polls,
             max_qa_attempts=max_qa_attempts,
             refresh_context_scans=refresh_context_scans,
+            fetch_qa_context=fetch_qa_context,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
         _log.exception("tailor_chain_failed", extra={"tailor_run_id": tailor_run_id})
@@ -140,6 +142,7 @@ async def _run_chain_inner(
     max_polls: int,
     max_qa_attempts: int,
     refresh_context_scans: Callable[[], Awaitable[None]] | None,
+    fetch_qa_context: Callable[[], Awaitable[str | None]] | None,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
 
@@ -218,6 +221,22 @@ async def _run_chain_inner(
         msg = f"coverletterai run {letter_run_id} ended in status {letter_snapshot.status!r}"
         raise TailorChainError(msg)
 
+    # ---- QA context summary --------------------------------------------
+    # Pull the verified + project-scan context once per chain so every
+    # QA pass (initial + auto-fix retries) sees the same ground truth.
+    # Failures here are not fatal -- QA without ground truth falls back
+    # to within-artefact consistency checks.
+    qa_context: str | None = None
+    if fetch_qa_context is not None:
+        try:
+            qa_context = await fetch_qa_context()
+        except Exception:  # noqa: BLE001 - never let context-fetch break QA
+            _log.warning(
+                "tailor_qa_context_fetch_failed",
+                extra={"tailor_run_id": tailor_run_id},
+                exc_info=True,
+            )
+
     # ---- QA + auto-fix loop --------------------------------------------
     #
     # First pass grades the initial resume + letter. If the verdict
@@ -246,6 +265,7 @@ async def _run_chain_inner(
                 qa_client=qa_client,
                 qa_model=qa_model,
                 attempts=attempts,
+                qa_context=qa_context,
             )
             # Stop if QA passed, or if we have no must-fix work to drive
             # a retry against (concerns + only nice-to-fix is acceptable),
@@ -254,13 +274,13 @@ async def _run_chain_inner(
                 break
 
             # Re-kick the cover letter with the QA feedback so the LLM
-            # has a concrete list of what to fix. The resume is left
-            # alone -- the resume is constrained to verifiable career
-            # data, while the letter is the freer-form artefact where
-            # hallucinations tend to land. (V2 could also retry the
-            # resume when QA flags coverage gaps the resume should
-            # address; punt that until we see it in the wild.)
-            letter_run_id = await _rekick_letter_with_feedback(
+            # has a concrete list of what to fix. If the retry itself
+            # fails (LLM produces a schema-violating letter, sibling
+            # 5xx, anything), keep the previous letter_run_id and stop
+            # retrying -- the first-pass letter is still a usable
+            # artefact and shouldn't be discarded just because the
+            # auto-fix overstep didn't render cleanly.
+            new_letter_run_id = await _rekick_letter_with_feedback(
                 tailor_run_id=tailor_run_id,
                 db_path=db_path,
                 letter_client=letter_client,
@@ -271,6 +291,16 @@ async def _run_chain_inner(
                 poll_interval_s=poll_interval_s,
                 max_polls=max_polls,
             )
+            if new_letter_run_id is None:
+                _log.warning(
+                    "tailor_qa_retry_letter_failed",
+                    extra={
+                        "tailor_run_id": tailor_run_id,
+                        "previous_letter_run_id": letter_run_id,
+                    },
+                )
+                break
+            letter_run_id = new_letter_run_id
 
     # ---- terminal success ----------------------------------------------
     with connect(db_path) as conn:
@@ -288,6 +318,7 @@ async def _run_qa_stage(
     qa_client: QAClient,
     qa_model: str | None,
     attempts: int,
+    qa_context: str | None = None,
 ) -> QAAssessment:
     """Run one QA pass against the current resume + letter artefacts.
 
@@ -317,6 +348,7 @@ async def _run_qa_stage(
         letter_tailored=letter_tailored if isinstance(letter_tailored, dict) else None,
         client=qa_client,
         model=qa_model,
+        user_context=qa_context,
     )
 
     # Layout check: pull the rendered PDFs and run heuristic checks for
@@ -438,13 +470,22 @@ async def _rekick_letter_with_feedback(
     sleeper: Sleeper,
     poll_interval_s: float,
     max_polls: int,
-) -> str:
+) -> str | None:
     """Re-tailor the cover letter with the QA must-fix list appended.
 
-    Returns the new ``letter_run_id`` so the caller can re-run QA
-    against the corrected artefact. The row transitions through
-    ``qa_retry_running`` (distinct from ``letter_running`` so the UI
-    can show "auto-fix attempt") and back to a polled ``letter_status``.
+    Returns the new ``letter_run_id`` on success, or ``None`` if the
+    retry could not produce a usable artefact (kick exception, sibling
+    returned ``failed``, schema validation error on the LLM output).
+    The row transitions through ``qa_retry_running`` so the UI can
+    show "auto-fix attempt" -- but on failure we keep the previous
+    ``letter_run_id`` and surface that as the chain's terminal
+    artefact rather than discarding the first-pass letter.
+
+    Why non-fatal: the first-pass letter has already rendered
+    successfully. A retry failure means the auto-fix attempt
+    overstepped (e.g. produced a schema-violating 3-paragraph letter
+    when the schema caps at 2), not that the original artefact is
+    bad. The caller logs the retry failure and ships the original.
     """
     feedback_payload = _augment_payload_with_feedback(payload, assessment)
     with connect(db_path) as conn:
@@ -454,9 +495,17 @@ async def _rekick_letter_with_feedback(
             status=TailorRunStatus.QA_RETRY_RUNNING,
         )
 
-    new_letter_run_id = await letter_client.kick(
-        _build_letter_request(feedback_payload, resume_run_id=resume_run_id),
-    )
+    try:
+        new_letter_run_id = await letter_client.kick(
+            _build_letter_request(feedback_payload, resume_run_id=resume_run_id),
+        )
+    except Exception:  # noqa: BLE001 - retry-kick failure is non-fatal
+        _log.warning(
+            "tailor_qa_retry_kick_failed",
+            extra={"tailor_run_id": tailor_run_id},
+            exc_info=True,
+        )
+        return None
     with connect(db_path) as conn:
         update_status(
             conn,
@@ -465,23 +514,32 @@ async def _rekick_letter_with_feedback(
             letter_run_id=new_letter_run_id,
         )
 
-    snapshot = await _poll_until_terminal(
-        kind="letter",
-        run_id=new_letter_run_id,
-        poll=letter_client.poll,
-        sleeper=sleeper,
-        poll_interval_s=poll_interval_s,
-        max_polls=max_polls,
-        db_path=db_path,
-        tailor_run_id=tailor_run_id,
-        status_field="letter_status",
-        outer_status=TailorRunStatus.QA_RETRY_RUNNING,
-    )
+    try:
+        snapshot = await _poll_until_terminal(
+            kind="letter",
+            run_id=new_letter_run_id,
+            poll=letter_client.poll,
+            sleeper=sleeper,
+            poll_interval_s=poll_interval_s,
+            max_polls=max_polls,
+            db_path=db_path,
+            tailor_run_id=tailor_run_id,
+            status_field="letter_status",
+            outer_status=TailorRunStatus.QA_RETRY_RUNNING,
+        )
+    except TailorChainError:
+        # Poll cap hit during retry -- not fatal; keep first-pass letter.
+        _log.warning(
+            "tailor_qa_retry_poll_cap_hit",
+            extra={
+                "tailor_run_id": tailor_run_id,
+                "retry_letter_run_id": new_letter_run_id,
+            },
+            exc_info=True,
+        )
+        return None
     if snapshot.status not in _TERMINAL_SUCCESS:
-        # Retry letter failed -- raise so the row falls into 'failed'
-        # rather than running another QA pass over a stale artefact.
-        msg = f"coverletterai retry {new_letter_run_id} ended in status {snapshot.status!r}"
-        raise TailorChainError(msg)
+        return None
     return new_letter_run_id
 
 

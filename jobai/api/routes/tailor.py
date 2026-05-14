@@ -130,12 +130,16 @@ def _schedule_chain(
 ) -> None:
     """Submit a chain coroutine to the pool with all collaborators bound."""
     from jobai.scheduler import refresh_project_scans  # noqa: PLC0415
+    from jobai.tailor.qa import fetch_qa_context_summary  # noqa: PLC0415
 
     async def _refresh() -> None:
         # Discard the (refreshed, failed) counts -- the orchestrator
         # doesn't need them; the helper already logs at INFO. We just
         # need the side-effect of re-scanning every project entry.
         await refresh_project_scans(resumeai_url)
+
+    async def _fetch_qa_context() -> str | None:
+        return await fetch_qa_context_summary(resumeai_url)
 
     async def _factory() -> None:
         await run_chain(
@@ -146,6 +150,7 @@ def _schedule_chain(
             sleeper=asyncio.sleep,
             qa_client=qa_client,
             refresh_context_scans=_refresh,
+            fetch_qa_context=_fetch_qa_context,
         )
 
     pool.submit(_factory)

@@ -444,6 +444,308 @@ def test_build_qa_client_returns_none_when_neither_credential_present() -> None:
     assert build_qa_client(cfg) is None
 
 
+# ---------------------------------------------------------------------------
+# User-context summary in the QA prompt
+# ---------------------------------------------------------------------------
+
+
+def test_build_user_prompt_includes_user_context_section_when_provided() -> None:
+    """The verified-facts block shows up under its own header so the
+    QA system prompt can address it explicitly. Resume + letter
+    sections still follow."""
+    prompt = build_user_prompt(
+        jd={"title": "Engineer"},
+        resume_tailored={"name": "Jane"},
+        letter_tailored={"opening": "Dear team"},
+        user_context="## VERIFIED jobai project stats\n- 1126 tests at 100% coverage",
+    )
+    assert "# USER CONTEXT (VERIFIED)" in prompt
+    assert "1126 tests at 100% coverage" in prompt
+    # The verified block comes BEFORE the JD so the model anchors on
+    # ground truth before reading the artefacts.
+    assert prompt.index("# USER CONTEXT (VERIFIED)") < prompt.index("# JOB DESCRIPTION")
+
+
+def test_build_user_prompt_omits_user_context_section_when_none() -> None:
+    """Without verified context the prompt skips the header entirely
+    -- the system-prompt rule explicitly says 'don't flag stats when
+    no USER CONTEXT block is present', so a missing header is the
+    signal."""
+    prompt = build_user_prompt(
+        jd={"title": "Engineer"},
+        resume_tailored={"name": "Jane"},
+        letter_tailored={"opening": "Dear team"},
+        user_context=None,
+    )
+    assert "USER CONTEXT" not in prompt
+
+
+async def test_assess_forwards_user_context_through_to_prompt() -> None:
+    """The assess() round-trip places the user_context arg into the
+    composed user prompt so the QA model gets it."""
+    client = _ScriptedQAClient(_good_assessment_json())
+    await assess(
+        jd={"title": "Engineer"},
+        resume_tailored={"name": "Jane"},
+        letter_tailored={"opening": "Dear team"},
+        client=client,
+        user_context="VERIFIED: 1126 tests / 100% coverage",
+    )
+    assert len(client.calls) == 1
+    user_prompt = client.calls[0]["user"]
+    assert isinstance(user_prompt, str)
+    assert "USER CONTEXT" in user_prompt
+    assert "1126 tests / 100% coverage" in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# fetch_qa_context_summary
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_qa_context_summary_concatenates_verified_and_project_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helper picks entries tagged ``verified`` OR
+    ``source:local_project``, drops everything else, and assembles
+    them under per-entry headers so QA can attribute each fact."""
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    verified = ContextFile(
+        id="ctx_v",
+        name="VERIFIED jobai stats",
+        kind="text",
+        extracted_text="1126 tests at 100% coverage",
+        byte_size=27,
+        tags=["verified", "pin"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+    project = ContextFile(
+        id="ctx_p",
+        name="jobai (project scan)",
+        kind="markdown",
+        extracted_text="PATH: /repo\nREADME: ...",
+        byte_size=24,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+    snippet = ContextFile(
+        id="ctx_s",
+        name="random note",
+        kind="text",
+        extracted_text="some unrelated note",
+        byte_size=20,
+        tags=[],  # neither verified nor source:local_project -- excluded
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    class _FakeClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [verified, project, snippet]
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeClient)
+    summary = await qa.fetch_qa_context_summary("http://resumeai:8765")
+    assert summary is not None
+    assert "VERIFIED jobai stats" in summary
+    assert "jobai (project scan)" in summary
+    assert "1126 tests at 100% coverage" in summary
+    assert "random note" not in summary  # untagged entries excluded
+
+
+async def test_fetch_qa_context_summary_returns_none_when_no_relevant_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty pool (or one with no verified / project entries)
+    returns None so QA falls back to within-artefact checks."""
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    unrelated = ContextFile(
+        id="ctx_x",
+        name="just a note",
+        kind="text",
+        extracted_text="hi",
+        byte_size=2,
+        tags=[],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    class _FakeClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [unrelated]
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeClient)
+    assert await qa.fetch_qa_context_summary("http://resumeai:8765") is None
+
+
+async def test_fetch_qa_context_summary_returns_none_when_pool_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A network failure on list_files yields None rather than
+    propagating -- QA degrades to no-ground-truth mode."""
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    class _BoomClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[object]:
+            msg = "resumeai unreachable"
+            raise RuntimeError(msg)
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _BoomClient)
+    assert await qa.fetch_qa_context_summary("http://resumeai:8765") is None
+
+
+async def test_fetch_qa_context_summary_truncates_per_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single huge entry is truncated to the per-entry cap so the
+    QA prompt stays within token budget even when project scans run
+    into the hundreds of KB."""
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    big_body = "x" * 50_000  # >> per-entry cap
+    entry = ContextFile(
+        id="ctx_big",
+        name="huge project",
+        kind="markdown",
+        extracted_text=big_body,
+        byte_size=len(big_body),
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    class _FakeClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [entry]
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeClient)
+    summary = await qa.fetch_qa_context_summary("http://resumeai:8765")
+    assert summary is not None
+    # Per-entry cap is 6000 chars; the assembled body must be much
+    # smaller than the raw 50k input.
+    assert len(summary) < 8_000
+
+
+async def test_fetch_qa_context_summary_returns_none_when_first_entry_exceeds_total_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the very first relevant entry's block exceeds the total
+    cap (degenerate config: total < per-entry + headers), the helper
+    returns None rather than emitting an empty summary string."""
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    entry = ContextFile(
+        id="ctx_only",
+        name="only entry",
+        kind="text",
+        extracted_text="x" * 5_000,
+        byte_size=5_000,
+        tags=["verified"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    class _FakeClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [entry]
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeClient)
+    # Squash the total cap below the per-entry size so the loop's
+    # budget check fires before the first block can be appended.
+    monkeypatch.setattr(qa, "_TOTAL_CHAR_CAP", 50)
+    assert await qa.fetch_qa_context_summary("http://resumeai:8765") is None
+
+
+async def test_fetch_qa_context_summary_respects_total_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many medium-sized entries stop accumulating once the total
+    cap is hit -- later entries are dropped rather than overflowing
+    the prompt budget."""
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+    from jobai.tailor import qa  # noqa: PLC0415
+
+    entries = [
+        ContextFile(
+            id=f"ctx_{i}",
+            name=f"entry {i}",
+            kind="markdown",
+            extracted_text="y" * 5_500,  # under per-entry cap
+            byte_size=5_500,
+            tags=["source:local_project"],
+            uploaded_at="2026-05-14T00:00:00Z",
+            note=None,
+        )
+        for i in range(50)  # 50 * 5500 ~= 275k chars -- well over total cap
+    ]
+
+    class _FakeClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return entries
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeClient)
+    summary = await qa.fetch_qa_context_summary("http://resumeai:8765")
+    assert summary is not None
+    # Total cap is 60k; the assembled body must be roughly that size,
+    # not the raw 275k input.
+    assert len(summary) <= 65_000
+
+
 @pytest.fixture(autouse=True)
 def _no_anyio_backend() -> None:
     """Pytest-asyncio is already in ``auto`` mode in this repo."""

@@ -23,6 +23,7 @@ v1.
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jobai.tailor.models import QAAssessment, QAIssue, QAStatus
@@ -31,6 +32,20 @@ if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
 
     from jobai.api.runtime_settings import EffectiveAgentConfig
+
+_log = logging.getLogger(__name__)
+
+#: Cap on how many characters of any one context entry we feed into
+#: the QA prompt. Project-scan markdown can be hundreds of KB; the
+#: head (README + commit log) is what carries verifiable claims, and
+#: keeping per-entry size bounded keeps the user prompt within token
+#: budget even with many entries.
+_PER_ENTRY_CHAR_CAP: int = 6_000
+
+#: Cap on the assembled QA-context string total. Anthropic models
+#: handle 100KB-class user prompts without issue; this is a safety
+#: belt against pathologically large pools.
+_TOTAL_CHAR_CAP: int = 60_000
 
 _SYSTEM_PROMPT = """\
 You are the final quality gate for a tailored job application: a
@@ -59,27 +74,33 @@ What you assess:
    Any contradiction is 'must_fix' consistency. Same-but-tonally-
    off is 'nice_to_fix'.
 
-   FABRICATED OPEN-SOURCE STATS — flag as 'must_fix' consistency:
-   The candidate's own open-source / portfolio repos (jobai, any
-   GitHub-hosted personal project) have ground-truth numbers that
-   live in the user-context pool the siblings pull from at tailor
-   time. The LLM that produced these artefacts has been known to
-   substitute plausible-looking but stale or invented stats for
-   real ones. If a resume bullet or letter sentence makes a SPECIFIC
-   numeric claim about the candidate's own portfolio repo --
-   - a test count ("705+ tests", "with 240 tests"),
-   - a coverage percentage ("89% test coverage", ">89% coverage"),
-   - a commit count, star count, LOC figure, or test-runtime number
-     about a candidate-controlled repo --
-   and there is NO source in the JD or in the structured artefacts
-   you've been shown to substantiate that exact number, treat it as
-   a 'must_fix' consistency issue. Phrase the summary so the auto-
-   fix prompt knows to either delete the unsupported claim or
-   replace it with a more general phrasing ("comprehensive test
-   suite", "high coverage discipline") that doesn't pin a number.
-   This applies to the candidate's OWN projects only -- claims about
-   prior client engagements (DiUS / InTruth / etc.) follow the
-   normal consistency rules above.
+   FABRICATED OPEN-SOURCE STATS:
+   The candidate's own open-source / portfolio repos have ground-
+   truth numbers that live in the ``# USER CONTEXT (VERIFIED)``
+   section of this prompt when one is provided. The LLM that
+   produced these artefacts has been known to substitute plausible-
+   looking but stale or invented stats for real ones.
+
+   Decision rule:
+   - If a USER CONTEXT section is provided AND a numeric claim in
+     the resume / letter CONTRADICTS a verified number in it
+     (e.g. resume says "705+ tests at 89% coverage" but USER CONTEXT
+     says "1126 tests at 100% coverage"), that is a 'must_fix'
+     consistency issue. Phrase the summary so the auto-fix prompt
+     can replace the wrong number with the verified one.
+   - If a USER CONTEXT section is provided AND a numeric claim is
+     ABSENT from it (no contradiction, just no source either way),
+     treat that as at most 'nice_to_fix' consistency -- the
+     candidate may have authoritative knowledge the context doesn't
+     surface. Do NOT mark as must_fix.
+   - If NO USER CONTEXT section is provided, you have no ground
+     truth and must NOT flag numeric claims on this basis alone --
+     fall back to the normal consistency rules above
+     (contradictions WITHIN the artefacts are still must_fix).
+
+   This rule covers the candidate's OWN projects (anything in their
+   USER CONTEXT). Claims about prior client engagements
+   (DiUS / InTruth / etc.) follow the normal consistency rules.
 
 3. FORMAT (0-100): Are the two documents stylistically aligned?
    Same name + contact block, same date format, complementary
@@ -147,14 +168,87 @@ class QAClient(Protocol):
         ...
 
 
+async def fetch_qa_context_summary(resumeai_url: str) -> str | None:
+    """Pull the resumeai context pool and assemble the QA ground-truth
+    summary that gets fed into :func:`assess`.
+
+    Selects every entry tagged ``verified`` (pinned single-source-of-
+    truth snippets the user maintains) plus every entry tagged
+    ``source:local_project`` (auto-refreshed project scans). Each
+    entry is truncated to :data:`_PER_ENTRY_CHAR_CAP`; the assembled
+    string is truncated to :data:`_TOTAL_CHAR_CAP`.
+
+    Returns ``None`` if the pool is unreachable, empty, or contains
+    no QA-relevant entries -- QA then falls back to within-artefact
+    consistency checks only.
+    """
+    from jobai.context.client import HttpxContextClient  # noqa: PLC0415
+
+    client = HttpxContextClient(base_url=resumeai_url)
+    try:
+        try:
+            entries = await client.list_files()
+        except Exception:  # noqa: BLE001 - context pool unreachable
+            _log.warning("qa_context_fetch_failed", exc_info=True)
+            return None
+
+        relevant = [
+            e
+            for e in entries
+            if ("verified" in e.tags or "source:local_project" in e.tags) and e.extracted_text
+        ]
+        if not relevant:
+            return None
+
+        parts: list[str] = []
+        budget = _TOTAL_CHAR_CAP
+        for entry in relevant:
+            assert entry.extracted_text is not None  # noqa: S101 - filtered above
+            body = entry.extracted_text[:_PER_ENTRY_CHAR_CAP]
+            tag_label = " ".join(sorted(entry.tags)) if entry.tags else "(no tags)"
+            block = f"## {entry.name}\n_tags: {tag_label}_\n\n{body}"
+            if len(block) + 2 > budget:
+                break
+            parts.append(block)
+            budget -= len(block) + 2
+        if not parts:
+            return None
+        return "\n\n".join(parts)
+    finally:
+        await client.aclose()
+
+
 def build_user_prompt(
     *,
     jd: dict[str, Any] | None,
     resume_tailored: dict[str, Any] | None,
     letter_tailored: dict[str, Any] | None,
+    user_context: str | None = None,
 ) -> str:
-    """Compose the user-prompt that pairs every input doc for the agent."""
+    """Compose the user-prompt that pairs every input doc for the agent.
+
+    ``user_context``, when supplied, is the concatenated text of the
+    candidate's verified context-pool entries (pinned snippets,
+    project scans). The QA prompt cross-references numeric claims
+    against it so a resume that says "705 tests at 89% coverage"
+    gets flagged when the context confirms the real number is
+    "1126 tests at 100% coverage". Without it, QA has no ground
+    truth to compare against and the FABRICATED OPEN-SOURCE STATS
+    rule does not fire.
+    """
     parts: list[str] = []
+    if user_context:
+        parts.append("# USER CONTEXT (VERIFIED)")
+        parts.append(
+            "The following are verified facts about the candidate's projects "
+            "and experience -- the resumeai / coverletterai siblings consumed "
+            "the same context when producing the artefacts. Treat each entry "
+            "as ground truth and use it to validate numeric / factual claims "
+            "in the resume and letter.",
+        )
+        parts.append("")
+        parts.append(user_context.strip())
+        parts.append("")
     parts.append("# JOB DESCRIPTION")
     parts.append(json.dumps(jd, indent=2, default=str) if jd else "(not available)")
     parts.append("")
@@ -184,8 +278,14 @@ async def assess(
     letter_tailored: dict[str, Any] | None,
     client: QAClient,
     model: str | None = None,
+    user_context: str | None = None,
 ) -> QAAssessment:
     """Run the QA pass and return a parsed :class:`QAAssessment`.
+
+    ``user_context`` is forwarded into the user prompt. When set,
+    QA has ground truth to validate numeric / factual claims
+    against; when ``None``, QA falls back to within-artefact
+    consistency checks only (no fabricated-stats rule).
 
     Validation failure (malformed JSON, missing fields) is surfaced
     as a ``fail`` assessment so the orchestrator doesn't break the
@@ -195,7 +295,10 @@ async def assess(
     raw = await client.complete(
         system=_SYSTEM_PROMPT,
         user=build_user_prompt(
-            jd=jd, resume_tailored=resume_tailored, letter_tailored=letter_tailored
+            jd=jd,
+            resume_tailored=resume_tailored,
+            letter_tailored=letter_tailored,
+            user_context=user_context,
         ),
         model=model,
     )

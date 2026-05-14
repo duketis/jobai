@@ -811,14 +811,22 @@ async def test_qa_concerns_with_only_nice_to_fix_does_not_retry(
     assert len(scripted_letter_client.kick_requests) == 1
 
 
-async def test_qa_retry_letter_failure_marks_row_failed(
+async def test_qa_retry_letter_failure_keeps_first_pass_letter(
     tailor_db_path: Path,
     scripted_resume_client: ScriptedResumeClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
     """If the retry-kicked letter fails (sibling returned ``failed``),
-    the chain falls into the ``failed`` row state rather than running
-    another QA pass over a stale artefact."""
+    the chain must NOT mark the row failed. The first-pass letter
+    rendered successfully and is the right artefact to ship -- the
+    retry overstep (LLM producing a schema-violating letter) is a
+    quality-improvement attempt that didn't pan out, not a reason to
+    throw away the usable original.
+
+    See `_private/mistake_log.md` (2026-05-14, fabricated-stats
+    cascade) for why this matters: a false-positive must-fix from QA
+    can poison the retry, and falling-over on retry failure means a
+    minor QA misjudgement turns into a fully failed run."""
     _, sleeper = recording_sleeper
     # Letter succeeds on first kick, fails on second.
     letter_client = ScriptedLetterClient(
@@ -840,9 +848,11 @@ async def test_qa_retry_letter_failure_marks_row_failed(
     with connect(tailor_db_path) as conn:
         final = get_tailor_run(conn, record.id)
     assert final is not None
-    assert final.status is TailorRunStatus.FAILED
-    assert final.error is not None
-    assert "retry" in final.error
+    # Chain still succeeds; the row carries the FIRST-pass letter id.
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.letter_run_id == "ls_1"
+    # Two kicks went out (first pass + retry) but only one returned ok.
+    assert len(letter_client.kick_requests) == 2
 
 
 def test_augment_payload_with_feedback_appends_must_fix_to_jd_text() -> None:
@@ -1258,3 +1268,172 @@ async def test_refresh_context_hook_omitted_skips_cleanly(
         final = get_tailor_run(conn, record.id)
     assert final is not None
     assert final.status is TailorRunStatus.SUCCEEDED
+
+
+# ---------------------------------------------------------------------------
+# QA-context fetch hook + retry-failure resilience
+# ---------------------------------------------------------------------------
+
+
+async def test_run_chain_forwards_qa_context_into_assess_call(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """The fetch_qa_context closure result must flow into the QA
+    client's user prompt so the model has ground truth to validate
+    numeric claims against."""
+    _, sleeper = recording_sleeper
+
+    async def _fetch() -> str | None:
+        return "## VERIFIED jobai stats\n- 1126 tests, 100% coverage"
+
+    qa = _SequencedQAClient([_good_qa_json()])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        fetch_qa_context=_fetch,
+    )
+
+    assert len(qa.calls) == 1
+    user_prompt = qa.calls[0]["user"]
+    assert isinstance(user_prompt, str)
+    assert "USER CONTEXT" in user_prompt
+    assert "1126 tests, 100% coverage" in user_prompt
+
+
+async def test_run_chain_qa_context_fetch_failure_is_non_fatal(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If the context-fetch closure raises (resumeai down, network
+    glitch), QA still runs against the artefacts alone -- it just
+    doesn't get the ground-truth block. Chain must still succeed."""
+    _, sleeper = recording_sleeper
+
+    async def _boom() -> str | None:
+        msg = "context pool unreachable"
+        raise RuntimeError(msg)
+
+    qa = _SequencedQAClient([_good_qa_json()])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        fetch_qa_context=_boom,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # QA still ran -- with no USER CONTEXT block in the prompt.
+    assert len(qa.calls) == 1
+    user_prompt = qa.calls[0]["user"]
+    assert isinstance(user_prompt, str)
+    assert "USER CONTEXT" not in user_prompt
+
+
+async def test_run_chain_qa_retry_letter_kick_exception_keeps_first_pass(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If letter_client.kick() raises during the retry (sibling 5xx,
+    network blip), the chain falls back to the first-pass letter
+    rather than failing the whole run.
+
+    See `_private/mistake_log.md` (2026-05-14): a false-positive
+    must-fix from QA must not be able to cascade into a chain failure
+    by way of the retry-kick crashing."""
+    from jobai.tailor.models import CoverletteraiTailorRequest  # noqa: PLC0415
+
+    _, sleeper = recording_sleeper
+
+    # First kick succeeds and the poll returns succeeded; second kick
+    # raises. The orchestrator must catch and fall back.
+    letter_client = ScriptedLetterClient()
+    original_kick = letter_client.kick
+    call_count = {"n": 0}
+
+    async def _kick_then_boom(req: CoverletteraiTailorRequest) -> str:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return await original_kick(req)
+        msg = "coverletterai 503"
+        raise RuntimeError(msg)
+
+    letter_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
+
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # First-pass letter id preserved (the retry kick blew up before
+    # producing a new id).
+    assert final.letter_run_id == "ls_1"
+
+
+async def test_run_chain_qa_retry_poll_cap_keeps_first_pass(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If the retry letter's poll exceeds max_polls (sibling stuck
+    forever), the chain falls back to the first-pass letter rather
+    than marking the row failed."""
+    _, sleeper = recording_sleeper
+
+    # First poll returns 'succeeded'; subsequent polls never resolve
+    # (return 'tailoring' forever). Run with max_polls=1 so the retry
+    # hits the cap on its very first re-poll.
+    letter_client = ScriptedLetterClient(poll_statuses=["succeeded", "tailoring"])
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        max_polls=1,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    # Chain still settles SUCCEEDED with the first-pass letter.
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.letter_run_id == "ls_1"
