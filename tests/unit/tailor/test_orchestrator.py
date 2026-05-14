@@ -11,7 +11,7 @@ from jobai.db.connection import connect
 from jobai.tailor.models import QAAssessment, QAStatus, TailorRunStatus
 from jobai.tailor.orchestrator import (
     TailorChainError,
-    _load_apply_url,
+    _load_jd_payload,
     run_chain,
 )
 from jobai.tailor.repository import create_tailor_run, get_tailor_run
@@ -409,16 +409,204 @@ def test_load_apply_url_raises_when_job_deleted(tailor_db_path: Path) -> None:
         bare.close()
 
     with pytest.raises(TailorChainError, match="no longer exists"):
-        _load_apply_url(tailor_db_path, orphan_id)
+        _load_jd_payload(tailor_db_path, orphan_id)
 
 
-def test_load_apply_url_returns_jd_url_when_present(tailor_db_path: Path) -> None:
+def test_load_jd_payload_returns_jd_url_when_present(tailor_db_path: Path) -> None:
     """One-off URL-tailor rows carry the JD URL on tailor_runs.jd_url;
-    the loader prefers that over the jobs join so the chain works for
-    JDs jobai never scraped."""
+    the loader returns it directly with no jd_text (we have no
+    description on hand for off-network URLs)."""
     from jobai.db.connection import connect  # noqa: PLC0415
     from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
 
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, jd_url="https://example.com/off-network")
-    assert _load_apply_url(tailor_db_path, record.id) == "https://example.com/off-network"
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_url == "https://example.com/off-network"
+    assert payload.jd_text is None
+
+
+def test_load_jd_payload_prefers_description_text_when_present(
+    tailor_db_path: Path,
+) -> None:
+    """Catalogue path with a populated description_text returns it on
+    jd_text so the siblings skip the URL fetch entirely. Without this
+    the chain depends on resumeai's HTTP tier surviving anti-bot 403s
+    on the JD page."""
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_text = ? WHERE id = 1",
+            ("x" * 500,),  # well above the 200-char usefulness floor
+        )
+        bare.commit()
+    finally:
+        bare.close()
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_url == "https://example.com/jd-1"
+    assert payload.jd_text is not None
+    assert len(payload.jd_text) >= 500
+
+
+def test_load_jd_payload_strips_html_when_only_html_is_present(
+    tailor_db_path: Path,
+) -> None:
+    """SmartRecruiters et al populate description_html but leave
+    description_text null. The loader strips the HTML so we still
+    get a text payload without depending on a sibling fetch."""
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_html = ? WHERE id = 1",
+            ("<p>" + ("Senior Backend Engineer with strong Python and AWS. " * 20) + "</p>",),
+        )
+        bare.commit()
+    finally:
+        bare.close()
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_text is not None
+    assert "Senior Backend Engineer" in payload.jd_text
+    # No HTML tags survived.
+    assert "<p>" not in payload.jd_text
+
+
+def test_load_jd_payload_falls_back_to_url_when_text_too_short(
+    tailor_db_path: Path,
+) -> None:
+    """A description blob below the usefulness threshold (placeholder
+    text, 'see full description on the apply page' etc.) is treated
+    as missing -- we fall back to the URL rather than send the model
+    a fragment."""
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_text = ?, description_html = NULL WHERE id = 1",
+            ("see full description",),  # 20 chars, well below 200
+        )
+        bare.commit()
+    finally:
+        bare.close()
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_text is None
+    assert payload.jd_url == "https://example.com/jd-1"
+
+
+def test_load_jd_payload_short_text_with_html_falls_through_to_html(
+    tailor_db_path: Path,
+) -> None:
+    """When description_text is too short to be useful but description_html
+    is populated, the loader strips the HTML rather than falling back
+    to the URL."""
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_text = ?, description_html = ? WHERE id = 1",
+            (
+                "tagline only",  # too short
+                "<p>" + ("Real long description body. " * 20) + "</p>",
+            ),
+        )
+        bare.commit()
+    finally:
+        bare.close()
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_text is not None
+    assert "Real long description body" in payload.jd_text
+
+
+def test_load_jd_payload_returns_none_text_when_html_strips_to_nothing(
+    tailor_db_path: Path,
+) -> None:
+    """description_html that's just tags / whitespace shouldn't produce
+    a 0-char jd_text -- we treat it as missing and fall back to URL."""
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_text = NULL, description_html = ? WHERE id = 1",
+            ("<div>  <span>  </span>  </div>",),
+        )
+        bare.commit()
+    finally:
+        bare.close()
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import create_tailor_run  # noqa: PLC0415
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+    payload = _load_jd_payload(tailor_db_path, record.id)
+    assert payload.jd_text is None
+    assert payload.jd_url == "https://example.com/jd-1"
+
+
+def test_build_resume_request_prefers_jd_text() -> None:
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _build_letter_request,
+        _build_resume_request,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://example.com/x", jd_text="body text")
+    req = _build_resume_request(payload)
+    assert req.jd_text == "body text"
+    assert req.jd_url is None
+
+    letter = _build_letter_request(payload, resume_run_id="rs_1")
+    assert letter.jd_text == "body text"
+    assert letter.jd_url is None
+    assert letter.resume_run_id == "rs_1"
+
+
+def test_strip_html_to_text_returns_none_for_empty_input() -> None:
+    """The helper short-circuits on empty / None input before invoking
+    the parser, so callers that have description_html=None get None
+    back without touching selectolax."""
+    from jobai.tailor.orchestrator import _strip_html_to_text  # noqa: PLC0415
+
+    assert _strip_html_to_text(None) is None
+    assert _strip_html_to_text("") is None
+
+
+def test_strip_html_to_text_returns_none_when_only_tags() -> None:
+    """``<br/><br/>``-style content yields an empty string after stripping;
+    the helper returns None so the loader's 'fall back to URL' branch
+    fires cleanly."""
+    from jobai.tailor.orchestrator import _strip_html_to_text  # noqa: PLC0415
+
+    assert _strip_html_to_text("<br/><br/><hr/>") is None
+
+
+def test_build_resume_request_falls_back_to_jd_url() -> None:
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _build_letter_request,
+        _build_resume_request,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://example.com/x", jd_text=None)
+    req = _build_resume_request(payload)
+    assert req.jd_url == "https://example.com/x"
+    assert req.jd_text is None
+
+    letter = _build_letter_request(payload, resume_run_id="rs_1")
+    assert letter.jd_url == "https://example.com/x"
+    assert letter.jd_text is None

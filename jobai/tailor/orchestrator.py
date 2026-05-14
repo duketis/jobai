@@ -20,7 +20,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
+
+from selectolax.parser import HTMLParser
 
 from jobai.db.connection import connect
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
@@ -122,13 +125,13 @@ async def _run_chain_inner(
     poll_interval_s: float,
     max_polls: int,
 ) -> None:
-    apply_url = _load_apply_url(db_path, tailor_run_id)
+    payload = _load_jd_payload(db_path, tailor_run_id)
 
     # ---- resume ---------------------------------------------------------
     with connect(db_path) as conn:
         update_status(conn, tailor_run_id, status=TailorRunStatus.RESUME_RUNNING)
 
-    resume_run_id = await resume_client.kick(ResumeaiTailorRequest(jd_url=apply_url))
+    resume_run_id = await resume_client.kick(_build_resume_request(payload))
     with connect(db_path) as conn:
         update_status(
             conn,
@@ -157,7 +160,7 @@ async def _run_chain_inner(
         update_status(conn, tailor_run_id, status=TailorRunStatus.LETTER_RUNNING)
 
     letter_run_id = await letter_client.kick(
-        CoverletteraiTailorRequest(jd_url=apply_url, resume_run_id=resume_run_id),
+        _build_letter_request(payload, resume_run_id=resume_run_id),
     )
     with connect(db_path) as conn:
         update_status(
@@ -301,31 +304,97 @@ async def _poll_until_terminal(
     raise TailorChainError(msg)
 
 
-def _load_apply_url(db_path: Path, tailor_run_id: int) -> str:
-    """Resolve the JD URL we send to the siblings.
+@dataclass(frozen=True, slots=True)
+class _JDPayload:
+    """JD data resolved for one tailor run, ready to forward to the siblings.
 
-    Two paths exist:
+    Both fields can be set (catalogue path with a known apply URL plus a
+    description we extracted from raw HTML); when ``jd_text`` is set
+    we PREFER it over the URL because resumeai's URL fetcher gets 403'd
+    by anti-bot on several boards (SmartRecruiters in particular).
+    Falling back to the URL only when we have no text avoids the
+    re-fetch entirely for the 99% case where jobai already scraped
+    the description.
+    """
 
-    * Catalogue path (``tailor_runs.job_id`` set) -- join to
-      ``jobs.apply_url`` like before. Most rows hit this path.
-    * One-off URL path (``tailor_runs.jd_url`` set) -- the row
-      carries the URL directly because the user kicked the chain
-      from a JD jobai never scraped (``POST /api/tailor/url``).
+    jd_url: str
+    jd_text: str | None
+
+
+# Below ~200 chars we don't trust the extracted text -- some sources
+# fill description fields with a tagline or "see full description on
+# the apply page" placeholder. Falling back to the URL is safer than
+# sending the model two-line garbage.
+_MIN_USEFUL_JD_TEXT_LEN = 200
+
+
+def _build_resume_request(payload: _JDPayload) -> ResumeaiTailorRequest:
+    """Construct the resumeai request, preferring ``jd_text`` over ``jd_url``."""
+    if payload.jd_text:
+        return ResumeaiTailorRequest(jd_text=payload.jd_text)
+    return ResumeaiTailorRequest(jd_url=payload.jd_url)
+
+
+def _build_letter_request(
+    payload: _JDPayload,
+    *,
+    resume_run_id: str,
+) -> CoverletteraiTailorRequest:
+    """Construct the coverletterai request, preferring ``jd_text`` over ``jd_url``."""
+    if payload.jd_text:
+        return CoverletteraiTailorRequest(
+            jd_text=payload.jd_text,
+            resume_run_id=resume_run_id,
+        )
+    return CoverletteraiTailorRequest(
+        jd_url=payload.jd_url,
+        resume_run_id=resume_run_id,
+    )
+
+
+def _strip_html_to_text(html: str | None) -> str | None:
+    """Best-effort HTML → plain-text conversion.
+
+    Returns ``None`` if the input is empty or strips to nothing. Joins
+    runs of whitespace into single spaces so the resulting blob looks
+    like flowing text rather than the original HTML's indentation.
+    """
+    if not html:
+        return None
+    tree = HTMLParser(html)
+    text = tree.text(separator="\n", strip=True)
+    if not text:
+        return None
+    return text
+
+
+def _load_jd_payload(db_path: Path, tailor_run_id: int) -> _JDPayload:
+    """Resolve the JD payload (url + optional text) for one tailor run.
+
+    Two row shapes exist:
+
+    * **Catalogue path** (``tailor_runs.job_id`` set) -- look up
+      ``jobs.apply_url`` AND ``jobs.description_text`` /
+      ``jobs.description_html``. When we have a useful description in
+      our own DB we forward it as ``jd_text`` so resumeai skips the
+      URL fetch entirely (this is the path that kept getting 403'd
+      by SmartRecruiters etc).
+    * **One-off URL path** (``tailor_runs.jd_url`` set) -- only the
+      URL is available; the siblings have to fetch.
 
     Surfaces a clean error if the row is missing, the joined job
     has been deleted out from under us, or neither column is
-    populated (the DB-level CHECK should prevent the last case,
-    but we re-check here so the error message is actionable).
+    populated.
     """
     with connect(db_path) as conn:
         record = get_tailor_run(conn, tailor_run_id)
         if record is None:
             msg = f"tailor_run {tailor_run_id} not found"
             raise TailorChainError(msg)
-        # Prefer the URL on the row when present -- it's the
-        # authoritative source for one-off chains and skips a join.
+        # One-off path: the row carries the URL directly and we have
+        # no description on hand. The siblings will have to fetch it.
         if record.jd_url:
-            return record.jd_url
+            return _JDPayload(jd_url=record.jd_url, jd_text=None)
         # pragma: no cover -- the DB-level CHECK on tailor_runs forbids
         # rows with neither field set. The Python guard is here so a
         # future schema-relaxation can't trigger a NULL URL to a
@@ -338,10 +407,19 @@ def _load_apply_url(db_path: Path, tailor_run_id: int) -> str:
             )
             raise TailorChainError(msg)
         row: sqlite3.Row | None = conn.execute(
-            "SELECT apply_url FROM jobs WHERE id = ?",
+            "SELECT apply_url, description_text, description_html FROM jobs WHERE id = ?",
             (record.job_id,),
         ).fetchone()
         if row is None:
             msg = f"job {record.job_id} for tailor_run {tailor_run_id} no longer exists"
             raise TailorChainError(msg)
-        return str(row["apply_url"])
+        apply_url = str(row["apply_url"])
+        # Prefer description_text when it's substantial; otherwise
+        # strip description_html into plain text. Either is forwarded
+        # to the siblings via jd_text so they skip the URL fetch.
+        text = row["description_text"]
+        if not text or len(text) < _MIN_USEFUL_JD_TEXT_LEN:
+            text = _strip_html_to_text(row["description_html"])
+        if text and len(text) < _MIN_USEFUL_JD_TEXT_LEN:
+            text = None
+        return _JDPayload(jd_url=apply_url, jd_text=text)
