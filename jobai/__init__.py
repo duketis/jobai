@@ -11,5 +11,5 @@ than re-exporting through here.
 
 from __future__ import annotations
 
-__version__ = "1.7.1"
+__version__ = "1.8.0"
 __all__ = ["__version__"]

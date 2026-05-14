@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, Plus, RefreshCcw } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Plus, RefreshCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { QABadge } from "@/components/QABadge";
@@ -137,67 +137,157 @@ export function TailorRunsPage() {
 
 function TailorRunRow({ run }: { run: TailorRunRecord }) {
   const succeeded = run.status === "succeeded";
+  const [expanded, setExpanded] = useState(false);
   return (
     <li
       className={cn(
-        "relative rounded-md border border-border bg-card px-3 py-2 text-sm flex flex-wrap items-center gap-3",
+        "rounded-md border border-border bg-card text-sm",
         run.status === "failed" && "border-destructive/40 bg-destructive/5",
       )}
     >
-      <TailorStatusPill run={run} />
-      <QABadge status={run.qa_status} assessment={run.qa_assessment} />
-      <span className="font-mono text-xs text-muted-foreground">#{run.id}</span>
-      <span className="text-muted-foreground">job</span>
-      <a
-        href={`/jobs/${run.job_id}`}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="text-foreground hover:underline inline-flex items-center gap-1"
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-label={`Toggle details for tailor run ${run.id}`}
+        className="w-full text-left px-3 py-2 flex flex-wrap items-center gap-3 hover:bg-muted/30 transition-colors rounded-md"
       >
-        #{run.job_id}
-        <ExternalLink className="size-3" />
-      </a>
-      {run.resume_status && (
-        <span className="text-xs text-muted-foreground" title="resumeai status">
-          R: {run.resume_status}
-        </span>
-      )}
-      {run.letter_status && (
-        <span className="text-xs text-muted-foreground" title="coverletterai status">
-          L: {run.letter_status}
-        </span>
-      )}
-      {run.error && (
-        <span className="text-xs text-destructive truncate max-w-[40%]" title={run.error}>
-          {run.error}
-        </span>
-      )}
-      <div className="ml-auto inline-flex items-center gap-3">
-        {succeeded && (
+        {expanded ? (
+          <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronRight className="size-3.5 text-muted-foreground shrink-0" />
+        )}
+        <TailorStatusPill run={run} />
+        <QABadge status={run.qa_status} assessment={run.qa_assessment} />
+        <span className="font-mono text-xs text-muted-foreground">#{run.id}</span>
+        {run.job_id !== null ? (
           <>
+            <span className="text-muted-foreground">job</span>
             <a
-              href={tailorRunResumePdfUrl(run.id)}
+              href={`/jobs/${run.job_id}`}
               target="_blank"
               rel="noreferrer noopener"
-              className="text-xs text-foreground hover:underline"
+              onClick={(event) => event.stopPropagation()}
+              className="text-foreground hover:underline inline-flex items-center gap-1"
             >
-              Resume.pdf
-            </a>
-            <a
-              href={tailorRunLetterPdfUrl(run.id)}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-xs text-foreground hover:underline"
-            >
-              Letter.pdf
+              #{run.job_id}
+              <ExternalLink className="size-3" />
             </a>
           </>
+        ) : run.jd_url ? (
+          <span
+            className="text-xs text-muted-foreground truncate max-w-[40%]"
+            title={run.jd_url}
+          >
+            URL: {run.jd_url}
+          </span>
+        ) : /* v8 ignore next -- DB CHECK enforces job_id OR jd_url is set */ null}
+        {run.error && (
+          <span className="text-xs text-destructive truncate max-w-[40%]" title={run.error}>
+            {run.error}
+          </span>
         )}
-        <span className="text-xs text-muted-foreground" title={run.created_at}>
-          {formatRelative(run.created_at)}
-        </span>
-      </div>
+        <div className="ml-auto inline-flex items-center gap-3">
+          {succeeded && (
+            <>
+              <a
+                href={tailorRunResumePdfUrl(run.id)}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={(event) => event.stopPropagation()}
+                className="text-xs text-foreground hover:underline"
+              >
+                Resume.pdf
+              </a>
+              <a
+                href={tailorRunLetterPdfUrl(run.id)}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={(event) => event.stopPropagation()}
+                className="text-xs text-foreground hover:underline"
+              >
+                Letter.pdf
+              </a>
+            </>
+          )}
+          <span className="text-xs text-muted-foreground" title={run.created_at}>
+            {formatRelative(run.created_at)}
+          </span>
+        </div>
+      </button>
+      {expanded ? <TailorRunDetail run={run} /> : null}
     </li>
+  );
+}
+
+function TailorRunDetail({ run }: { run: TailorRunRecord }) {
+  return (
+    <div className="px-3 pb-3 pt-1 border-t border-border/60 text-xs space-y-2">
+      {run.error ? (
+        <DetailRow label="Error">
+          <span className="text-destructive whitespace-pre-wrap">{run.error}</span>
+        </DetailRow>
+      ) : null}
+      {run.jd_url ? (
+        <DetailRow label="JD URL">
+          <a
+            href={run.jd_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-foreground hover:underline break-all"
+          >
+            {run.jd_url}
+          </a>
+        </DetailRow>
+      ) : null}
+      <DetailRow label="Resume run">
+        <span className="font-mono">
+          {run.resume_run_id ?? "—"}
+          {run.resume_status ? (
+            <span className="ml-2 text-muted-foreground">({run.resume_status})</span>
+          ) : null}
+        </span>
+      </DetailRow>
+      <DetailRow label="Letter run">
+        <span className="font-mono">
+          {run.letter_run_id ?? "—"}
+          {run.letter_status ? (
+            <span className="ml-2 text-muted-foreground">({run.letter_status})</span>
+          ) : null}
+        </span>
+      </DetailRow>
+      {run.qa_assessment ? (
+        <DetailRow label="QA summary">
+          <span>{run.qa_assessment.summary}</span>
+        </DetailRow>
+      ) : null}
+      <DetailRow label="Created">
+        <span title={run.created_at}>{run.created_at}</span>
+      </DetailRow>
+      <DetailRow label="Updated">
+        <span title={run.updated_at}>{run.updated_at}</span>
+      </DetailRow>
+      {run.finished_at ? (
+        <DetailRow label="Finished">
+          <span title={run.finished_at}>{run.finished_at}</span>
+        </DetailRow>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[100px_1fr] gap-2">
+      <span className="text-muted-foreground">{label}</span>
+      <span>{children}</span>
+    </div>
   );
 }
 

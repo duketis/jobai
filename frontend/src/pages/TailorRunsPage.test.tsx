@@ -152,6 +152,150 @@ describe("TailorRunsPage", () => {
     });
   });
 
+  it("does not toggle the row when the inline job / PDF links are clicked", async () => {
+    // The collapsed-row links (job number, Resume.pdf, Letter.pdf)
+    // call stopPropagation so a deliberate link click doesn't also
+    // expand the row. Verifies that branch of each handler.
+    stubFetch([
+      makeRun({
+        id: 21,
+        job_id: 9,
+        status: "succeeded",
+        resume_run_id: "rs_x",
+        resume_status: "succeeded",
+        letter_run_id: "ls_x",
+        letter_status: "succeeded",
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#21");
+    const jobLink = screen.getByRole("link", { name: /#9/ });
+    const resumePdf = screen.getByRole("link", { name: "Resume.pdf" });
+    const letterPdf = screen.getByRole("link", { name: "Letter.pdf" });
+    await userEvent.click(jobLink);
+    await userEvent.click(resumePdf);
+    await userEvent.click(letterPdf);
+    // None of the clicks expanded the row -- the detail panel stays hidden.
+    expect(screen.queryByText(/Resume run/)).not.toBeInTheDocument();
+  });
+
+  it("expands a row to show the detail panel when clicked", async () => {
+    stubFetch([
+      makeRun({
+        id: 42,
+        job_id: 12,
+        resume_run_id: "rs_abc",
+        resume_status: "succeeded",
+        letter_run_id: "ls_xyz",
+        letter_status: "succeeded",
+      }),
+    ]);
+    renderPage();
+    // The row is rendered.
+    await screen.findByText("#42");
+    // Detail panel hidden by default.
+    expect(screen.queryByText(/Resume run/)).not.toBeInTheDocument();
+    // Click expands the row.
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 42/ }),
+    );
+    expect(screen.getByText(/Resume run/)).toBeInTheDocument();
+    expect(screen.getByText(/rs_abc/)).toBeInTheDocument();
+    expect(screen.getByText(/Letter run/)).toBeInTheDocument();
+    expect(screen.getByText(/ls_xyz/)).toBeInTheDocument();
+    // Click again collapses.
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 42/ }),
+    );
+    expect(screen.queryByText(/Resume run/)).not.toBeInTheDocument();
+  });
+
+  it("shows the JD URL in the detail panel for URL-only runs", async () => {
+    stubFetch([
+      makeRun({
+        id: 50,
+        job_id: null,
+        jd_url: "https://example.com/jd/off-network",
+        status: "failed",
+        error: "FetchError: non-success status 403",
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#50");
+    // URL preview shown in the collapsed row.
+    expect(screen.getByText(/URL: https:\/\/example.com/)).toBeInTheDocument();
+    // Expand for full details.
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 50/ }),
+    );
+    expect(screen.getByText(/JD URL/)).toBeInTheDocument();
+    // Full URL rendered as a link.
+    const link = screen.getByRole("link", {
+      name: "https://example.com/jd/off-network",
+    });
+    expect(link).toHaveAttribute("href", "https://example.com/jd/off-network");
+    // Error is shown in BOTH the collapsed-row preview and the
+    // detail panel below it. Two matches is the expected shape.
+    expect(
+      screen.getAllByText(/FetchError: non-success status 403/),
+    ).toHaveLength(2);
+  });
+
+  it("renders em-dashes for sibling run ids when the chain hasn't kicked them yet", async () => {
+    // Expanded panel for a pending (or freshly-failed-before-kick) run
+    // should render '—' placeholders rather than 'null', and finished_at
+    // section should not render when the chain isn't done.
+    stubFetch([
+      makeRun({
+        id: 70,
+        job_id: 1,
+        status: "pending",
+        resume_run_id: null,
+        resume_status: null,
+        letter_run_id: null,
+        letter_status: null,
+        finished_at: null,
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#70");
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 70/ }),
+    );
+    // Two em-dashes (one for resume, one for letter).
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    // No Finished row.
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+  });
+
+  it("renders the QA summary in the detail panel when present", async () => {
+    stubFetch([
+      makeRun({
+        id: 60,
+        job_id: 7,
+        status: "succeeded",
+        qa_status: "concerns",
+        qa_assessment: {
+          status: "concerns",
+          coverage_score: 70,
+          consistency_score: 80,
+          format_score: 75,
+          must_fix_issues: [],
+          nice_to_fix_issues: [],
+          summary: "Solid but the metrics could be tightened.",
+        },
+      }),
+    ]);
+    renderPage();
+    await screen.findByText("#60");
+    await userEvent.click(
+      screen.getByRole("button", { name: /Toggle details for tailor run 60/ }),
+    );
+    expect(
+      screen.getByText("Solid but the metrics could be tightened."),
+    ).toBeInTheDocument();
+  });
+
   it("opens the Tailor-from-URL dialog from the header button", async () => {
     const { default: userEvent } = await import("@testing-library/user-event");
     renderPage();
