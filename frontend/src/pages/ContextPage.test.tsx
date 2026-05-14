@@ -730,6 +730,57 @@ describe("ContextPage", () => {
     expect(await screen.findByText(/HTTP 502/)).toBeInTheDocument();
   });
 
+  it("refreshes a project entry via the Refresh button", async () => {
+    let refreshCalled = false;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/context") && (init?.method ?? "GET") === "GET") {
+        return new Response(
+          JSON.stringify([
+            makeFile({
+              id: "ctx_proj",
+              name: "jobai",
+              kind: "markdown",
+              tags: ["source:local_project"],
+            }),
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (
+        /\/api\/context\/ctx_proj\/refresh$/.test(url) &&
+        init?.method === "POST"
+      ) {
+        refreshCalled = true;
+        return new Response(
+          JSON.stringify(makeFile({ id: "ctx_proj", name: "jobai" })),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPage();
+    await screen.findByText("jobai");
+    await userEvent.click(screen.getByRole("button", { name: /Refresh jobai/ }));
+    await waitFor(() => expect(refreshCalled).toBe(true));
+  });
+
+  it("does not show a Refresh button for non-project entries", async () => {
+    installFetchRouter([
+      {
+        match: (url, init) =>
+          url.endsWith("/api/context") && (init?.method ?? "GET") === "GET",
+        json: [makeFile({ id: "ctx_snip", name: "Snippet", tags: [] })],
+      },
+    ]);
+    renderPage();
+    await screen.findByText("Snippet");
+    expect(
+      screen.queryByRole("button", { name: /Refresh/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps the row when the confirm prompt is cancelled", async () => {
     installFetchRouter([
       {

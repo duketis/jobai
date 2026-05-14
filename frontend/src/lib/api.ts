@@ -410,6 +410,27 @@ export async function scanContextProject(input: {
   return (await response.json()) as ContextFile;
 }
 
+/**
+ * POST /api/context/{id}/refresh — re-scan a project entry against
+ * its embedded path so the pool reflects current repo state.
+ *
+ * Only valid for project-scan entries (resumeai tags those with
+ * ``source:local_project``). Snippets / file uploads return 400.
+ */
+export async function refreshContextProject(fileId: string): Promise<ContextFile> {
+  const response = await fetch(`${API_BASE}/context/${fileId}/refresh`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `POST /context/${fileId}/refresh → HTTP ${response.status}`,
+      response.status,
+      await response.text(),
+    );
+  }
+  return (await response.json()) as ContextFile;
+}
+
 /** DELETE /api/context/{id} — remove one entry. */
 export async function deleteContextFile(fileId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/context/${fileId}`, { method: "DELETE" });

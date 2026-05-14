@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, FolderGit2, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
+import { FileText, FolderGit2, Loader2, RefreshCcw, Sparkles, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 
 import {
   addContextSnippet,
   deleteContextFile,
   listContextFiles,
+  refreshContextProject,
   scanContextProject,
   uploadContextFile,
 } from "@/lib/api";
@@ -88,6 +89,11 @@ function ContextRow({ file, onDeleted }: ContextRowProps) {
     mutationFn: () => deleteContextFile(file.id),
     onSuccess: onDeleted,
   });
+  const refresh = useMutation({
+    mutationFn: () => refreshContextProject(file.id),
+    onSuccess: onDeleted,
+  });
+  const isProject = file.tags.includes("source:local_project");
 
   const preview =
     file.extracted_text && file.extracted_text.length > 160
@@ -139,6 +145,24 @@ function ContextRow({ file, onDeleted }: ContextRowProps) {
             </span>
           </div>
         </div>
+        {isProject ? (
+          <button
+            type="button"
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded"
+            aria-label={`Refresh ${file.name}`}
+            title="Re-scan this project from its source path so the pool reflects current repo state"
+          >
+            {/* v8 ignore start -- pending-state spinner exercised in the browser */}
+            {refresh.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <RefreshCcw className="size-4" />
+            )}
+            {/* v8 ignore stop */}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => {
