@@ -190,6 +190,13 @@ export interface TailorRunRecord {
   resume_filename: string | null;
   /** Descriptive PDF filename for the tailored cover letter. */
   letter_filename: string | null;
+  /**
+   * ISO 8601 UTC timestamp the user marked this application as
+   * submitted (via PATCH /applied). Null = not applied yet.
+   * Independent of `status` -- a run stays SUCCEEDED whether or not
+   * it was ever submitted.
+   */
+  applied_at: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;

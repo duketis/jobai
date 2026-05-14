@@ -23,6 +23,7 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
     qa_attempts: 0,
     resume_filename: null,
     letter_filename: null,
+    applied_at: null,
     error: null,
     created_at: new Date(Date.now() - 30 * 1000).toISOString(),
     updated_at: new Date().toISOString(),
@@ -359,5 +360,152 @@ describe("TailorRunsPage", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
+  });
+
+  it("renders the applied chip + 'Unmark applied' button when applied_at is set", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/applied") && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: 70, applied_at: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ items: [makeRun({ id: 70, applied_at: "2026-05-14T10:00:00Z" })] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const unmark = await screen.findByRole("button", { name: /Unmark applied/ });
+    expect(unmark).toBeInTheDocument();
+    expect(screen.getByTitle(/Applied at 2026-05-14/)).toBeInTheDocument();
+    // Click Unmark to exercise the !run.applied_at -> false branch of
+    // the mutate(!run.applied_at) callback.
+    await userEvent.click(unmark);
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter((c) => c[1]?.method === "PATCH");
+      expect(calls.length).toBeGreaterThan(0);
+      const body = JSON.parse(String(calls[0][1]?.body));
+      expect(body).toEqual({ applied: false });
+    });
+  });
+
+  it("PATCHes /applied when 'Mark applied' is clicked + disables while pending", async () => {
+    let resolvePatch!: (value: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/applied") && init?.method === "PATCH") {
+        return new Promise<Response>((resolve) => {
+          resolvePatch = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ items: [makeRun({ id: 80 })] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const button = await screen.findByRole("button", { name: /Mark applied/ });
+    await userEvent.click(button);
+    // While the PATCH is in flight the button is disabled (covers the
+    // appliedMutation.isPending branch in the className helper).
+    await waitFor(() => {
+      expect(button).toBeDisabled();
+    });
+    resolvePatch(
+      new Response(JSON.stringify({ id: 80, applied_at: "2026-05-14T10:00:00Z" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(
+        calls.some((u) => u.endsWith("/api/tailor/runs/80/applied")),
+      ).toBe(true);
+    });
+  });
+
+  it("'Copy job context' writes the export URL to the clipboard + resets after 2s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.assign(navigator, {
+        clipboard: { writeText },
+      });
+      stubFetch([makeRun({ id: 90 })]);
+      renderPage();
+      await screen.findByRole("button", { name: /Copy job context/ });
+      await userEvent.click(
+        screen.getByRole("button", { name: /Copy job context/ }),
+      );
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalled();
+      });
+      const calledWith = String(writeText.mock.calls[0][0]);
+      expect(calledWith).toContain("/api/tailor/runs/90/export");
+      // While the success label is showing.
+      await screen.findByRole("button", { name: /Copied/ });
+      // After 2s the label reverts to the original -- covers the
+      // setTimeout callback that resets the copied flag.
+      vi.advanceTimersByTime(2100);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /Copy job context/ }),
+        ).toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to window.prompt when clipboard rejects", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("");
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    });
+    stubFetch([makeRun({ id: 91 })]);
+    renderPage();
+    await screen.findByRole("button", { name: /Copy job context/ });
+    await userEvent.click(
+      screen.getByRole("button", { name: /Copy job context/ }),
+    );
+    await waitFor(() => {
+      expect(promptSpy).toHaveBeenCalled();
+    });
+    promptSpy.mockRestore();
+  });
+
+  it("applied-filter chip group switches the listTailorRuns query", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return new Response(JSON.stringify({ items: url.includes("applied=true") ? [makeRun({ id: 95, applied_at: "2026-05-14T00:00:00Z" })] : [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    await userEvent.click(screen.getByRole("button", { name: /^Applied$/ }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes("applied=true"))).toBe(true);
+    });
+    // Switch to "Not applied"
+    await userEvent.click(
+      screen.getByRole("button", { name: /Not applied/ }),
+    );
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes("applied=false"))).toBe(true);
+    });
+    // Back to Any
+    await userEvent.click(screen.getByRole("button", { name: /^Any$/ }));
   });
 });

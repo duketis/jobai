@@ -1,5 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, ExternalLink, Plus, RefreshCcw } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Plus,
+  RefreshCcw,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { QABadge } from "@/components/QABadge";
@@ -7,6 +15,8 @@ import { TailorFromUrlDialog } from "@/components/TailorFromUrlDialog";
 import { TailorStatusPill } from "@/components/TailorStatusPill";
 import {
   listTailorRuns,
+  setTailorRunApplied,
+  tailorRunExportUrl,
   tailorRunLetterPdfUrl,
   tailorRunResumePdfUrl,
 } from "@/lib/api";
@@ -23,6 +33,14 @@ const STATUS_FILTERS: { label: string; value: TailorRunStatus | "" }[] = [
   { label: "Failed", value: "failed" },
 ];
 
+/** Three-way switch for the applied-state filter chip. */
+type AppliedFilter = "all" | "applied" | "pending";
+const APPLIED_FILTERS: { label: string; value: AppliedFilter }[] = [
+  { label: "Any", value: "all" },
+  { label: "Not applied", value: "pending" },
+  { label: "Applied", value: "applied" },
+];
+
 /**
  * Log view for every tailor chain jobai has spawned. Newest-first.
  * Polls every 4s while any visible row is in-flight; otherwise idle.
@@ -32,14 +50,21 @@ const STATUS_FILTERS: { label: string; value: TailorRunStatus | "" }[] = [
  */
 export function TailorRunsPage() {
   const [status, setStatus] = useState<TailorRunStatus | "">("");
+  const [appliedFilter, setAppliedFilter] = useState<AppliedFilter>("all");
   const [urlDialogOpen, setUrlDialogOpen] = useState(false);
 
   const query = useQuery({
-    queryKey: ["tailor-runs", status],
+    queryKey: ["tailor-runs", status, appliedFilter],
     queryFn: () =>
       listTailorRuns({
         limit: 200,
         status: status || undefined,
+        applied:
+          appliedFilter === "applied"
+            ? true
+            : appliedFilter === "pending"
+              ? false
+              : undefined,
       }),
     refetchInterval: (q) => {
       const items = (q.state.data?.items ?? []) as TailorRunRecord[];
@@ -114,6 +139,27 @@ export function TailorRunsPage() {
         ))}
       </div>
 
+      <div
+        className="flex flex-wrap gap-2"
+        aria-label="Filter by application state"
+      >
+        {APPLIED_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            type="button"
+            onClick={() => setAppliedFilter(f.value)}
+            className={cn(
+              "h-8 px-3 rounded-full text-xs font-medium transition-colors border",
+              appliedFilter === f.value
+                ? "bg-foreground text-background border-foreground"
+                : "bg-background text-foreground border-border hover:border-foreground/40",
+            )}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       {query.isError && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
           Couldn't load tailor runs: {(query.error as Error).message}
@@ -138,6 +184,29 @@ export function TailorRunsPage() {
 function TailorRunRow({ run }: { run: TailorRunRecord }) {
   const succeeded = run.status === "succeeded";
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const queryClient = useQueryClient();
+  const appliedMutation = useMutation({
+    mutationFn: (applied: boolean) => setTailorRunApplied(run.id, applied),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
+    },
+  });
+
+  async function copyJobContextLink(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const url = tailorRunExportUrl(run.id);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard rejected (Safari without HTTPS, permissions). Fall
+      // back to a select-then-prompt so the user can copy manually.
+      window.prompt("Copy this job-context link:", url);
+    }
+  }
+
   return (
     <li
       className={cn(
@@ -188,6 +257,15 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
           </span>
         )}
         <div className="ml-auto inline-flex items-center gap-3">
+          {run.applied_at && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 text-[11px] font-medium"
+              title={`Applied at ${run.applied_at}`}
+            >
+              <Check className="size-3" />
+              Applied
+            </span>
+          )}
           {succeeded && (
             <>
               <a
@@ -212,6 +290,37 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
               >
                 {run.letter_filename ?? "Letter.pdf"}
               </a>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  appliedMutation.mutate(!run.applied_at);
+                }}
+                disabled={appliedMutation.isPending}
+                className={cn(
+                  "h-7 px-2.5 rounded-md text-[11px] font-medium border transition-colors",
+                  run.applied_at
+                    ? "border-border text-muted-foreground hover:border-foreground/40"
+                    : "border-foreground/30 text-foreground hover:bg-foreground hover:text-background",
+                  appliedMutation.isPending && "opacity-50 cursor-not-allowed",
+                )}
+                title={
+                  run.applied_at
+                    ? "Mark this application as not-applied (clears the date)"
+                    : "Mark this application as submitted today"
+                }
+              >
+                {run.applied_at ? "Unmark applied" : "Mark applied"}
+              </button>
+              <button
+                type="button"
+                onClick={copyJobContextLink}
+                className="h-7 px-2.5 rounded-md text-[11px] font-medium border border-border bg-background text-foreground hover:border-foreground/40 inline-flex items-center gap-1"
+                title="Copy a link other tools can paste to load this job's context (JD, resume, letter, QA)"
+              >
+                {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+                {copied ? "Copied" : "Copy job context"}
+              </button>
             </>
           )}
           <span className="text-xs text-muted-foreground" title={run.created_at}>

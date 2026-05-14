@@ -232,6 +232,8 @@ export async function tailorFromUrl(jdUrl: string): Promise<KickByUrlResponse> {
 export interface TailorRunsListParams {
   job_id?: number;
   status?: TailorRunStatus;
+  /** True = only applied, false = only pending apply, undefined = both. */
+  applied?: boolean;
   limit?: number;
 }
 
@@ -262,6 +264,35 @@ export function tailorRunResumePdfUrl(tailorRunId: number): string {
 /** URL the browser can use to download the cover-letter PDF for a tailor run. */
 export function tailorRunLetterPdfUrl(tailorRunId: number): string {
   return `${API_BASE}/tailor/runs/${tailorRunId}/letter.pdf`;
+}
+
+/**
+ * Generic per-run export URL. Returns a JSON bundle of the JD, PDF
+ * URLs, QA verdict, and bookkeeping metadata. The user copies this
+ * URL via the UI's "Copy job context" button and pastes it into any
+ * external tool that consumes a jobai application export.
+ *
+ * Absolute URL (window.location + /api/tailor/runs/.../export) so
+ * the value is portable: pasting it into a tool running outside
+ * this browser tab still works, as long as that tool can reach the
+ * jobai host.
+ */
+export function tailorRunExportUrl(tailorRunId: number): string {
+  if (typeof window !== "undefined" && window.location) {
+    return `${window.location.origin}${API_BASE}/tailor/runs/${tailorRunId}/export`;
+  }
+  return `${API_BASE}/tailor/runs/${tailorRunId}/export`;
+}
+
+/** PATCH the applied flag on a tailor run; returns the fresh record. */
+export async function setTailorRunApplied(
+  tailorRunId: number,
+  applied: boolean,
+): Promise<TailorRunRecord> {
+  return fetchJson<TailorRunRecord>(`/tailor/runs/${tailorRunId}/applied`, {
+    method: "PATCH",
+    body: JSON.stringify({ applied }),
+  });
 }
 
 /**
