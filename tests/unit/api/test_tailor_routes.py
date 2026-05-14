@@ -59,8 +59,23 @@ def app_with_overrides(
     both the request handler and the background chain resolve to the
     same file. The lifespan's clients/pool are also short-circuited to
     in-memory fakes so no real HTTP fires.
+
+    Also stubs the project-scan refresh helper to a no-op coroutine so
+    every kicked chain doesn't try to hit the real resumeai context
+    pool. The refresh path itself is covered by the orchestrator and
+    scheduler tests; route-level coverage only cares that the closure
+    is wired and invoked.
     """
     monkeypatch.setenv("JOBAI_DISABLE_SCHEDULER", "1")
+
+    async def _noop_refresh(_url: str) -> tuple[int, int]:
+        return (0, 0)
+
+    monkeypatch.setattr(
+        "jobai.scheduler.refresh_project_scans",
+        _noop_refresh,
+    )
+
     resume_client = ScriptedResumeClient()
     letter_client = ScriptedLetterClient()
     application = create_app()
@@ -455,6 +470,134 @@ def test_get_qa_client_returns_none_when_no_credentials(
 
     stub_conn: Any = object()
     assert get_qa_client(stub_conn) is None
+
+
+def test_resumeai_url_dep_503_when_state_missing(
+    tailor_app_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the lifespan hasn't initialised ``app.state.resumeai_url``,
+    the kick routes must surface a 503 rather than crash building the
+    refresh closure."""
+    monkeypatch.setenv("JOBAI_DISABLE_SCHEDULER", "1")
+    app = create_app()
+    app.dependency_overrides[get_db_path] = lambda: tailor_app_db
+    test_client = TestClient(app)  # no ``with`` -- lifespan not entered
+    response = test_client.post("/api/tailor/jobs/1")
+    # Several lifespan-owned deps are missing; we accept any 503 from
+    # the DI guards (pool / resume / letter / resumeai_url). The point
+    # is that no 5xx-as-AttributeError leaks out.
+    assert response.status_code == 503
+
+
+def test_get_resumeai_url_returns_lifespan_state() -> None:
+    """Direct DI smoke -- the helper hands back whatever the lifespan
+    stashed on app.state."""
+    from jobai.api.routes.tailor import get_resumeai_url  # noqa: PLC0415
+
+    class _StubState:
+        def __init__(self) -> None:
+            self.resumeai_url = "http://resumeai:8765"
+
+    class _StubApp:
+        def __init__(self) -> None:
+            self.state = _StubState()
+
+    class _StubRequest:
+        def __init__(self) -> None:
+            self.app = _StubApp()
+
+    request: Any = _StubRequest()
+    assert get_resumeai_url(request) == "http://resumeai:8765"
+
+
+def test_get_resumeai_url_raises_503_when_missing() -> None:
+    """If ``app.state.resumeai_url`` was never set (lifespan skipped /
+    misconfigured), the DI helper surfaces a structured 503 rather
+    than letting an AttributeError escape into the route handler."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from jobai.api.routes.tailor import get_resumeai_url  # noqa: PLC0415
+
+    class _StubState:
+        pass  # no resumeai_url attribute
+
+    class _StubApp:
+        def __init__(self) -> None:
+            self.state = _StubState()
+
+    class _StubRequest:
+        def __init__(self) -> None:
+            self.app = _StubApp()
+
+    request: Any = _StubRequest()
+    with pytest.raises(HTTPException) as exc:
+        get_resumeai_url(request)
+    assert exc.value.status_code == 503
+
+
+async def test_schedule_chain_wires_refresh_closure_with_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tailor_app_db: Path,
+) -> None:
+    """The internal ``_schedule_chain`` helper must hand the
+    orchestrator a closure that, when invoked, calls the public
+    ``refresh_project_scans`` helper with the configured URL. This is
+    the seam between the route layer and the scheduler module -- a
+    bug here would mean a wrong URL or no refresh at all."""
+    from jobai.api.routes.tailor import _schedule_chain  # noqa: PLC0415
+    from jobai.tailor.worker import TailorPool  # noqa: PLC0415
+
+    seen_urls: list[str] = []
+
+    async def _spy(url: str) -> tuple[int, int]:
+        seen_urls.append(url)
+        return (1, 0)
+
+    monkeypatch.setattr("jobai.scheduler.refresh_project_scans", _spy)
+
+    # Also stub run_chain so it just calls the refresh closure and
+    # returns; tracing the wiring rather than running the full chain.
+    invoked_with_refresh: list[bool] = []
+
+    async def _fake_run_chain(
+        _run_id: int,
+        **kwargs: Any,
+    ) -> None:
+        refresh = kwargs.get("refresh_context_scans")
+        assert callable(refresh)
+        invoked_with_refresh.append(True)
+        await refresh()
+
+    monkeypatch.setattr("jobai.api.routes.tailor.run_chain", _fake_run_chain)
+
+    pool = TailorPool(max_concurrent=1)
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        new_id = int(
+            conn.execute(
+                "INSERT INTO tailor_runs (job_id, status, created_at, updated_at) "
+                "VALUES (1, 'pending', datetime('now'), datetime('now')) RETURNING id",
+            ).fetchone()[0],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _schedule_chain(
+        pool=pool,
+        tailor_run_id=new_id,
+        db_path=tailor_app_db,
+        resume_client=ScriptedResumeClient(),
+        letter_client=ScriptedLetterClient(),
+        qa_client=None,
+        resumeai_url="http://resumeai:8765",
+    )
+
+    await pool.drain()
+    assert invoked_with_refresh == [True]
+    assert seen_urls == ["http://resumeai:8765"]
 
 
 def test_resume_and_letter_client_di_return_lifespan_object() -> None:

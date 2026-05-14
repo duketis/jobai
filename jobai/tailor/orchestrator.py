@@ -84,6 +84,7 @@ async def run_chain(
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     max_polls: int = DEFAULT_MAX_POLLS,
     max_qa_attempts: int = DEFAULT_MAX_QA_ATTEMPTS,
+    refresh_context_scans: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Drive one tailor chain to terminal state.
 
@@ -113,6 +114,7 @@ async def run_chain(
             poll_interval_s=poll_interval_s,
             max_polls=max_polls,
             max_qa_attempts=max_qa_attempts,
+            refresh_context_scans=refresh_context_scans,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
         _log.exception("tailor_chain_failed", extra={"tailor_run_id": tailor_run_id})
@@ -137,8 +139,26 @@ async def _run_chain_inner(
     poll_interval_s: float,
     max_polls: int,
     max_qa_attempts: int,
+    refresh_context_scans: Callable[[], Awaitable[None]] | None,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
+
+    # ---- context refresh -----------------------------------------------
+    # Re-scan every local-project context entry so the siblings tailor
+    # against the user's CURRENT repo state -- fresh test count, fresh
+    # coverage %, fresh recent-commit list. Without this, a tailored
+    # resume can keep citing yesterday's "705 tests at 89% coverage"
+    # numbers long after the repo has moved on. Failures are swallowed;
+    # the chain proceeds even when the context pool is unreachable.
+    if refresh_context_scans is not None:
+        try:
+            await refresh_context_scans()
+        except Exception:  # noqa: BLE001 - never let context-refresh block tailoring
+            _log.warning(
+                "tailor_context_refresh_failed",
+                extra={"tailor_run_id": tailor_run_id},
+                exc_info=True,
+            )
 
     # ---- resume ---------------------------------------------------------
     with connect(db_path) as conn:

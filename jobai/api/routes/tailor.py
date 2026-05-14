@@ -93,11 +93,25 @@ def get_qa_client(conn: ConnDep) -> QAClient | None:
     return build_qa_client(cfg)
 
 
+def get_resumeai_url(request: Request) -> str:
+    """Return the resumeai base URL the lifespan stashed on ``app.state``.
+
+    Each tailor chain uses this to refresh every project-scan context
+    entry right before resumeai sees the JD, so the LLM's portfolio
+    stats are always live.
+    """
+    url: str | None = getattr(request.app.state, "resumeai_url", None)
+    if url is None:
+        raise HTTPException(status_code=503, detail="resumeai url not initialised")
+    return url
+
+
 PoolDep = Annotated[TailorPool, Depends(get_tailor_pool)]
 ResumeDep = Annotated[ResumeaiClient, Depends(get_resume_client)]
 LetterDep = Annotated[CoverletteraiClient, Depends(get_letter_client)]
 QADep = Annotated["QAClient | None", Depends(get_qa_client)]
 DbPathDep = Annotated[Path, Depends(get_db_path)]
+ResumeaiUrlDep = Annotated[str, Depends(get_resumeai_url)]
 
 
 # -- Helpers --------------------------------------------------------------
@@ -111,8 +125,16 @@ def _schedule_chain(
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
     qa_client: QAClient | None,
+    resumeai_url: str,
 ) -> None:
     """Submit a chain coroutine to the pool with all collaborators bound."""
+    from jobai.scheduler import refresh_project_scans  # noqa: PLC0415
+
+    async def _refresh() -> None:
+        # Discard the (refreshed, failed) counts -- the orchestrator
+        # doesn't need them; the helper already logs at INFO. We just
+        # need the side-effect of re-scanning every project entry.
+        await refresh_project_scans(resumeai_url)
 
     async def _factory() -> None:
         await run_chain(
@@ -122,6 +144,7 @@ def _schedule_chain(
             letter_client=letter_client,
             sleeper=asyncio.sleep,
             qa_client=qa_client,
+            refresh_context_scans=_refresh,
         )
 
     pool.submit(_factory)
@@ -143,6 +166,7 @@ async def kick_one(
     letter_client: LetterDep,
     qa_client: QADep,
     db_path: DbPathDep,
+    resumeai_url: ResumeaiUrlDep,
     job_id: int,
 ) -> KickOneResponse:
     """Create a ``tailor_runs`` row, queue the chain, return the row id."""
@@ -156,6 +180,7 @@ async def kick_one(
         resume_client=resume_client,
         letter_client=letter_client,
         qa_client=qa_client,
+        resumeai_url=resumeai_url,
     )
     # The catalogue-path create_tailor_run always sets job_id; the
     # assert is for mypy's benefit since the typed field is Optional
@@ -181,6 +206,7 @@ async def kick_batch(
     letter_client: LetterDep,
     qa_client: QADep,
     db_path: DbPathDep,
+    resumeai_url: ResumeaiUrlDep,
     body: KickBatchRequest,
 ) -> KickBatchResponse:
     """Create one ``tailor_runs`` row per job in ``body.job_ids``.
@@ -224,6 +250,7 @@ async def kick_batch(
             resume_client=resume_client,
             letter_client=letter_client,
             qa_client=qa_client,
+            resumeai_url=resumeai_url,
         )
         # Batch always uses the catalogue path; narrow for mypy.
         assert record.job_id is not None  # noqa: S101
@@ -250,6 +277,7 @@ async def kick_by_url(
     letter_client: LetterDep,
     qa_client: QADep,
     db_path: DbPathDep,
+    resumeai_url: ResumeaiUrlDep,
     body: KickByUrlRequest,
 ) -> KickByUrlResponse:
     """Kick a tailor chain for a JD URL.
@@ -278,6 +306,7 @@ async def kick_by_url(
             resume_client=resume_client,
             letter_client=letter_client,
             qa_client=qa_client,
+            resumeai_url=resumeai_url,
         )
         return KickByUrlResponse(
             tailor_run_id=record.id,
@@ -295,6 +324,7 @@ async def kick_by_url(
         resume_client=resume_client,
         letter_client=letter_client,
         qa_client=qa_client,
+        resumeai_url=resumeai_url,
     )
     return KickByUrlResponse(
         tailor_run_id=record.id,

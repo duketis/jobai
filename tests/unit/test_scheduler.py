@@ -510,6 +510,60 @@ async def test_run_context_refresh_continues_when_one_entry_fails(
     assert refreshed == ["ctx_b"]
 
 
+async def test_refresh_project_scans_returns_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public helper exposed for the tailor orchestrator must
+    return ``(refreshed, failed)`` so callers can log / surface a
+    summary -- the scheduler tick discards the tuple, but the
+    orchestrator's per-chain refresh uses it."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+
+    ok = ContextFile(
+        id="ctx_ok",
+        name="ok",
+        kind="markdown",
+        extracted_text="PATH: /ok",
+        byte_size=1,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+    boom = ContextFile(
+        id="ctx_boom",
+        name="boom",
+        kind="markdown",
+        extracted_text="PATH: /boom",
+        byte_size=1,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    class _FakeContextClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [ok, boom]
+
+        async def refresh_project(self, file_id: str) -> ContextFile:
+            if file_id == "ctx_boom":
+                msg = "render error"
+                raise RuntimeError(msg)
+            return ok
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeContextClient)
+    refreshed, failed = await scheduler_mod.refresh_project_scans("http://resumeai:8765")
+    assert (refreshed, failed) == (1, 1)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -84,6 +84,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # routes are useful in tests too, and the pool / clients are cheap.
     app.state.resume_client = HttpxResumeaiClient(base_url=settings.resumeai_url)
     app.state.letter_client = HttpxCoverletteraiClient(base_url=settings.coverletterai_url)
+    # Stash the resumeai URL so the tailor routes can build a per-chain
+    # context-refresh closure that re-scans every project entry right
+    # before kicking the resume render -- keeps the LLM's stats fresh
+    # without waiting for the daily scheduler tick.
+    app.state.resumeai_url = settings.resumeai_url
     tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
     app.state.tailor_pool = tailor_pool
     # The context pool lives in resumeai; jobai proxies through so the

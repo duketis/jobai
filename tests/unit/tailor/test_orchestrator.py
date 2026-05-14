@@ -1146,3 +1146,115 @@ def test_augment_payload_with_feedback_inlines_url_when_no_jd_text() -> None:
     assert augmented.jd_text is not None
     assert "https://example.com/jd" in augmented.jd_text
     assert "missing tone match" in augmented.jd_text
+
+
+# ---------------------------------------------------------------------------
+# Pre-tailor context refresh hook
+# ---------------------------------------------------------------------------
+
+
+async def test_refresh_context_hook_fires_before_resume_kick(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """The orchestrator must call the refresh hook BEFORE kicking
+    resumeai so the LLM sees today's project-scan numbers and can't
+    cite stale stats."""
+    _, sleeper = recording_sleeper
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    call_order: list[str] = []
+
+    async def _refresh() -> None:
+        call_order.append("refresh")
+
+    # Wrap the scripted resume client's kick so we can record the
+    # order without mutating the shared fake.
+    from jobai.tailor.models import ResumeaiTailorRequest  # noqa: PLC0415
+
+    original_kick = scripted_resume_client.kick
+
+    async def _kick_recording(req: ResumeaiTailorRequest) -> str:
+        call_order.append("resume_kick")
+        return await original_kick(req)
+
+    scripted_resume_client.kick = _kick_recording  # type: ignore[assignment,method-assign]
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        refresh_context_scans=_refresh,
+    )
+
+    assert call_order == ["refresh", "resume_kick"]
+
+
+async def test_refresh_context_hook_failure_does_not_block_chain(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If the refresh helper raises (resumeai unreachable, network blip),
+    the chain must still complete -- a context-pool hiccup must never
+    block the user's tailor."""
+    _, sleeper = recording_sleeper
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    async def _refresh() -> None:
+        msg = "resumeai unreachable"
+        raise RuntimeError(msg)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        refresh_context_scans=_refresh,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # Resume and letter still kicked and finished -- the refresh failure
+    # didn't poison the rest of the chain.
+    assert scripted_resume_client.kick_requests
+    assert scripted_letter_client.kick_requests
+
+
+async def test_refresh_context_hook_omitted_skips_cleanly(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """Tests and host-mode dev pass ``refresh_context_scans=None``; the
+    orchestrator must skip the hook silently and proceed straight to
+    resume kick. (Default value should match this behaviour.)"""
+    _, sleeper = recording_sleeper
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        # refresh_context_scans deliberately omitted -- exercises the
+        # default-None path.
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED

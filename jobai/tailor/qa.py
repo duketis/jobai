@@ -59,6 +59,28 @@ What you assess:
    Any contradiction is 'must_fix' consistency. Same-but-tonally-
    off is 'nice_to_fix'.
 
+   FABRICATED OPEN-SOURCE STATS — flag as 'must_fix' consistency:
+   The candidate's own open-source / portfolio repos (jobai, any
+   GitHub-hosted personal project) have ground-truth numbers that
+   live in the user-context pool the siblings pull from at tailor
+   time. The LLM that produced these artefacts has been known to
+   substitute plausible-looking but stale or invented stats for
+   real ones. If a resume bullet or letter sentence makes a SPECIFIC
+   numeric claim about the candidate's own portfolio repo --
+   - a test count ("705+ tests", "with 240 tests"),
+   - a coverage percentage ("89% test coverage", ">89% coverage"),
+   - a commit count, star count, LOC figure, or test-runtime number
+     about a candidate-controlled repo --
+   and there is NO source in the JD or in the structured artefacts
+   you've been shown to substantiate that exact number, treat it as
+   a 'must_fix' consistency issue. Phrase the summary so the auto-
+   fix prompt knows to either delete the unsupported claim or
+   replace it with a more general phrasing ("comprehensive test
+   suite", "high coverage discipline") that doesn't pin a number.
+   This applies to the candidate's OWN projects only -- claims about
+   prior client engagements (DiUS / InTruth / etc.) follow the
+   normal consistency rules above.
+
 3. FORMAT (0-100): Are the two documents stylistically aligned?
    Same name + contact block, same date format, complementary
    header treatment. The PDFs are LaTeX-rendered so we don't

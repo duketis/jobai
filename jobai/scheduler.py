@@ -284,6 +284,22 @@ def register_context_refresh(
 
 async def _run_context_refresh(resumeai_url: str) -> None:
     """Refresh-every-project body, called by the scheduled job each tick."""
+    await refresh_project_scans(resumeai_url)
+
+
+async def refresh_project_scans(resumeai_url: str) -> tuple[int, int]:
+    """Re-scan every project-tagged context entry against its source path.
+
+    Walks the resumeai context pool, picks every entry tagged
+    ``source:local_project``, and re-runs the scan so the pool reflects
+    the project's CURRENT state -- fresh test count, fresh coverage,
+    fresh recent-commit list. Used by the daily scheduler tick AND by
+    the tailor orchestrator at the start of every chain so a tailor
+    never cites yesterday's stats.
+
+    Returns ``(refreshed, failed)``. Per-entry failures are logged and
+    swallowed -- one broken project shouldn't block the rest.
+    """
     from jobai.context.client import HttpxContextClient  # noqa: PLC0415
 
     client = HttpxContextClient(base_url=resumeai_url)
@@ -310,6 +326,7 @@ async def _run_context_refresh(resumeai_url: str) -> None:
         )
     finally:
         await client.aclose()
+    return refreshed, failed
 
 
 def _default_job_factory(
