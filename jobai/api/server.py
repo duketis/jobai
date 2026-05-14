@@ -89,6 +89,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # before kicking the resume render -- keeps the LLM's stats fresh
     # without waiting for the daily scheduler tick.
     app.state.resumeai_url = settings.resumeai_url
+    # Output directory for the on-disk snapshot every successful
+    # tailor run drops (resume PDF, letter PDF, JD markdown, QA
+    # verdict, application checklist, metadata). Anyone cloning the
+    # repo can override via ``JOBAI_TAILOR_OUTPUT_DIR`` so the folders
+    # land somewhere the host's file manager can reach.
+    app.state.tailor_output_dir = Path(settings.tailor_output_dir)
     tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
     app.state.tailor_pool = tailor_pool
     # The context pool lives in resumeai; jobai proxies through so the

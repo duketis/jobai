@@ -55,6 +55,18 @@ def test_allow_list_is_what_the_ui_expects() -> None:
         "anthropic_api_key",
         "claude_code_oauth_token",
         "anthropic_model",
+        # Apply-profile fields v1.17.0+ — drive the per-job
+        # CHECKLIST.md the snapshot module writes for each tailored
+        # application. Plain strings, none secret.
+        "apply_profile_full_name",
+        "apply_profile_email",
+        "apply_profile_phone",
+        "apply_profile_location",
+        "apply_profile_linkedin_url",
+        "apply_profile_github_url",
+        "apply_profile_right_to_work",
+        "apply_profile_notice_period",
+        "apply_profile_salary_expectation",
     } == ALLOWED_KEYS
     assert {"anthropic_api_key", "claude_code_oauth_token"} == SECRET_KEYS
 
@@ -160,3 +172,60 @@ def test_db_override_beats_env(
     write_many(conn, [("anthropic_api_key", "sk-ant-from-ui")])
     cfg = get_effective_agent_config(conn)
     assert cfg.anthropic_api_key == "sk-ant-from-ui"
+
+
+# ---------------------------------------------------------------------------
+# Apply profile (v1.17.0+)
+# ---------------------------------------------------------------------------
+
+
+def test_get_apply_profile_returns_empty_when_no_overrides(
+    conn: sqlite3.Connection,
+) -> None:
+    """A fresh DB with no Settings-UI submissions returns an empty
+    profile -- the snapshot module then writes a checklist with no
+    profile lines (still works, just less convenient)."""
+    from jobai.api.runtime_settings import get_apply_profile  # noqa: PLC0415
+
+    assert get_apply_profile(conn) == {}
+
+
+def test_get_apply_profile_strips_prefix_for_short_keys(
+    conn: sqlite3.Connection,
+) -> None:
+    """Persisted keys are ``apply_profile_*`` but the snapshot module
+    consumes them as ``full_name``, ``email``, etc -- the helper
+    strips the prefix so the contract stays clean at the seam."""
+    from jobai.api.runtime_settings import get_apply_profile  # noqa: PLC0415
+
+    write_many(
+        conn,
+        [
+            ("apply_profile_full_name", "Jane Doe"),
+            ("apply_profile_email", "jane@example.com"),
+            ("apply_profile_phone", "+61 400 000 000"),
+        ],
+    )
+    profile = get_apply_profile(conn)
+    assert profile == {
+        "full_name": "Jane Doe",
+        "email": "jane@example.com",
+        "phone": "+61 400 000 000",
+    }
+
+
+def test_redacted_view_emits_blank_strings_for_unset_apply_fields(
+    conn: sqlite3.Connection,
+) -> None:
+    """The Settings UI needs stable field names to bind to. Every
+    apply-profile key surfaces in redacted_view -- set keys carry
+    their value, unset ones come back as blank strings rather than
+    being omitted (which would force the UI to handle 'undefined')."""
+    write_many(conn, [("apply_profile_email", "jane@example.com")])
+    view = redacted_view(conn)
+    # Set field surfaces with its value...
+    assert view["apply_profile_email"] == "jane@example.com"
+    # ...unset fields come back as empty strings for stable binding.
+    assert view["apply_profile_full_name"] == ""
+    assert view["apply_profile_phone"] == ""
+    assert view["apply_profile_linkedin_url"] == ""

@@ -511,6 +511,32 @@ def test_get_resumeai_url_returns_lifespan_state() -> None:
     assert get_resumeai_url(request) == "http://resumeai:8765"
 
 
+def test_get_tailor_output_dir_raises_503_when_missing() -> None:
+    """If the lifespan never stashed ``app.state.tailor_output_dir``
+    (broken boot, manually constructed app), the DI helper surfaces
+    a clean 503 rather than letting an AttributeError escape into a
+    request handler."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from jobai.api.routes.tailor import get_tailor_output_dir  # noqa: PLC0415
+
+    class _StubState:
+        pass  # no tailor_output_dir attribute
+
+    class _StubApp:
+        def __init__(self) -> None:
+            self.state = _StubState()
+
+    class _StubRequest:
+        def __init__(self) -> None:
+            self.app = _StubApp()
+
+    request: Any = _StubRequest()
+    with pytest.raises(HTTPException) as exc:
+        get_tailor_output_dir(request)
+    assert exc.value.status_code == 503
+
+
 def test_get_resumeai_url_raises_503_when_missing() -> None:
     """If ``app.state.resumeai_url`` was never set (lifespan skipped /
     misconfigured), the DI helper surfaces a structured 503 rather
@@ -593,6 +619,8 @@ async def test_schedule_chain_wires_refresh_closure_with_url(
         letter_client=ScriptedLetterClient(),
         qa_client=None,
         resumeai_url="http://resumeai:8765",
+        snapshot_output_dir=tailor_app_db.parent / "tailored",
+        apply_profile={},
     )
 
     await pool.drain()

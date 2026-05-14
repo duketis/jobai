@@ -30,6 +30,19 @@ services:
     environment:
       # Override-able by .env, but these are sensible defaults.
       - JOBAI_DB_PATH=/data/jobai.db
+      # Where the per-job tailored folders land. Default
+      # ``/data/tailored`` writes them inside the ``jobai-data`` named
+      # volume so they persist across container rebuilds. Override in
+      # ``.env`` with ``JOBAI_TAILOR_OUTPUT_DIR=/your/host/path`` AND
+      # add a bind mount under ``volumes`` if you want the folders
+      # outside Docker for direct drag-and-drop into apply forms:
+      #
+      #   volumes:
+      #     - jobai-data:/data
+      #     - ${HOME}/jobai-tailored:/host-tailored
+      #   environment:
+      #     - JOBAI_TAILOR_OUTPUT_DIR=/host-tailored
+      - JOBAI_TAILOR_OUTPUT_DIR=/data/tailored
     volumes:
       - jobai-data:/data
     healthcheck:

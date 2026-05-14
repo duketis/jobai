@@ -42,6 +42,44 @@ class SettingsView(BaseModel):
     has_claude_code_oauth_token: bool = Field(
         description="True if a Claude Code OAuth token is configured (value redacted).",
     )
+    apply_profile_full_name: str = Field(
+        default="",
+        description="Apply profile: full name.",
+    )
+    apply_profile_email: str = Field(
+        default="",
+        description="Apply profile: email address.",
+    )
+    apply_profile_phone: str = Field(
+        default="",
+        description="Apply profile: phone (with country code).",
+    )
+    apply_profile_location: str = Field(
+        default="",
+        description="Apply profile: city/region.",
+    )
+    apply_profile_linkedin_url: str = Field(
+        default="",
+        description="Apply profile: LinkedIn URL.",
+    )
+    apply_profile_github_url: str = Field(
+        default="",
+        description="Apply profile: GitHub URL.",
+    )
+    apply_profile_right_to_work: str = Field(
+        default="",
+        description=(
+            "Apply profile: free-text right-to-work statement (e.g. 'Yes -- Australian citizen')."
+        ),
+    )
+    apply_profile_notice_period: str = Field(
+        default="",
+        description="Apply profile: notice period (e.g. 'Immediate', '4 weeks').",
+    )
+    apply_profile_salary_expectation: str = Field(
+        default="",
+        description="Apply profile: salary expectation (e.g. '120k AUD + super').",
+    )
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -57,6 +95,15 @@ class SettingsUpdateRequest(BaseModel):
     anthropic_api_key: str | None = None
     claude_code_oauth_token: str | None = None
     anthropic_model: str | None = None
+    apply_profile_full_name: str | None = None
+    apply_profile_email: str | None = None
+    apply_profile_phone: str | None = None
+    apply_profile_location: str | None = None
+    apply_profile_linkedin_url: str | None = None
+    apply_profile_github_url: str | None = None
+    apply_profile_right_to_work: str | None = None
+    apply_profile_notice_period: str | None = None
+    apply_profile_salary_expectation: str | None = None
 
     @field_validator("agent_backend")
     @classmethod

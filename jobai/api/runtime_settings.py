@@ -31,16 +31,38 @@ from typing import Final
 
 from jobai.config import get_settings
 
+#: Keys that make up the user's "apply profile" — the contact details
+#: the snapshot module pastes into each job's ``CHECKLIST.md`` so the
+#: user can copy-paste them straight into application forms. Stored
+#: as plain strings (no secrets in here -- the most sensitive thing
+#: is a phone number, and that's on the user's resume anyway).
+APPLY_PROFILE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "apply_profile_full_name",
+        "apply_profile_email",
+        "apply_profile_phone",
+        "apply_profile_location",
+        "apply_profile_linkedin_url",
+        "apply_profile_github_url",
+        "apply_profile_right_to_work",
+        "apply_profile_notice_period",
+        "apply_profile_salary_expectation",
+    },
+)
+
 #: All keys the UI is allowed to read/write. Anything outside this set
 #: is rejected so a future change to this module is the only way to
 #: extend the surface — random other env values stay out of reach.
-ALLOWED_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "agent_backend",
-        "anthropic_api_key",
-        "claude_code_oauth_token",
-        "anthropic_model",
-    },
+ALLOWED_KEYS: Final[frozenset[str]] = (
+    frozenset(
+        {
+            "agent_backend",
+            "anthropic_api_key",
+            "claude_code_oauth_token",
+            "anthropic_model",
+        },
+    )
+    | APPLY_PROFILE_KEYS
 )
 
 #: Keys whose values are secrets and should be redacted in GET
@@ -108,6 +130,24 @@ def read_all(conn: sqlite3.Connection) -> dict[str, str]:
     return _read_overrides(conn)
 
 
+def get_apply_profile(conn: sqlite3.Connection) -> dict[str, str]:
+    """Return the user's apply profile as ``{short_key: value}``.
+
+    Short keys drop the ``apply_profile_`` prefix so the snapshot
+    module can use them directly as field labels (``full_name``,
+    ``email``, ...). Missing fields are omitted; the snapshot module
+    only emits checklist lines for keys that have a value.
+    """
+    overrides = _read_overrides(conn)
+    profile: dict[str, str] = {}
+    for key in APPLY_PROFILE_KEYS:
+        value = overrides.get(key)
+        if value:
+            short = key.removeprefix("apply_profile_")
+            profile[short] = value
+    return profile
+
+
 def write_many(conn: sqlite3.Connection, items: Iterable[tuple[str, str | None]]) -> None:
     """Persist each ``(key, value)`` pair, validating against the allow-list.
 
@@ -139,15 +179,26 @@ def redacted_view(conn: sqlite3.Connection) -> dict[str, str | bool]:
 
     Secret keys collapse to a boolean ``has_*`` flag so the UI can
     show "set / not set" without ever round-tripping the value back
-    through the browser. Non-secret keys are returned verbatim.
+    through the browser. Non-secret keys are returned verbatim,
+    including every apply-profile field (none of those are secret --
+    a user opening the Settings modal needs to see what's currently
+    there).
     """
     cfg = get_effective_agent_config(conn)
-    return {
+    view: dict[str, str | bool] = {
         "agent_backend": cfg.agent_backend,
         "anthropic_model": cfg.anthropic_model,
         "has_anthropic_api_key": cfg.anthropic_api_key is not None,
         "has_claude_code_oauth_token": cfg.claude_code_oauth_token is not None,
     }
+    profile = get_apply_profile(conn)
+    for short_key, value in profile.items():
+        view[f"apply_profile_{short_key}"] = value
+    # Always emit every apply_profile_* key so the UI has stable fields
+    # to bind to -- blanks come back as empty strings.
+    for key in APPLY_PROFILE_KEYS:
+        view.setdefault(key, "")
+    return view
 
 
 def _read_overrides(conn: sqlite3.Connection) -> dict[str, str]:

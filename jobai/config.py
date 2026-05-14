@@ -136,6 +136,21 @@ class Settings(BaseSettings):
             "polls; 3-5 is the sweet spot for a batch."
         ),
     )
+    tailor_output_dir: str = Field(
+        default="/data/tailored",
+        description=(
+            "Directory where every successful tailor run drops a per-job "
+            "folder containing the resume PDF, cover-letter PDF, JD markdown, "
+            "QA verdict JSON, application checklist, and metadata. The same "
+            "folder layout is what the sibling ``interviewai`` reads from to "
+            "prepare interview answers against the artefacts you actually "
+            "submitted. Default is ``/data/tailored`` inside the Docker "
+            "container; on the host this maps to the ``jobai-data`` named "
+            "volume. Set ``JOBAI_TAILOR_OUTPUT_DIR=/Users/you/jobai-tailored`` "
+            "for host-mode dev so the folders land somewhere your file "
+            "manager can navigate to directly."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

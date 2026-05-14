@@ -26,7 +26,7 @@ from fastapi.responses import StreamingResponse
 
 from jobai.api.dependencies import ConnDep, get_db_path
 from jobai.api.repository import find_jobs_by_url
-from jobai.api.runtime_settings import get_effective_agent_config
+from jobai.api.runtime_settings import get_apply_profile, get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.filenames import build_pdf_filename
 from jobai.tailor.models import (
@@ -107,12 +107,27 @@ def get_resumeai_url(request: Request) -> str:
     return url
 
 
+def get_tailor_output_dir(request: Request) -> Path:
+    """Return the per-job snapshot output directory.
+
+    Read off ``app.state.tailor_output_dir`` (set by the lifespan from
+    ``Settings.tailor_output_dir`` env config). Each successful tailor
+    run drops a folder under this path containing the PDFs + JD + QA +
+    CHECKLIST.md the user opens to apply.
+    """
+    output: Path | None = getattr(request.app.state, "tailor_output_dir", None)
+    if output is None:
+        raise HTTPException(status_code=503, detail="tailor output dir not initialised")
+    return output
+
+
 PoolDep = Annotated[TailorPool, Depends(get_tailor_pool)]
 ResumeDep = Annotated[ResumeaiClient, Depends(get_resume_client)]
 LetterDep = Annotated[CoverletteraiClient, Depends(get_letter_client)]
 QADep = Annotated["QAClient | None", Depends(get_qa_client)]
 DbPathDep = Annotated[Path, Depends(get_db_path)]
 ResumeaiUrlDep = Annotated[str, Depends(get_resumeai_url)]
+TailorOutputDirDep = Annotated[Path, Depends(get_tailor_output_dir)]
 
 
 # -- Helpers --------------------------------------------------------------
@@ -127,6 +142,8 @@ def _schedule_chain(
     letter_client: CoverletteraiClient,
     qa_client: QAClient | None,
     resumeai_url: str,
+    snapshot_output_dir: Path,
+    apply_profile: dict[str, str],
 ) -> None:
     """Submit a chain coroutine to the pool with all collaborators bound."""
     from jobai.scheduler import refresh_project_scans  # noqa: PLC0415
@@ -151,6 +168,8 @@ def _schedule_chain(
             qa_client=qa_client,
             refresh_context_scans=_refresh,
             fetch_qa_context=_fetch_qa_context,
+            snapshot_output_dir=snapshot_output_dir,
+            apply_profile=apply_profile,
         )
 
     pool.submit(_factory)
@@ -173,6 +192,7 @@ async def kick_one(
     qa_client: QADep,
     db_path: DbPathDep,
     resumeai_url: ResumeaiUrlDep,
+    snapshot_output_dir: TailorOutputDirDep,
     job_id: int,
 ) -> KickOneResponse:
     """Create a ``tailor_runs`` row, queue the chain, return the row id."""
@@ -187,6 +207,8 @@ async def kick_one(
         letter_client=letter_client,
         qa_client=qa_client,
         resumeai_url=resumeai_url,
+        snapshot_output_dir=snapshot_output_dir,
+        apply_profile=get_apply_profile(conn),
     )
     # The catalogue-path create_tailor_run always sets job_id; the
     # assert is for mypy's benefit since the typed field is Optional
@@ -213,6 +235,7 @@ async def kick_batch(
     qa_client: QADep,
     db_path: DbPathDep,
     resumeai_url: ResumeaiUrlDep,
+    snapshot_output_dir: TailorOutputDirDep,
     body: KickBatchRequest,
 ) -> KickBatchResponse:
     """Create one ``tailor_runs`` row per job in ``body.job_ids``.
@@ -257,6 +280,8 @@ async def kick_batch(
             letter_client=letter_client,
             qa_client=qa_client,
             resumeai_url=resumeai_url,
+            snapshot_output_dir=snapshot_output_dir,
+            apply_profile=get_apply_profile(conn),
         )
         # Batch always uses the catalogue path; narrow for mypy.
         assert record.job_id is not None  # noqa: S101
@@ -284,6 +309,7 @@ async def kick_by_url(
     qa_client: QADep,
     db_path: DbPathDep,
     resumeai_url: ResumeaiUrlDep,
+    snapshot_output_dir: TailorOutputDirDep,
     body: KickByUrlRequest,
 ) -> KickByUrlResponse:
     """Kick a tailor chain for a JD URL.
@@ -313,6 +339,8 @@ async def kick_by_url(
             letter_client=letter_client,
             qa_client=qa_client,
             resumeai_url=resumeai_url,
+            snapshot_output_dir=snapshot_output_dir,
+            apply_profile=get_apply_profile(conn),
         )
         return KickByUrlResponse(
             tailor_run_id=record.id,
@@ -331,6 +359,8 @@ async def kick_by_url(
         letter_client=letter_client,
         qa_client=qa_client,
         resumeai_url=resumeai_url,
+        snapshot_output_dir=snapshot_output_dir,
+        apply_profile=get_apply_profile(conn),
     )
     return KickByUrlResponse(
         tailor_run_id=record.id,

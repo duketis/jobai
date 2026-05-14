@@ -40,6 +40,7 @@ from jobai.tailor.models import (
 )
 from jobai.tailor.qa import QAClient, assess
 from jobai.tailor.repository import get_tailor_run, update_status
+from jobai.tailor.snapshot import write_snapshot
 
 _log = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ async def run_chain(
     max_qa_attempts: int = DEFAULT_MAX_QA_ATTEMPTS,
     refresh_context_scans: Callable[[], Awaitable[None]] | None = None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None = None,
+    snapshot_output_dir: Path | None = None,
+    apply_profile: dict[str, str] | None = None,
 ) -> None:
     """Drive one tailor chain to terminal state.
 
@@ -120,6 +123,8 @@ async def run_chain(
             max_qa_attempts=max_qa_attempts,
             refresh_context_scans=refresh_context_scans,
             fetch_qa_context=fetch_qa_context,
+            snapshot_output_dir=snapshot_output_dir,
+            apply_profile=apply_profile,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
         _log.exception("tailor_chain_failed", extra={"tailor_run_id": tailor_run_id})
@@ -146,6 +151,8 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
     max_qa_attempts: int,
     refresh_context_scans: Callable[[], Awaitable[None]] | None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None,
+    snapshot_output_dir: Path | None,
+    apply_profile: dict[str, str] | None,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
 
@@ -333,6 +340,9 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
         tailor_run_id=tailor_run_id,
         db_path=db_path,
         resume_client=resume_client,
+        letter_client=letter_client,
+        snapshot_output_dir=snapshot_output_dir,
+        apply_profile=apply_profile,
     )
 
 
@@ -341,13 +351,27 @@ async def _settle_terminal_success(
     tailor_run_id: int,
     db_path: Path,
     resume_client: ResumeaiClient,
+    letter_client: CoverletteraiClient,
+    snapshot_output_dir: Path | None,
+    apply_profile: dict[str, str] | None,
 ) -> None:
-    """Cache the descriptive PDF filenames and mark the row succeeded.
+    """Cache filenames, mark the row succeeded, and snapshot to disk.
 
-    Filename caching runs at the chain's tail so the list-runs endpoint
-    can return them without an N+1 sibling call per row. Fail-soft: a
-    sibling outage here leaves the row with NULL filenames and the PDF
-    route falls back to live computation.
+    Three things happen at the chain's tail:
+
+    1. Compute the descriptive PDF filenames once (via a single
+       batched sibling fetch) so the list-runs endpoint can return
+       them without an N+1 call per row.
+    2. Persist the filenames + SUCCEEDED status on the row.
+    3. Snapshot the per-job folder to disk so the user can grab the
+       PDFs from a filesystem location (no UI clicks) and so the
+       sibling ``interviewai`` can read JD + resume + letter + QA off
+       the same folder layout. Skipped when ``snapshot_output_dir`` is
+       ``None`` (tests + host-mode dev that doesn't need the folder).
+
+    Every step is fail-soft: a sibling outage at this point only
+    degrades the post-success conveniences, never the row's terminal
+    state. The PDFs are still streamable through the HTTP routes.
     """
     resume_filename: str | None = None
     letter_filename: str | None = None
@@ -372,6 +396,16 @@ async def _settle_terminal_success(
             status=TailorRunStatus.SUCCEEDED,
             resume_filename=resume_filename,
             letter_filename=letter_filename,
+        )
+
+    if snapshot_output_dir is not None:
+        await write_snapshot(
+            output_dir=snapshot_output_dir,
+            db_path=db_path,
+            tailor_run_id=tailor_run_id,
+            resume_client=resume_client,
+            letter_client=letter_client,
+            apply_profile=apply_profile,
         )
 
 
