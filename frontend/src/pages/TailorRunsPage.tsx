@@ -194,19 +194,23 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
                 href={tailorRunResumePdfUrl(run.id)}
                 target="_blank"
                 rel="noreferrer noopener"
+                download={run.resume_filename ?? undefined}
                 onClick={(event) => event.stopPropagation()}
                 className="text-xs text-foreground hover:underline"
+                title={run.resume_filename ?? "Resume PDF"}
               >
-                Resume.pdf
+                {run.resume_filename ?? "Resume.pdf"}
               </a>
               <a
                 href={tailorRunLetterPdfUrl(run.id)}
                 target="_blank"
                 rel="noreferrer noopener"
+                download={run.letter_filename ?? undefined}
                 onClick={(event) => event.stopPropagation()}
                 className="text-xs text-foreground hover:underline"
+                title={run.letter_filename ?? "Cover letter PDF"}
               >
-                Letter.pdf
+                {run.letter_filename ?? "Letter.pdf"}
               </a>
             </>
           )}

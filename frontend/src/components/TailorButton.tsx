@@ -61,22 +61,24 @@ export function TailorButton({ jobId, latestRun }: TailorButtonProps) {
             href={tailorRunResumePdfUrl(latestRun.id)}
             target="_blank"
             rel="noreferrer noopener"
+            download={latestRun.resume_filename ?? undefined}
             onClick={(e) => e.stopPropagation()}
             className="text-xs text-foreground hover:underline"
-            title="Open the tailored resume PDF in a new tab"
+            title={latestRun.resume_filename ?? "Resume PDF"}
           >
-            Resume.pdf
+            {latestRun.resume_filename ?? "Resume.pdf"}
           </a>
           <span className="text-muted-foreground/60 text-xs">|</span>
           <a
             href={tailorRunLetterPdfUrl(latestRun.id)}
             target="_blank"
             rel="noreferrer noopener"
+            download={latestRun.letter_filename ?? undefined}
             onClick={(e) => e.stopPropagation()}
             className="text-xs text-foreground hover:underline"
-            title="Open the tailored cover-letter PDF in a new tab"
+            title={latestRun.letter_filename ?? "Cover letter PDF"}
           >
-            Letter.pdf
+            {latestRun.letter_filename ?? "Letter.pdf"}
           </a>
         </>
       )}

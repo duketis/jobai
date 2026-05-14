@@ -20,6 +20,8 @@ function makeRun(overrides: Partial<TailorRunRecord> = {}): TailorRunRecord {
     qa_status: null,
     qa_assessment: null,
     qa_attempts: 0,
+    resume_filename: null,
+    letter_filename: null,
     error: null,
     created_at: "2026-05-13T00:00:00Z",
     updated_at: "2026-05-13T00:00:00Z",
@@ -63,6 +65,8 @@ describe("TailorButton", () => {
       </WithQueryClient>,
     );
     expect(screen.getByRole("button", { name: /Re-tailor/ })).toBeEnabled();
+    // No cached filename on this fixture (resume_filename/letter_filename
+    // are null), so labels fall back to the generic Resume.pdf / Letter.pdf.
     const resume = screen.getByText("Resume.pdf");
     const letter = screen.getByText("Letter.pdf");
     expect(resume.getAttribute("href")).toBe("/api/tailor/runs/42/resume.pdf");
@@ -71,6 +75,37 @@ describe("TailorButton", () => {
     // executed under coverage. jsdom doesn't actually navigate.
     await userEvent.click(resume);
     await userEvent.click(letter);
+  });
+
+  it("renders the cached filename + download attr when present", () => {
+    const client = makeQueryClient();
+    render(
+      <WithQueryClient client={client}>
+        <TailorButton
+          jobId={7}
+          latestRun={makeRun({
+            resume_filename: "Jonathan_Duketis-Software_Engineer-SEEK-Resume.pdf",
+            letter_filename:
+              "Jonathan_Duketis-Software_Engineer-SEEK-CoverLetter.pdf",
+          })}
+        />
+      </WithQueryClient>,
+    );
+    const resume = screen.getByText(
+      "Jonathan_Duketis-Software_Engineer-SEEK-Resume.pdf",
+    );
+    const letter = screen.getByText(
+      "Jonathan_Duketis-Software_Engineer-SEEK-CoverLetter.pdf",
+    );
+    // Belt-and-braces: the <a download=...> attribute pins the
+    // descriptive filename even on browsers that ignore the server's
+    // Content-Disposition header.
+    expect(resume.getAttribute("download")).toBe(
+      "Jonathan_Duketis-Software_Engineer-SEEK-Resume.pdf",
+    );
+    expect(letter.getAttribute("download")).toBe(
+      "Jonathan_Duketis-Software_Engineer-SEEK-CoverLetter.pdf",
+    );
   });
 
   it("disables the button while the run is still in flight", () => {

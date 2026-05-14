@@ -169,6 +169,15 @@ export interface TailorRunRecord {
   qa_status: QAStatus | null;
   qa_assessment: QAAssessment | null;
   qa_attempts: number;
+  /**
+   * Descriptive PDF filename for the tailored resume, e.g.
+   * `Jane_Doe-Software_Engineer-Acme-Resume.pdf`. Populated by the
+   * orchestrator at terminal SUCCESS; null on runs that finished
+   * before the cache (v1.15.0) landed.
+   */
+  resume_filename: string | null;
+  /** Descriptive PDF filename for the tailored cover letter. */
+  letter_filename: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
