@@ -42,6 +42,7 @@ from jobai.context.client import HttpxContextClient
 from jobai.scheduler import (
     build_scheduler,
     register_ats_discovery,
+    register_context_refresh,
     register_description_backfill,
     register_sources,
     shutdown,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         registered = register_sources(scheduler, db_path=settings.db_path)
         register_description_backfill(scheduler, db_path=settings.db_path)
         register_ats_discovery(scheduler, db_path=settings.db_path)
+        register_context_refresh(scheduler, resumeai_url=settings.resumeai_url)
         scheduler.start()
         _log.info(
             "scheduler_started",

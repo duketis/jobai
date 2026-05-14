@@ -323,6 +323,194 @@ async def test_run_ats_discovery_upserts_new_slugs(
 
 
 # ---------------------------------------------------------------------------
+# register_context_refresh
+# ---------------------------------------------------------------------------
+
+
+def test_register_context_refresh_adds_singleton_job() -> None:
+    from jobai.scheduler import (  # noqa: PLC0415
+        _CONTEXT_REFRESH_JOB_ID,
+        register_context_refresh,
+    )
+
+    scheduler = build_scheduler()
+    register_context_refresh(scheduler, resumeai_url="http://resumeai:8765")
+    assert scheduler.get_job(_CONTEXT_REFRESH_JOB_ID) is not None
+
+
+def test_register_context_refresh_is_idempotent() -> None:
+    from jobai.scheduler import (  # noqa: PLC0415
+        _CONTEXT_REFRESH_JOB_ID,
+        register_context_refresh,
+    )
+
+    scheduler = build_scheduler()
+    register_context_refresh(scheduler, resumeai_url="http://resumeai:8765")
+    register_context_refresh(scheduler, resumeai_url="http://resumeai:8765")
+    jobs = [j for j in scheduler.get_jobs() if j.id == _CONTEXT_REFRESH_JOB_ID]
+    assert len(jobs) == 1
+
+
+def test_register_context_refresh_uses_configurable_interval() -> None:
+    from jobai.scheduler import (  # noqa: PLC0415
+        _CONTEXT_REFRESH_JOB_ID,
+        register_context_refresh,
+    )
+
+    scheduler = build_scheduler()
+    register_context_refresh(
+        scheduler,
+        resumeai_url="http://resumeai:8765",
+        interval_seconds=3600,
+    )
+    job = scheduler.get_job(_CONTEXT_REFRESH_JOB_ID)
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 3600
+
+
+async def test_register_context_refresh_inner_run_invokes_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inner ``_run`` coroutine just delegates to
+    ``_run_context_refresh``; pulling the job out of the scheduler and
+    invoking its target covers the wrapper line."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+    from jobai.scheduler import (  # noqa: PLC0415
+        _CONTEXT_REFRESH_JOB_ID,
+        register_context_refresh,
+    )
+
+    seen: list[str] = []
+
+    async def fake_run(resumeai_url: str) -> None:
+        seen.append(resumeai_url)
+
+    monkeypatch.setattr(scheduler_mod, "_run_context_refresh", fake_run)
+    scheduler = build_scheduler()
+    register_context_refresh(
+        scheduler,
+        resumeai_url="http://resumeai:8765",
+        interval_seconds=60,
+    )
+    job = scheduler.get_job(_CONTEXT_REFRESH_JOB_ID)
+    assert job is not None
+    await job.func()
+    assert seen == ["http://resumeai:8765"]
+
+
+async def test_run_context_refresh_refreshes_only_project_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tick body lists every entry, picks the ones tagged
+    ``source:local_project``, and refreshes each. Non-project entries
+    (snippets, file uploads) are left alone."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+
+    project_entry = ContextFile(
+        id="ctx_proj",
+        name="jobai",
+        kind="markdown",
+        extracted_text="PATH: /x",
+        byte_size=10,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+    snippet_entry = ContextFile(
+        id="ctx_snip",
+        name="note",
+        kind="text",
+        extracted_text="just a snippet",
+        byte_size=14,
+        tags=[],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    refreshed: list[str] = []
+    closed: list[bool] = []
+
+    class _FakeContextClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [project_entry, snippet_entry]
+
+        async def refresh_project(self, file_id: str) -> ContextFile:
+            refreshed.append(file_id)
+            return project_entry
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeContextClient)
+    await scheduler_mod._run_context_refresh("http://resumeai:8765")
+    assert refreshed == ["ctx_proj"]
+    assert closed == [True]
+
+
+async def test_run_context_refresh_continues_when_one_entry_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If one project entry fails to refresh (path moved, sibling 500),
+    the tick logs and continues to the next entry rather than aborting
+    the whole sweep."""
+    from jobai import scheduler as scheduler_mod  # noqa: PLC0415
+    from jobai.context.client import ContextFile  # noqa: PLC0415
+
+    entry_a = ContextFile(
+        id="ctx_a",
+        name="a",
+        kind="markdown",
+        extracted_text="PATH: /a",
+        byte_size=1,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+    entry_b = ContextFile(
+        id="ctx_b",
+        name="b",
+        kind="markdown",
+        extracted_text="PATH: /b",
+        byte_size=1,
+        tags=["source:local_project"],
+        uploaded_at="2026-05-14T00:00:00Z",
+        note=None,
+    )
+
+    refreshed: list[str] = []
+
+    class _FakeContextClient:
+        def __init__(self, base_url: str) -> None:
+            del base_url
+
+        async def list_files(self) -> list[ContextFile]:
+            return [entry_a, entry_b]
+
+        async def refresh_project(self, file_id: str) -> ContextFile:
+            if file_id == "ctx_a":
+                msg = "path moved"
+                raise RuntimeError(msg)
+            refreshed.append(file_id)
+            return entry_b
+
+        async def aclose(self) -> None:
+            return None
+
+    from jobai.context import client as context_client_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(context_client_mod, "HttpxContextClient", _FakeContextClient)
+    await scheduler_mod._run_context_refresh("http://resumeai:8765")
+    # entry_b still refreshed; entry_a's RuntimeError didn't abort the loop.
+    assert refreshed == ["ctx_b"]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

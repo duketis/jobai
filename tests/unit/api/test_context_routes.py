@@ -39,6 +39,7 @@ class _FakeContextClient:
         self.snippet_raises: BaseException | None = None
         self.upload_raises: BaseException | None = None
         self.scan_raises: BaseException | None = None
+        self.refresh_raises: BaseException | None = None
         self.delete_raises: BaseException | None = None
 
     async def list_files(self) -> list[ContextFile]:
@@ -101,6 +102,19 @@ class _FakeContextClient:
         created = _file_record(target, f"ctx_proj_{len(self.files)}")
         self.files.append(created)
         return created
+
+    async def refresh_project(self, file_id: str) -> ContextFile:
+        self.calls.append({"op": "refresh_project", "file_id": file_id})
+        if self.refresh_raises is not None:
+            raise self.refresh_raises
+        for item in self.files:
+            if item.id == file_id:
+                return item
+        raise httpx.HTTPStatusError(
+            "not found",
+            request=httpx.Request("POST", f"/api/context/{file_id}/refresh"),
+            response=httpx.Response(404),
+        )
 
     async def delete_file(self, file_id: str) -> None:
         self.calls.append({"op": "delete", "file_id": file_id})
@@ -397,6 +411,85 @@ def test_scan_project_502_on_sibling_error(
     _, fake = app_with_fake_client
     fake.scan_raises = httpx.ConnectError("nope")
     response = client.post("/api/context/project", data={"path": "/x"})
+    assert response.status_code == 502
+
+
+def test_refresh_project_replaces_stale_entry(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.files = [_file_record("jobai", "ctx_proj")]
+    response = client.post("/api/context/ctx_proj/refresh")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == "ctx_proj"
+    call = next(c for c in fake.calls if c["op"] == "refresh_project")
+    assert call["file_id"] == "ctx_proj"
+
+
+def test_refresh_project_400_when_entry_is_not_a_project_scan(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.refresh_raises = ValueError("not a project scan")
+    response = client.post("/api/context/ctx_x/refresh")
+    assert response.status_code == 400
+    assert "not a project scan" in response.json()["detail"]
+
+
+def test_refresh_project_404_when_entry_missing(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.refresh_raises = httpx.HTTPStatusError(
+        "missing",
+        request=httpx.Request("POST", "/api/context/missing/refresh"),
+        response=httpx.Response(404),
+    )
+    response = client.post("/api/context/missing/refresh")
+    assert response.status_code == 404
+
+
+def test_refresh_project_502_on_sibling_5xx(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.refresh_raises = httpx.HTTPStatusError(
+        "broken",
+        request=httpx.Request("POST", "/api/context/x/refresh"),
+        response=httpx.Response(503),
+    )
+    response = client.post("/api/context/x/refresh")
+    assert response.status_code == 502
+
+
+def test_refresh_project_502_on_status_error_without_response(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    err = httpx.HTTPStatusError(
+        "boom",
+        request=httpx.Request("POST", "/api/context/x/refresh"),
+        response=httpx.Response(500),
+    )
+    err.response = None  # type: ignore[assignment]
+    fake.refresh_raises = err
+    response = client.post("/api/context/x/refresh")
+    assert response.status_code == 502
+
+
+def test_refresh_project_502_on_transport_error(
+    client: TestClient,
+    app_with_fake_client: tuple[FastAPI, _FakeContextClient],
+) -> None:
+    _, fake = app_with_fake_client
+    fake.refresh_raises = httpx.ConnectError("dead")
+    response = client.post("/api/context/x/refresh")
     assert response.status_code == 502
 
 

@@ -69,6 +69,16 @@ _DISCOVERY_JOB_ID = "jobai.discovery.ats_slugs"
 #: rows. Daily catches new entrants without spamming the DB.
 _DISCOVERY_INTERVAL_SECONDS = 86_400
 
+#: ID for the singleton context-pool refresh job. Re-scans every
+#: project-scan entry against its source path so the pool reflects
+#: the user's CURRENT repo state instead of the day it was uploaded.
+_CONTEXT_REFRESH_JOB_ID = "jobai.context.refresh_projects"
+
+#: Refresh cadence: daily. Projects don't get re-tailored that
+#: often, and a daily refresh is enough to keep stats current
+#: without spamming resumeai's scan endpoint.
+_CONTEXT_REFRESH_INTERVAL_SECONDS = 86_400
+
 
 def build_scheduler() -> AsyncIOScheduler:
     """Construct an unstarted :class:`AsyncIOScheduler`.
@@ -238,6 +248,68 @@ async def _run_ats_discovery(db_path: Path) -> None:
             "ats_discovery_tick",
             extra={"new_slugs": len(new), "kinds": sorted({s.kind for s in new})},
         )
+
+
+def register_context_refresh(
+    scheduler: AsyncIOScheduler,
+    *,
+    resumeai_url: str,
+    interval_seconds: int = _CONTEXT_REFRESH_INTERVAL_SECONDS,
+) -> None:
+    """Add the singleton project-scan refresh job to the scheduler.
+
+    The job walks the context pool, picks every entry tagged
+    ``source:local_project``, and re-runs the scan against the
+    embedded path so the pool stays current. Without this, snapshots
+    drift the moment the user makes another commit to the project
+    and tailored documents end up citing yesterday's stats.
+    """
+    if scheduler.get_job(_CONTEXT_REFRESH_JOB_ID) is not None:
+        scheduler.remove_job(_CONTEXT_REFRESH_JOB_ID)
+
+    async def _run() -> None:
+        await _run_context_refresh(resumeai_url)
+
+    scheduler.add_job(
+        _run,
+        trigger=IntervalTrigger(seconds=interval_seconds),
+        id=_CONTEXT_REFRESH_JOB_ID,
+        name="context pool project refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        jitter=_INITIAL_JITTER_SECONDS,
+    )
+
+
+async def _run_context_refresh(resumeai_url: str) -> None:
+    """Refresh-every-project body, called by the scheduled job each tick."""
+    from jobai.context.client import HttpxContextClient  # noqa: PLC0415
+
+    client = HttpxContextClient(base_url=resumeai_url)
+    refreshed = 0
+    failed = 0
+    try:
+        entries = await client.list_files()
+        for entry in entries:
+            if "source:local_project" not in entry.tags:
+                continue
+            try:
+                await client.refresh_project(entry.id)
+                refreshed += 1
+            except Exception:  # noqa: BLE001 - report-and-continue per entry
+                failed += 1
+                _log.warning(
+                    "context_refresh_entry_failed",
+                    extra={"file_id": entry.id, "entry_name": entry.name},
+                    exc_info=True,
+                )
+        _log.info(
+            "context_refresh_tick",
+            extra={"refreshed": refreshed, "failed": failed, "total": len(entries)},
+        )
+    finally:
+        await client.aclose()
 
 
 def _default_job_factory(

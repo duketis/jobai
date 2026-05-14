@@ -285,6 +285,139 @@ async def test_scan_project_raises_on_sibling_error() -> None:
     await client.aclose()
 
 
+def _project_payload(
+    file_id: str,
+    *,
+    path: str = "/Users/jonathan/Documents/personal/jobai",
+    name: str = "jobai (project scan)",
+) -> dict[str, object]:
+    return {
+        "id": file_id,
+        "name": name,
+        "kind": "markdown",
+        "extracted_text": (f"PROJECT: jobai\nPATH: {path}\n\n## MANIFESTS\n### Dockerfile\n..."),
+        "byte_size": 100,
+        "tags": ["source:local_project"],
+        "uploaded_at": "2026-05-11T00:00:00Z",
+        "note": "primary repo",
+    }
+
+
+async def test_refresh_project_rescans_and_deletes_old_entry() -> None:
+    """Happy path: refresh reads the entry, parses out the PATH header,
+    re-runs the scan, deletes the stale row."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        # 1. Fetch the existing entry to read its path / tags.
+        router.get("/api/context/ctx_old").mock(
+            return_value=httpx.Response(200, json=_project_payload("ctx_old")),
+        )
+        # 2. Resubmit the scan -- form POST → 303 then list lookup.
+        router.post("/context/project").mock(return_value=httpx.Response(303))
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={"files": [_project_payload("ctx_new")]},
+            ),
+        )
+        # 3. Delete the stale row.
+        delete_route = router.delete("/api/context/ctx_old").mock(
+            return_value=httpx.Response(204),
+        )
+        out = await client.refresh_project("ctx_old")
+    assert out.id == "ctx_new"
+    assert delete_route.called
+    await client.aclose()
+
+
+async def test_refresh_project_skips_delete_when_new_id_matches_old() -> None:
+    """Resumeai's scan endpoint sometimes returns the same id (when
+    the scan is a no-op). Skip the delete in that case so we don't
+    drop the just-refreshed entry. (We don't register a DELETE mock
+    at all -- respx's strict mode would raise if refresh_project
+    called it, which is the assertion this test makes.)"""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765", assert_all_called=False) as router:
+        router.get("/api/context/ctx_same").mock(
+            return_value=httpx.Response(200, json=_project_payload("ctx_same")),
+        )
+        router.post("/context/project").mock(return_value=httpx.Response(303))
+        router.get("/api/context").mock(
+            return_value=httpx.Response(
+                200,
+                json={"files": [_project_payload("ctx_same")]},
+            ),
+        )
+        out = await client.refresh_project("ctx_same")
+    assert out.id == "ctx_same"
+    await client.aclose()
+
+
+async def test_refresh_project_rejects_non_project_entry() -> None:
+    """Refresh is project-scan only; snippets / file uploads have no
+    source path to re-walk."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context/ctx_snip").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ctx_snip",
+                    "name": "Snippet",
+                    "kind": "text",
+                    "extracted_text": "just a snippet",
+                    "byte_size": 14,
+                    "tags": [],
+                    "uploaded_at": "2026-05-11T00:00:00Z",
+                    "note": None,
+                },
+            ),
+        )
+        with pytest.raises(ValueError, match="not a project scan"):
+            await client.refresh_project("ctx_snip")
+    await client.aclose()
+
+
+async def test_refresh_project_rejects_when_path_header_missing() -> None:
+    """If the entry's extracted_text doesn't carry a parseable PATH
+    header, refresh has no way to rescan -- surface a clean error
+    instead of guessing."""
+    client = HttpxContextClient(base_url="http://resumeai:8765")
+    payload = _project_payload("ctx_bad")
+    payload["extracted_text"] = "PROJECT: jobai\n(no path header)"
+    with respx.mock(base_url="http://resumeai:8765") as router:
+        router.get("/api/context/ctx_bad").mock(
+            return_value=httpx.Response(200, json=payload),
+        )
+        with pytest.raises(ValueError, match="parseable PATH header"):
+            await client.refresh_project("ctx_bad")
+    await client.aclose()
+
+
+def test_extract_project_path_handles_padded_input() -> None:
+    """Path header tolerates leading whitespace + trailing newline."""
+    from jobai.context.client import _extract_project_path  # noqa: PLC0415
+
+    assert _extract_project_path("PATH:   /Users/jonathan/x  \n") == ("/Users/jonathan/x")
+
+
+def test_extract_project_path_returns_none_for_missing_input() -> None:
+    from jobai.context.client import _extract_project_path  # noqa: PLC0415
+
+    assert _extract_project_path(None) is None
+    assert _extract_project_path("") is None
+    assert _extract_project_path("no header here") is None
+
+
+def test_extract_project_path_returns_none_when_header_is_blank() -> None:
+    """``PATH:`` followed by only whitespace must not be treated as a
+    valid path -- the refresh call would otherwise scan an empty
+    string and the sibling would 422."""
+    from jobai.context.client import _extract_project_path  # noqa: PLC0415
+
+    assert _extract_project_path("PATH:   \n") is None
+
+
 async def test_delete_file_passes_through_to_resumeai() -> None:
     client = HttpxContextClient(base_url="http://resumeai:8765")
     with respx.mock(base_url="http://resumeai:8765") as router:

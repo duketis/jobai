@@ -190,6 +190,42 @@ async def scan_project(
         ) from exc
 
 
+@router.post(
+    "/{file_id}/refresh",
+    response_model=ContextFile,
+    summary="Re-scan a project-scan entry from its embedded path",
+)
+async def refresh_project(file_id: str, client: ContextClientDep) -> ContextFile:
+    """Refresh a stale project-scan entry.
+
+    Project scans are point-in-time snapshots, so an entry created
+    today doesn't reflect commits / coverage stats / file additions
+    the user pushed afterwards. This endpoint walks the same path
+    again and replaces the stale row.
+
+    Only works on entries whose ``tags`` contain ``source:local_project``;
+    a 400 is returned for file uploads and snippets (which have no
+    'source' to re-walk).
+    """
+    try:
+        return await client.refresh_project(file_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        if status == 404:
+            raise HTTPException(status_code=404, detail="context entry not found") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"resumeai refresh failed: {exc}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"resumeai refresh failed: {exc}",
+        ) from exc
+
+
 @router.delete(
     "/{file_id}",
     status_code=204,

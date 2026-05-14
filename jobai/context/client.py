@@ -10,6 +10,7 @@ wires :class:`HttpxContextClient` against the live sibling.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final, Protocol
 
 import httpx
@@ -122,6 +123,19 @@ class ContextClient(Protocol):
         """
         ...
 
+    async def refresh_project(self, file_id: str) -> ContextFile:
+        """Re-scan an existing project entry from the path it carries
+        and replace the stale row.
+
+        Project scans are point-in-time snapshots -- when the user
+        works on the repo in the background, the entry drifts out
+        of date and tailored documents end up citing yesterday's
+        stats. This method extracts the original path/name/tags
+        from the entry, runs a fresh scan, and deletes the stale
+        row so the pool stays current.
+        """
+        ...
+
     async def delete_file(self, file_id: str) -> None:
         """DELETE ``/api/context/{file_id}`` -- remove one entry."""
         ...
@@ -210,6 +224,36 @@ class HttpxContextClient:
         target_name = project.name or project.path.rstrip("/").rsplit("/", 1)[-1]
         return await self._latest_or_named(response, target_name)
 
+    async def refresh_project(self, file_id: str) -> ContextFile:
+        existing = await self.get_file(file_id)
+        if existing.kind != "markdown" or "source:local_project" not in existing.tags:
+            msg = (
+                f"context entry {file_id} is not a project scan "
+                f"(kind={existing.kind!r}, tags={existing.tags!r}); "
+                "refresh is only supported for project-scan entries"
+            )
+            raise ValueError(msg)
+        path = _extract_project_path(existing.extracted_text)
+        if not path:
+            msg = (
+                f"context entry {file_id} doesn't carry a parseable PATH header; "
+                "delete the entry manually and re-scan to fix"
+            )
+            raise ValueError(msg)
+        new_entry = await self.scan_project(
+            ProjectScanCreate(
+                path=path,
+                name=existing.name.removesuffix(" (project scan)") or None,
+                tags=list(existing.tags),
+                note=existing.note,
+            ),
+        )
+        # Resumeai's scan endpoint creates a NEW row each time; drop
+        # the stale one so the pool doesn't grow duplicates.
+        if new_entry.id != file_id:
+            await self.delete_file(file_id)
+        return new_entry
+
     async def delete_file(self, file_id: str) -> None:
         response = await self._client.delete(f"{self._base_url}/api/context/{file_id}")
         response.raise_for_status()
@@ -248,3 +292,20 @@ class HttpxContextClient:
             return listed[0]  # pragma: no cover
         msg = "resumeai accepted the upload but the context pool is empty"  # pragma: no cover
         raise RuntimeError(msg)  # pragma: no cover
+
+
+#: Project-scan entries embed the source path as ``PATH: <abs>`` in the
+#: first lines of ``extracted_text``. The refresh path parses it back
+#: out -- resumeai's API doesn't surface the original input as a
+#: structured field on the entry record.
+_PROJECT_PATH_RE = re.compile(r"^PATH:\s*(?P<path>.+)$", re.MULTILINE)
+
+
+def _extract_project_path(extracted_text: str | None) -> str | None:
+    if not extracted_text:
+        return None
+    match = _PROJECT_PATH_RE.search(extracted_text)
+    if match is None:
+        return None
+    path = match.group("path").strip()
+    return path or None
