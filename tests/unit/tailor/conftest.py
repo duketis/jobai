@@ -128,8 +128,11 @@ class ScriptedResumeClient:
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         self.stream_calls.append(run_id)
         if self._stream_response is None:
-            msg = "no stream_response scripted for this test"
-            raise AssertionError(msg)
+            # Default to an empty PDF response so layout-check fetches
+            # in the QA stage degrade gracefully (the check itself
+            # short-circuits on empty bytes). Tests that exercise the
+            # streaming path supply their own ``stream_response``.
+            return httpx.Response(200, content=b"")
         return self._stream_response
 
 
@@ -179,8 +182,11 @@ class ScriptedLetterClient:
     async def stream_pdf(self, run_id: str) -> httpx.Response:
         self.stream_calls.append(run_id)
         if self._stream_response is None:
-            msg = "no stream_response scripted for this test"
-            raise AssertionError(msg)
+            # Default to an empty PDF response so layout-check fetches
+            # in the QA stage degrade gracefully (the check itself
+            # short-circuits on empty bytes). Tests that exercise the
+            # streaming path supply their own ``stream_response``.
+            return httpx.Response(200, content=b"")
         return self._stream_response
 
 

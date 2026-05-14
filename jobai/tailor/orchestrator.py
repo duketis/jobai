@@ -27,9 +27,11 @@ from selectolax.parser import HTMLParser
 
 from jobai.db.connection import connect
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
+from jobai.tailor.layout_check import check_pdf_layout
 from jobai.tailor.models import (
     CoverletteraiTailorRequest,
     QAAssessment,
+    QAIssue,
     QAStatus,
     ResumeaiTailorRequest,
     SiblingRunSnapshot,
@@ -297,6 +299,20 @@ async def _run_qa_stage(
         model=qa_model,
     )
 
+    # Layout check: pull the rendered PDFs and run heuristic checks for
+    # orphan bullets / split section headers. The LLM grades content
+    # consistency but is blind to pagination (it reads JSON, not the
+    # PDF). Layout issues become must-fix in the assessment so the
+    # auto-fix loop triggers a retry with concrete trim instructions.
+    layout_issues = await _gather_layout_issues(
+        resume_client=resume_client,
+        letter_client=letter_client,
+        resume_run_id=resume_run_id,
+        letter_run_id=letter_run_id,
+    )
+    if layout_issues:
+        assessment = _merge_layout_into_assessment(assessment, layout_issues)
+
     with connect(db_path) as conn:
         update_status(
             conn,
@@ -307,6 +323,88 @@ async def _run_qa_stage(
             qa_attempts=attempts,
         )
     return assessment
+
+
+async def _gather_layout_issues(
+    *,
+    resume_client: ResumeaiClient,
+    letter_client: CoverletteraiClient,
+    resume_run_id: str,
+    letter_run_id: str,
+) -> list[QAIssue]:
+    """Fetch both rendered PDFs and run the heuristic layout checks.
+
+    Failures here (sibling 404, malformed PDF) just return an empty
+    list -- layout issues are an addition, not a gate, and a hiccup
+    in the layout path must not break the QA stage.
+    """
+    issues: list[QAIssue] = []
+    for kind, client, run_id in (
+        ("resume", resume_client, resume_run_id),
+        ("cover letter", letter_client, letter_run_id),
+    ):
+        try:
+            response = await client.stream_pdf(run_id)
+            try:
+                pdf_bytes = await response.aread()
+            finally:
+                await response.aclose()
+        except Exception:  # noqa: BLE001 - report-and-continue per artefact
+            _log.warning("layout_check_fetch_failed", extra={"kind": kind, "run_id": run_id})
+            continue
+        issues.extend(check_pdf_layout(pdf_bytes, document_label=kind))
+    return issues
+
+
+def _merge_layout_into_assessment(
+    assessment: QAAssessment,
+    layout_issues: list[QAIssue],
+) -> QAAssessment:
+    """Fold deterministic layout issues into an LLM-graded assessment.
+
+    Each layout issue becomes a must-fix entry (severity always
+    must_fix; category always format). Format score is knocked down
+    by 15 points per layout issue (capped at 0) so the verdict tone
+    matches reality -- a passing-content / broken-layout chain still
+    flags as concerns or fail.
+    """
+    new_must_fix = list(assessment.must_fix_issues) + list(layout_issues)
+    penalty = min(assessment.format_score, len(layout_issues) * 15)
+    new_format = max(0, assessment.format_score - penalty)
+    # Recompute status with the layout drag baked in.
+    new_status = _recompute_status(
+        assessment.coverage_score,
+        assessment.consistency_score,
+        new_format,
+        must_fix_count=len(new_must_fix),
+        nice_to_fix_count=len(assessment.nice_to_fix_issues),
+    )
+    return assessment.model_copy(
+        update={
+            "must_fix_issues": new_must_fix,
+            "format_score": new_format,
+            "status": new_status,
+        },
+    )
+
+
+def _recompute_status(
+    coverage: int,
+    consistency: int,
+    fmt: int,
+    *,
+    must_fix_count: int,
+    nice_to_fix_count: int,
+) -> QAStatus:
+    """Apply the same banding the QA prompt encodes: any must-fix or
+    score < 60 = fail; any nice-to-fix or score 60-79 = concerns; all
+    scores >= 80 and zero must-fix = pass."""
+    scores = (coverage, consistency, fmt)
+    if must_fix_count > 0 or any(s < 60 for s in scores):
+        return QAStatus.FAIL
+    if nice_to_fix_count > 0 or any(s < 80 for s in scores):
+        return QAStatus.CONCERNS
+    return QAStatus.PASS
 
 
 async def _rekick_letter_with_feedback(
@@ -383,19 +481,34 @@ def _augment_payload_with_feedback(
         f"- ({issue.category}) {issue.summary}" + (f": {issue.detail}" if issue.detail else "")
         for issue in assessment.must_fix_issues
     ]
+    has_layout_issue = any(
+        issue.category == "format" and "page" in issue.summary.lower()
+        for issue in assessment.must_fix_issues
+    )
+    guidance: list[str] = [
+        (
+            "When tailoring this cover letter, ground every claim in the "
+            "candidate's actual context. Do NOT attribute features to "
+            "projects that don't have them, and do NOT invent metrics. "
+            "If a JD requirement isn't backed by the candidate's "
+            "experience, address it honestly rather than overstating."
+        ),
+    ]
+    if has_layout_issue:
+        guidance.append(
+            "LAYOUT: the previous PDF had orphan bullets or a split "
+            "section header. Produce a noticeably shorter letter this "
+            "time (aim for 3-4 fewer sentences, or tighter paragraphs) "
+            "so the rendered output fits its page cleanly without a "
+            "trailing line spilling over.",
+        )
     feedback_block = "\n".join(
         [
             "",
             "QA FEEDBACK FROM PREVIOUS ATTEMPT — must address:",
             *must_fix_lines,
             "",
-            (
-                "When tailoring this cover letter, ground every claim in the "
-                "candidate's actual context. Do NOT attribute features to "
-                "projects that don't have them, and do NOT invent metrics. "
-                "If a JD requirement isn't backed by the candidate's "
-                "experience, address it honestly rather than overstating."
-            ),
+            *guidance,
         ],
     )
     return _JDPayload(jd_url=payload.jd_url, jd_text=base + feedback_block)

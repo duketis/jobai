@@ -878,6 +878,245 @@ def test_augment_payload_with_feedback_appends_must_fix_to_jd_text() -> None:
     assert "x detail" in augmented.jd_text
 
 
+def test_merge_layout_into_assessment_appends_must_fix_and_drags_format_score() -> None:
+    """A clean LLM assessment with 1 layout issue: must-fix gets the
+    issue appended, format_score drops by 15 (per-issue penalty),
+    status downgrades to fail because must_fix_count > 0."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _merge_layout_into_assessment  # noqa: PLC0415
+
+    base = QAAssessment(
+        status=QAStatus.PASS,
+        coverage_score=90,
+        consistency_score=85,
+        format_score=95,
+        must_fix_issues=[],
+        nice_to_fix_issues=[],
+        summary="clean",
+    )
+    layout = [
+        QAIssue(
+            severity="must_fix",
+            category="format",
+            summary="resume: page 2 starts with 1 bullet stranded before 'Profile'",
+        ),
+    ]
+    out = _merge_layout_into_assessment(base, layout)
+    assert len(out.must_fix_issues) == 1
+    assert out.format_score == 80  # 95 - 15
+    assert out.status is QAStatus.FAIL  # must_fix forces fail
+
+
+def test_merge_layout_into_assessment_clamps_format_at_zero() -> None:
+    """Many layout issues + low starting format score shouldn't push
+    format_score below 0."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _merge_layout_into_assessment  # noqa: PLC0415
+
+    base = QAAssessment(
+        status=QAStatus.CONCERNS,
+        coverage_score=80,
+        consistency_score=80,
+        format_score=10,
+        must_fix_issues=[],
+        nice_to_fix_issues=[],
+        summary="weak format",
+    )
+    layout = [
+        QAIssue(severity="must_fix", category="format", summary=f"issue {i}") for i in range(5)
+    ]  # 5 * 15 = 75 penalty, but capped by current format_score=10
+    out = _merge_layout_into_assessment(base, layout)
+    assert out.format_score == 0
+    assert out.status is QAStatus.FAIL
+
+
+def test_recompute_status_pass_when_all_scores_above_80_and_no_issues() -> None:
+    from jobai.tailor.models import QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _recompute_status  # noqa: PLC0415
+
+    assert _recompute_status(90, 85, 88, must_fix_count=0, nice_to_fix_count=0) is QAStatus.PASS
+
+
+def test_recompute_status_concerns_on_nice_to_fix_or_mid_score() -> None:
+    from jobai.tailor.models import QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _recompute_status  # noqa: PLC0415
+
+    # Mid score (60-79) without must-fix => concerns.
+    assert _recompute_status(70, 85, 88, must_fix_count=0, nice_to_fix_count=0) is QAStatus.CONCERNS
+    # All scores >= 80 but a nice-to-fix exists => concerns.
+    assert _recompute_status(90, 85, 88, must_fix_count=0, nice_to_fix_count=2) is QAStatus.CONCERNS
+
+
+def test_recompute_status_fail_when_score_below_60_or_must_fix_present() -> None:
+    from jobai.tailor.models import QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _recompute_status  # noqa: PLC0415
+
+    assert _recompute_status(50, 85, 88, must_fix_count=0, nice_to_fix_count=0) is QAStatus.FAIL
+    assert _recompute_status(90, 85, 88, must_fix_count=1, nice_to_fix_count=0) is QAStatus.FAIL
+
+
+async def test_gather_layout_issues_collects_from_both_clients() -> None:
+    """Walks both sibling stream_pdf endpoints; issues from BOTH PDFs
+    get folded into the merged list with appropriate document_label."""
+    import httpx  # noqa: PLC0415
+
+    from jobai.tailor.orchestrator import _gather_layout_issues  # noqa: PLC0415
+
+    # Bytes that look enough like a PDF for pypdf to parse but with
+    # no extractable text -- so layout check returns no issues. The
+    # path itself is what matters here; the issue-merge logic is
+    # tested separately above.
+    pdf = _make_minimal_pdf_bytes()
+    resume_client = ScriptedResumeClient(
+        stream_response=httpx.Response(200, content=pdf),
+    )
+    letter_client = ScriptedLetterClient(
+        stream_response=httpx.Response(200, content=pdf),
+    )
+    issues = await _gather_layout_issues(
+        resume_client=resume_client,
+        letter_client=letter_client,
+        resume_run_id="rs_1",
+        letter_run_id="ls_1",
+    )
+    # Both PDFs fetched (verified via stream_calls) -- no issues for
+    # a blank PDF, but the path was exercised.
+    assert resume_client.stream_calls == ["rs_1"]
+    assert letter_client.stream_calls == ["ls_1"]
+    assert issues == []
+
+
+async def test_qa_stage_merges_layout_issues_into_assessment(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: when ``_gather_layout_issues`` returns a non-empty
+    list (simulated via monkeypatch), the QA stage folds those into
+    the assessment, status drops to fail, and the auto-fix loop
+    re-kicks the letter exactly like a content must-fix would."""
+    from jobai.tailor import orchestrator as orch  # noqa: PLC0415
+    from jobai.tailor.models import QAIssue  # noqa: PLC0415
+
+    layout_issue = QAIssue(
+        severity="must_fix",
+        category="format",
+        summary="resume: page 2 starts with 1 bullet stranded before 'Profile'",
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_gather(**_kwargs: object) -> list[QAIssue]:
+        call_count["n"] += 1
+        # Return the layout issue on the FIRST pass only; the retry
+        # produces a clean PDF (no layout issues) so the chain settles.
+        if call_count["n"] == 1:
+            return [layout_issue]
+        return []
+
+    monkeypatch.setattr(orch, "_gather_layout_issues", fake_gather)
+
+    _, sleeper = recording_sleeper
+    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json()])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    # Auto-fix loop ran: 2 attempts, letter re-kicked once, layout
+    # issue cleared on the second pass.
+    assert final.qa_attempts == 2
+    assert len(scripted_letter_client.kick_requests) == 2
+    # The retry kick's jd_text contains the layout-specific guidance.
+    retry_jd = scripted_letter_client.kick_requests[1].jd_text or ""
+    assert "LAYOUT:" in retry_jd
+
+
+async def test_gather_layout_issues_continues_when_one_fetch_fails() -> None:
+    """If one sibling's stream_pdf raises, the other still runs and
+    its issues are returned -- a transient fetch error doesn't take
+    the layout check down."""
+    import httpx  # noqa: PLC0415
+
+    from jobai.tailor.orchestrator import _gather_layout_issues  # noqa: PLC0415
+
+    class _ExplodingResume:
+        async def stream_pdf(self, _run_id: str) -> httpx.Response:
+            msg = "network blew up"
+            raise RuntimeError(msg)
+
+    letter_client = ScriptedLetterClient(
+        stream_response=httpx.Response(200, content=_make_minimal_pdf_bytes()),
+    )
+    issues = await _gather_layout_issues(
+        resume_client=_ExplodingResume(),  # type: ignore[arg-type]
+        letter_client=letter_client,
+        resume_run_id="rs_1",
+        letter_run_id="ls_1",
+    )
+    assert letter_client.stream_calls == ["ls_1"]
+    assert issues == []  # blank PDF has no layout issues
+
+
+def _make_minimal_pdf_bytes() -> bytes:
+    """Build a tiny blank PDF in memory -- enough for pypdf to parse."""
+    import io  # noqa: PLC0415
+
+    from pypdf import PdfWriter  # noqa: PLC0415
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def test_augment_payload_includes_layout_guidance_when_layout_issue_present() -> None:
+    """When a must-fix issue mentions a page (i.e. a layout problem),
+    the feedback augmenter appends layout-specific guidance telling
+    the LLM to shorten the output, not just fix wording."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _augment_payload_with_feedback,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://x", jd_text="JD body")
+    assessment = QAAssessment(
+        status=QAStatus.FAIL,
+        coverage_score=80,
+        consistency_score=80,
+        format_score=70,
+        must_fix_issues=[
+            QAIssue(
+                severity="must_fix",
+                category="format",
+                summary=(
+                    "resume: page 2 starts with 1 bullet stranded before 'Professional Experience'"
+                ),
+                detail="trim 1-2 lines",
+            ),
+        ],
+        nice_to_fix_issues=[],
+        summary="layout",
+    )
+    augmented = _augment_payload_with_feedback(payload, assessment)
+    assert augmented.jd_text is not None
+    assert "LAYOUT:" in augmented.jd_text
+
+
 def test_augment_payload_with_feedback_inlines_url_when_no_jd_text() -> None:
     """One-off URL path (no jd_text) -- the feedback block surfaces
     the URL inline so the LLM has SOME context for the retry."""
