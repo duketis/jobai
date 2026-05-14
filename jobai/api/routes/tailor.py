@@ -23,10 +23,11 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from jobai.api.dependencies import ConnDep, get_db_path
 from jobai.api.repository import find_jobs_by_url
-from jobai.api.runtime_settings import get_apply_profile, get_effective_agent_config
+from jobai.api.runtime_settings import get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.filenames import build_pdf_filename
 from jobai.tailor.models import (
@@ -35,6 +36,7 @@ from jobai.tailor.models import (
     KickByUrlRequest,
     KickByUrlResponse,
     KickOneResponse,
+    QAAssessment,
     TailorRunRecord,
     TailorRunsListResponse,
     TailorRunStatus,
@@ -45,6 +47,7 @@ from jobai.tailor.repository import (
     create_tailor_run,
     get_tailor_run,
     list_tailor_runs,
+    set_applied,
 )
 from jobai.tailor.worker import TailorPool
 
@@ -143,7 +146,6 @@ def _schedule_chain(
     qa_client: QAClient | None,
     resumeai_url: str,
     snapshot_output_dir: Path,
-    apply_profile: dict[str, str],
 ) -> None:
     """Submit a chain coroutine to the pool with all collaborators bound."""
     from jobai.scheduler import refresh_project_scans  # noqa: PLC0415
@@ -169,7 +171,6 @@ def _schedule_chain(
             refresh_context_scans=_refresh,
             fetch_qa_context=_fetch_qa_context,
             snapshot_output_dir=snapshot_output_dir,
-            apply_profile=apply_profile,
         )
 
     pool.submit(_factory)
@@ -208,7 +209,6 @@ async def kick_one(
         qa_client=qa_client,
         resumeai_url=resumeai_url,
         snapshot_output_dir=snapshot_output_dir,
-        apply_profile=get_apply_profile(conn),
     )
     # The catalogue-path create_tailor_run always sets job_id; the
     # assert is for mypy's benefit since the typed field is Optional
@@ -281,7 +281,6 @@ async def kick_batch(
             qa_client=qa_client,
             resumeai_url=resumeai_url,
             snapshot_output_dir=snapshot_output_dir,
-            apply_profile=get_apply_profile(conn),
         )
         # Batch always uses the catalogue path; narrow for mypy.
         assert record.job_id is not None  # noqa: S101
@@ -340,7 +339,6 @@ async def kick_by_url(
             qa_client=qa_client,
             resumeai_url=resumeai_url,
             snapshot_output_dir=snapshot_output_dir,
-            apply_profile=get_apply_profile(conn),
         )
         return KickByUrlResponse(
             tailor_run_id=record.id,
@@ -360,7 +358,6 @@ async def kick_by_url(
         qa_client=qa_client,
         resumeai_url=resumeai_url,
         snapshot_output_dir=snapshot_output_dir,
-        apply_profile=get_apply_profile(conn),
     )
     return KickByUrlResponse(
         tailor_run_id=record.id,
@@ -382,10 +379,20 @@ def list_runs(
         TailorRunStatus | None,
         Query(description="Filter to one of pending/resume_running/.../failed."),
     ] = None,
+    applied: Annotated[
+        bool | None,
+        Query(description="True = only applied; False = only not-yet-applied; null = both."),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> TailorRunsListResponse:
     """Return the most recent tailor runs, optionally filtered."""
-    runs = list_tailor_runs(conn, limit=limit, job_id=job_id, status=status)
+    runs = list_tailor_runs(
+        conn,
+        limit=limit,
+        job_id=job_id,
+        status=status,
+        applied=applied,
+    )
     return TailorRunsListResponse(items=runs)
 
 
@@ -400,6 +407,154 @@ def get_run(conn: ConnDep, tailor_run_id: int) -> TailorRunRecord:
     if record is None:
         raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
     return record
+
+
+class AppliedUpdateRequest(BaseModel):
+    """Body for PATCH /api/tailor/runs/{id}/applied.
+
+    ``applied=true`` stamps ``applied_at`` with the current UTC
+    timestamp; ``applied=false`` clears it back to NULL. The same
+    endpoint handles both directions so the UI's Mark / Unmark
+    toggle is a single round trip.
+    """
+
+    applied: bool
+
+
+@router.patch(
+    "/runs/{tailor_run_id}/applied",
+    response_model=TailorRunRecord,
+    summary="Mark or unmark a tailor run as applied (sets applied_at).",
+)
+def set_run_applied(
+    conn: ConnDep,
+    tailor_run_id: int,
+    body: AppliedUpdateRequest,
+) -> TailorRunRecord:
+    """Toggle the applied flag on a tailor run."""
+    record = set_applied(conn, tailor_run_id, applied=body.applied)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
+    return record
+
+
+class TailorRunExport(BaseModel):
+    """Full bundle of an applied (or applied-able) tailor run.
+
+    Generic export envelope -- any external tool that wants to load a
+    jobai application's artefacts can fetch this one URL and have
+    everything it needs: the parsed JD, the resume + cover-letter PDF
+    locations, the QA verdict, and the bookkeeping metadata. The
+    PDFs are returned as URLs (not bytes) so the caller streams them
+    independently when it needs to.
+
+    The user copies the export URL from the /tailor-runs page and
+    pastes it into whatever downstream tool consumes it. No
+    consumer-specific fields live here -- the schema is stable and
+    deliberately minimal.
+    """
+
+    tailor_run_id: int = Field(description="jobai-internal run id.")
+    job_id: int | None = Field(description="Catalogue job id, if matched.")
+    jd_url: str | None = Field(description="Job description URL the run targeted.")
+    apply_url: str | None = Field(description="Apply URL for the catalogue job, if known.")
+    title: str = Field(description="Job title (from catalogue or sibling-parsed JD).")
+    company: str = Field(description="Company name (from catalogue or sibling-parsed JD).")
+    jd_markdown: str = Field(description="Parsed JD as markdown for downstream consumers.")
+    resume_pdf_url: str = Field(description="Stable URL to stream the tailored resume PDF.")
+    letter_pdf_url: str = Field(description="Stable URL to stream the tailored cover-letter PDF.")
+    resume_filename: str | None = Field(description="Suggested filename for the resume PDF.")
+    letter_filename: str | None = Field(description="Suggested filename for the cover-letter PDF.")
+    qa_assessment: QAAssessment | None = Field(description="Full QA verdict, if available.")
+    applied_at: str | None = Field(description="ISO 8601 UTC when the user marked applied.")
+    created_at: str = Field(description="ISO 8601 UTC when the chain was kicked.")
+    finished_at: str | None = Field(description="ISO 8601 UTC when the chain reached terminal.")
+
+
+@router.get(
+    "/runs/{tailor_run_id}/export",
+    response_model=TailorRunExport,
+    summary="Export an applied tailor run as a single JSON bundle.",
+)
+async def export_run(
+    request: Request,
+    conn: ConnDep,
+    resume_client: ResumeDep,
+    tailor_run_id: int,
+) -> TailorRunExport:
+    """Return the full bundle of artefacts for a tailor run.
+
+    Stable schema for any external tool to consume. The PDFs come
+    back as URLs so the caller streams them on demand rather than
+    paying the base64 cost up front. JD is rendered as markdown
+    (same shape the on-disk ``jd.md`` carries).
+    """
+    record = get_tailor_run(conn, tailor_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
+
+    # Resolve title + company + apply URL, preferring the jobs row
+    # for catalogue runs and the sibling's parsed requirements for
+    # bare-URL runs. Same precedence the snapshot module uses.
+    title = "Job"
+    company = "Company"
+    apply_url: str | None = record.jd_url
+    if record.job_id is not None:
+        row = conn.execute(
+            "SELECT title, company, apply_url FROM jobs WHERE id = ?",
+            (record.job_id,),
+        ).fetchone()
+        if row is not None:  # pragma: no branch - jobs FK CASCADE means the run is gone too
+            title = row["title"] or title
+            company = row["company"] or company
+            apply_url = row["apply_url"] or apply_url
+
+    # Pull the sibling's parsed JD + tailored payload. Fail-soft: a
+    # sibling outage degrades the JD markdown to a stub but the rest
+    # of the bundle is still useful.
+    resume_record: dict[str, object] = {}
+    if record.resume_run_id:
+        try:
+            resume_record = await resume_client.get_run(record.resume_run_id)
+        except Exception:  # noqa: BLE001 - export is best-effort
+            resume_record = {}
+    if record.job_id is None and isinstance(resume_record, dict):
+        reqs = resume_record.get("requirements") if resume_record else None
+        if isinstance(reqs, dict):
+            t = reqs.get("title")
+            c = reqs.get("company")
+            if isinstance(t, str) and t:
+                title = t
+            if isinstance(c, str) and c:
+                company = c
+
+    # JD markdown reuses the same builder as the on-disk snapshot so
+    # the export and the file match byte-for-byte.
+    from jobai.tailor.snapshot import _build_jd_markdown  # noqa: PLC0415
+
+    jd_markdown = _build_jd_markdown(record, resume_record, title=title, company=company)
+
+    # Build absolute URLs so the export bundle works when copied to
+    # another host (the user pastes it into a tool running outside
+    # the browser tab that fetched the export).
+    base = str(request.base_url).rstrip("/")
+    return TailorRunExport(
+        tailor_run_id=record.id,
+        job_id=record.job_id,
+        jd_url=record.jd_url,
+        apply_url=apply_url,
+        title=title,
+        company=company,
+        jd_markdown=jd_markdown,
+        resume_pdf_url=f"{base}/api/tailor/runs/{record.id}/resume.pdf",
+        letter_pdf_url=f"{base}/api/tailor/runs/{record.id}/letter.pdf",
+        resume_filename=record.resume_filename,
+        letter_filename=record.letter_filename,
+        qa_assessment=record.qa_assessment,
+        applied_at=record.applied_at,
+        created_at=record.created_at,
+        finished_at=record.finished_at,
+    )
 
 
 @router.get(

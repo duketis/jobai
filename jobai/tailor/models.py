@@ -153,6 +153,15 @@ class TailorRunRecord(BaseModel):
         default=None,
         description=("Descriptive cover-letter filename, see `resume_filename`."),
     )
+    applied_at: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 UTC timestamp the user marked this application "
+            "as submitted (via PATCH /api/tailor/runs/{id}/applied). "
+            "NULL = not applied yet. Independent of `status` -- a run "
+            "stays SUCCEEDED whether or not it was ever submitted."
+        ),
+    )
     error: str | None = None
     created_at: str
     updated_at: str

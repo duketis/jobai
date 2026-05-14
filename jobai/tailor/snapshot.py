@@ -85,7 +85,6 @@ async def write_snapshot(
     tailor_run_id: int,
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
-    apply_profile: dict[str, str] | None = None,
 ) -> Path | None:
     """Write the per-job snapshot folder for a completed tailor run.
 
@@ -102,7 +101,6 @@ async def write_snapshot(
             tailor_run_id=tailor_run_id,
             resume_client=resume_client,
             letter_client=letter_client,
-            apply_profile=apply_profile or {},
         )
     except Exception:  # noqa: BLE001 - snapshot is best-effort
         _log.warning(
@@ -120,7 +118,6 @@ async def _write_snapshot_inner(
     tailor_run_id: int,
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
-    apply_profile: dict[str, str],
 ) -> Path | None:
     # Pull the row + the job's title/company under one connection.
     with sqlite3.connect(db_path) as conn:
@@ -231,22 +228,13 @@ async def _write_snapshot_inner(
         encoding="utf-8",
     )
 
-    # Per-job checklist. The applied-on line stays blank; the user
-    # fills it in when they submit. The regenerate_index pass below
-    # parses that line to flip the master INDEX from ☐ to ✅.
-    (folder / "CHECKLIST.md").write_text(
-        _build_checklist(
-            title=title,
-            company=company,
-            apply_url=apply_url,
-            resume_filename=resume_name,
-            letter_filename=letter_name,
-            profile=apply_profile,
-        ),
-        encoding="utf-8",
-    )
-
-    regenerate_index(output_dir)
+    # v1.18.0 removed the per-job CHECKLIST.md and the master INDEX.md
+    # the v1.17.0 build wrote here. The user-facing applied/not-applied
+    # tracking moved to the database (``tailor_runs.applied_at``) +
+    # /tailor-runs UI. The folder layout that remains -- PDFs + jd.md
+    # + qa.json + metadata.json -- is the contract the sibling
+    # ``interviewai`` reads from for interview prep; no markdown
+    # required.
     return folder
 
 
@@ -358,126 +346,7 @@ def _build_jd_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _build_checklist(
-    *,
-    title: str,
-    company: str,
-    apply_url: str | None,
-    resume_filename: str,
-    letter_filename: str,
-    profile: dict[str, str],
-) -> str:
-    """Compose the per-job ``CHECKLIST.md`` body.
-
-    Profile fields appear inline so the user can copy each one
-    straight into the application form without bouncing back to a
-    Settings page. The bottom "Applied on:" line is what
-    ``regenerate_index`` parses to flip the master state.
-    """
-    lines: list[str] = [
-        f"# {company} — {title}",
-        "",
-    ]
-    if apply_url:
-        lines.append(f"Apply URL: {apply_url}")
-        lines.append("")
-    lines.append("## Submit")
-    lines.append("- [ ] Open apply URL above")
-    lines.append(f"- [ ] Upload `{resume_filename}`")
-    lines.append(f"- [ ] Upload `{letter_filename}`")
-    for label, key in (
-        ("Name", "full_name"),
-        ("Email", "email"),
-        ("Phone", "phone"),
-        ("Location", "location"),
-        ("LinkedIn", "linkedin_url"),
-        ("GitHub", "github_url"),
-        ("Right to work", "right_to_work"),
-        ("Notice period", "notice_period"),
-        ("Salary expectation", "salary_expectation"),
-    ):
-        value = profile.get(key)
-        if value:
-            lines.append(f"- [ ] {label}: {value}")
-    lines.append("- [ ] Submit")
-    lines.append("- [ ] Applied on: ____________")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def regenerate_index(output_dir: Path) -> Path:
-    """Rebuild ``INDEX.md`` from every folder under ``output_dir``.
-
-    Walks the output dir once, reads each folder's ``metadata.json``
-    plus ``CHECKLIST.md`` (for the "Applied on:" line), and emits a
-    flat checklist of every job sorted newest-first by
-    ``snapshotted_at``. Cheap enough to run after every snapshot --
-    20 folders is ~20 file reads.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    entries: list[tuple[str, bool, str, str, str, str]] = []
-    for child in sorted(output_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        meta_path = child / "metadata.json"
-        if not meta_path.is_file():
-            continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        snapshotted_at = str(meta.get("snapshotted_at") or "")
-        title = str(meta.get("title") or "Job")
-        company = str(meta.get("company") or "Company")
-        applied = _checklist_is_applied(child / "CHECKLIST.md")
-        entries.append(
-            (snapshotted_at, applied, company, title, child.name, str(meta.get("apply_url") or "")),
-        )
-
-    entries.sort(key=lambda e: e[0], reverse=True)
-
-    lines: list[str] = [
-        "# jobai tailored applications",
-        "",
-        (
-            "Tick the ☐ in each folder's `CHECKLIST.md` and fill the "
-            "`Applied on:` date to flip a row to ✅ here."
-        ),
-        "",
-    ]
-    for _ts, applied, company, title, folder, url in entries:
-        mark = "✅" if applied else "☐"
-        suffix = f" — {url}" if url else ""
-        lines.append(f"- {mark} **{company}** — {title} — `{folder}/`{suffix}")
-    lines.append("")
-
-    index_path = output_dir / "INDEX.md"
-    index_path.write_text("\n".join(lines), encoding="utf-8")
-    return index_path
-
-
-def _checklist_is_applied(checklist_path: Path) -> bool:
-    """Return True if the ``Applied on:`` line in the checklist has
-    been filled in (any non-whitespace content past the underscore
-    placeholder counts as applied)."""
-    if not checklist_path.is_file():
-        return False
-    try:
-        text = checklist_path.read_text(encoding="utf-8")
-    except OSError:  # pragma: no cover - defensive; file existed at is_file() check
-        return False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("- [ ] applied on:"):
-            payload = stripped.split(":", 1)[1].strip().strip("_").strip()
-            return bool(payload)
-        if stripped.lower().startswith("- [x] applied on:"):
-            return True
-    return False
-
-
 __all__ = [
-    "regenerate_index",
     "write_snapshot",
 ]
 

@@ -91,7 +91,6 @@ async def run_chain(
     refresh_context_scans: Callable[[], Awaitable[None]] | None = None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None = None,
     snapshot_output_dir: Path | None = None,
-    apply_profile: dict[str, str] | None = None,
 ) -> None:
     """Drive one tailor chain to terminal state.
 
@@ -124,7 +123,6 @@ async def run_chain(
             refresh_context_scans=refresh_context_scans,
             fetch_qa_context=fetch_qa_context,
             snapshot_output_dir=snapshot_output_dir,
-            apply_profile=apply_profile,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
         _log.exception("tailor_chain_failed", extra={"tailor_run_id": tailor_run_id})
@@ -152,7 +150,6 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
     refresh_context_scans: Callable[[], Awaitable[None]] | None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None,
     snapshot_output_dir: Path | None,
-    apply_profile: dict[str, str] | None,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
 
@@ -342,7 +339,6 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
         resume_client=resume_client,
         letter_client=letter_client,
         snapshot_output_dir=snapshot_output_dir,
-        apply_profile=apply_profile,
     )
 
 
@@ -353,7 +349,6 @@ async def _settle_terminal_success(
     resume_client: ResumeaiClient,
     letter_client: CoverletteraiClient,
     snapshot_output_dir: Path | None,
-    apply_profile: dict[str, str] | None,
 ) -> None:
     """Cache filenames, mark the row succeeded, and snapshot to disk.
 
@@ -405,7 +400,6 @@ async def _settle_terminal_success(
             tailor_run_id=tailor_run_id,
             resume_client=resume_client,
             letter_client=letter_client,
-            apply_profile=apply_profile,
         )
 
 

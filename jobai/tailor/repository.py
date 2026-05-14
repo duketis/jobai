@@ -63,7 +63,7 @@ _SELECT_COLUMNS = (
     "id, job_id, jd_url, status, resume_run_id, resume_status, "
     "letter_run_id, letter_status, qa_status, qa_assessment_json, "
     "qa_attempts, resume_filename, letter_filename, error, "
-    "created_at, updated_at, finished_at"
+    "applied_at, created_at, updated_at, finished_at"
 )
 
 
@@ -84,8 +84,14 @@ def list_tailor_runs(
     limit: int = 50,
     job_id: int | None = None,
     status: TailorRunStatus | None = None,
+    applied: bool | None = None,
 ) -> list[TailorRunRecord]:
-    """Return tailor runs newest-first, optionally filtered."""
+    """Return tailor runs newest-first, optionally filtered.
+
+    ``applied=True``  -> only rows where ``applied_at`` is non-null.
+    ``applied=False`` -> only rows where ``applied_at`` is null.
+    ``applied=None``  -> no filtering on applied state (default).
+    """
     clauses: list[str] = []
     params: list[object] = []
     if job_id is not None:
@@ -94,6 +100,10 @@ def list_tailor_runs(
     if status is not None:
         clauses.append("status = ?")
         params.append(status.value)
+    if applied is True:
+        clauses.append("applied_at IS NOT NULL")
+    elif applied is False:
+        clauses.append("applied_at IS NULL")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(int(limit))
     # ``where`` is built from a closed set of literal clauses above; all
@@ -163,6 +173,30 @@ def update_status(
     conn.commit()
 
 
+def set_applied(
+    conn: sqlite3.Connection,
+    tailor_run_id: int,
+    *,
+    applied: bool,
+) -> TailorRunRecord | None:
+    """Toggle the user-submitted-this-application flag.
+
+    ``applied=True`` stamps ``applied_at`` with the current UTC time;
+    ``applied=False`` clears it back to NULL. Returns the fresh
+    record or ``None`` if the row doesn't exist (caller maps that to
+    a 404).
+    """
+    now = _now() if applied else None
+    cursor = conn.execute(
+        "UPDATE tailor_runs SET applied_at = ?, updated_at = ? WHERE id = ?",
+        (now, _now(), tailor_run_id),
+    )
+    if cursor.rowcount == 0:
+        return None
+    conn.commit()
+    return get_tailor_run(conn, tailor_run_id)
+
+
 def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
     qa_status_raw = row["qa_status"]
     qa_assessment_raw = row["qa_assessment_json"]
@@ -185,6 +219,7 @@ def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
         qa_attempts=int(row["qa_attempts"]) if row["qa_attempts"] is not None else 0,
         resume_filename=row["resume_filename"],
         letter_filename=row["letter_filename"],
+        applied_at=row["applied_at"],
         error=row["error"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

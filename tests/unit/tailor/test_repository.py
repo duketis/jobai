@@ -152,3 +152,51 @@ def test_create_tailor_run_rejects_no_args(conn: sqlite3.Connection) -> None:
 def test_create_tailor_run_rejects_both_args(conn: sqlite3.Connection) -> None:
     with pytest.raises(ValueError, match="exactly one of job_id / jd_url"):
         create_tailor_run(conn, job_id=1, jd_url="https://example.com/jd")
+
+
+# ---------------------------------------------------------------------------
+# Applied-state (v1.18.0)
+# ---------------------------------------------------------------------------
+
+
+def test_set_applied_stamps_and_clears_applied_at(conn: sqlite3.Connection) -> None:
+    """``set_applied(True)`` writes a non-null timestamp;
+    ``set_applied(False)`` clears it back to None. Same helper, two
+    directions -- maps directly to the PATCH endpoint."""
+    from jobai.tailor.repository import set_applied  # noqa: PLC0415
+
+    record = create_tailor_run(conn, job_id=1)
+    assert record.applied_at is None
+
+    after_mark = set_applied(conn, record.id, applied=True)
+    assert after_mark is not None
+    assert after_mark.applied_at is not None
+
+    after_clear = set_applied(conn, record.id, applied=False)
+    assert after_clear is not None
+    assert after_clear.applied_at is None
+
+
+def test_set_applied_returns_none_for_unknown_run(conn: sqlite3.Connection) -> None:
+    """Unknown run id -> None so the route maps it to a 404 cleanly."""
+    from jobai.tailor.repository import set_applied  # noqa: PLC0415
+
+    assert set_applied(conn, 99_999, applied=True) is None
+
+
+def test_list_tailor_runs_filters_by_applied(conn: sqlite3.Connection) -> None:
+    """``applied=True`` -> only rows with applied_at set;
+    ``applied=False`` -> only NULL applied_at; ``applied=None`` -> both."""
+    from jobai.tailor.repository import set_applied  # noqa: PLC0415
+
+    applied_run = create_tailor_run(conn, job_id=1)
+    pending_run = create_tailor_run(conn, job_id=1)
+    set_applied(conn, applied_run.id, applied=True)
+
+    applied_ids = {r.id for r in list_tailor_runs(conn, applied=True)}
+    pending_ids = {r.id for r in list_tailor_runs(conn, applied=False)}
+    all_ids = {r.id for r in list_tailor_runs(conn)}
+
+    assert applied_ids == {applied_run.id}
+    assert pending_ids == {pending_run.id}
+    assert {applied_run.id, pending_run.id}.issubset(all_ids)

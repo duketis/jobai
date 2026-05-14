@@ -620,7 +620,6 @@ async def test_schedule_chain_wires_refresh_closure_with_url(
         qa_client=None,
         resumeai_url="http://resumeai:8765",
         snapshot_output_dir=tailor_app_db.parent / "tailored",
-        apply_profile={},
     )
 
     await pool.drain()
@@ -1091,3 +1090,239 @@ async def test_resolve_pdf_filename_when_row_missing_falls_through_to_live(
         conn.close()
 
     assert filename == "Applicant-Job-Company-Resume.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Applied-state (v1.18.0): PATCH + list filter
+# ---------------------------------------------------------------------------
+
+
+def test_patch_applied_stamps_applied_at(client: TestClient) -> None:
+    """PATCH ``{applied: true}`` writes a non-null applied_at; PATCH
+    ``{applied: false}`` clears it. The toggle is the same endpoint
+    so a misclick is a single round trip to recover."""
+    # Seed a succeeded run we can mark applied.
+    create = client.post("/api/tailor/jobs/1")
+    run_id = create.json()["tailor_run_id"]
+
+    set_true = client.patch(
+        f"/api/tailor/runs/{run_id}/applied",
+        json={"applied": True},
+    )
+    assert set_true.status_code == 200
+    assert set_true.json()["applied_at"] is not None
+
+    set_false = client.patch(
+        f"/api/tailor/runs/{run_id}/applied",
+        json={"applied": False},
+    )
+    assert set_false.status_code == 200
+    assert set_false.json()["applied_at"] is None
+
+
+def test_patch_applied_returns_404_for_unknown_run(client: TestClient) -> None:
+    response = client.patch(
+        "/api/tailor/runs/99999/applied",
+        json={"applied": True},
+    )
+    assert response.status_code == 404
+
+
+def test_list_runs_filters_by_applied_state(client: TestClient) -> None:
+    """The ``applied`` query param is True/False/null. Smoke-tests
+    that the filter is honoured end-to-end without coupling to
+    specific row counts."""
+    a = client.post("/api/tailor/jobs/1").json()["tailor_run_id"]
+    b = client.post("/api/tailor/jobs/1").json()["tailor_run_id"]
+    client.patch(f"/api/tailor/runs/{a}/applied", json={"applied": True})
+
+    all_ids = {r["id"] for r in client.get("/api/tailor/runs").json()["items"]}
+    applied_ids = {r["id"] for r in client.get("/api/tailor/runs?applied=true").json()["items"]}
+    pending_ids = {r["id"] for r in client.get("/api/tailor/runs?applied=false").json()["items"]}
+
+    assert a in all_ids
+    assert b in all_ids
+    assert a in applied_ids
+    assert a not in pending_ids
+    assert b in pending_ids
+    assert b not in applied_ids
+
+
+# ---------------------------------------------------------------------------
+# Export endpoint (v1.18.0)
+# ---------------------------------------------------------------------------
+
+
+def test_export_returns_bundle_for_catalogue_run(client: TestClient) -> None:
+    """The export endpoint returns a stable JSON bundle: ids, JD
+    markdown, PDF URLs, QA verdict, applied state, timestamps. PDFs
+    are URLs (not bytes) so the caller streams them on demand."""
+    create = client.post("/api/tailor/jobs/1")
+    run_id = create.json()["tailor_run_id"]
+
+    export = client.get(f"/api/tailor/runs/{run_id}/export")
+    assert export.status_code == 200
+    body = export.json()
+    assert body["tailor_run_id"] == run_id
+    assert body["job_id"] == 1
+    assert body["title"]
+    assert body["company"]
+    assert body["jd_markdown"].startswith("# ")
+    # Absolute URLs so the bundle is portable to other hosts.
+    assert body["resume_pdf_url"].endswith(f"/api/tailor/runs/{run_id}/resume.pdf")
+    assert body["letter_pdf_url"].endswith(f"/api/tailor/runs/{run_id}/letter.pdf")
+    assert body["resume_pdf_url"].startswith("http")
+    assert body["created_at"]
+
+
+def test_export_returns_404_for_unknown_run(client: TestClient) -> None:
+    response = client.get("/api/tailor/runs/99999/export")
+    assert response.status_code == 404
+
+
+def test_export_degrades_when_sibling_unreachable(
+    client: TestClient,
+    app_with_overrides: tuple[FastAPI, ScriptedResumeClient, ScriptedLetterClient],
+) -> None:
+    """Sibling 5xx during get_run leaves the JD markdown as a stub
+    but doesn't fail the export -- the caller still gets the PDF
+    URLs + bookkeeping fields."""
+
+    class _BoomResume(ScriptedResumeClient):
+        async def get_run(self, run_id: str) -> dict[str, object]:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+    app, _, _ = app_with_overrides
+    from jobai.api.routes.tailor import get_resume_client  # noqa: PLC0415
+
+    boom_client = _BoomResume()
+    app.dependency_overrides[get_resume_client] = lambda: boom_client
+
+    create = client.post("/api/tailor/jobs/1")
+    run_id = create.json()["tailor_run_id"]
+
+    export = client.get(f"/api/tailor/runs/{run_id}/export")
+    assert export.status_code == 200
+    body = export.json()
+    # Sibling failed -> JD markdown falls back to the stub.
+    assert "Source:" in body["jd_markdown"]
+    # Bookkeeping fields still populated.
+    assert body["resume_pdf_url"]
+
+
+def test_export_uses_sibling_requirements_for_bare_url_run(
+    client: TestClient,
+    app_with_overrides: tuple[FastAPI, ScriptedResumeClient, ScriptedLetterClient],
+) -> None:
+    """Bare-URL run with no jobs row pulls title/company from the
+    sibling's parsed requirements -- export reflects that."""
+    app, _, _ = app_with_overrides
+    from jobai.api.routes.tailor import get_resume_client  # noqa: PLC0415
+
+    custom_resume = ScriptedResumeClient(
+        run_record={
+            "id": "rs_x",
+            "tailored": {"name": "Jane Doe"},
+            "requirements": {
+                "title": "Senior Backend Engineer",
+                "company": "Globex",
+            },
+        },
+    )
+    app.dependency_overrides[get_resume_client] = lambda: custom_resume
+
+    create = client.post(
+        "/api/tailor/url",
+        json={"jd_url": "https://strange.example.com/some-new-jd/x"},
+    )
+    run_id = create.json()["tailor_run_id"]
+
+    export = client.get(f"/api/tailor/runs/{run_id}/export").json()
+    assert export["title"] == "Senior Backend Engineer"
+    assert export["company"] == "Globex"
+    assert export["job_id"] is None
+
+
+def test_export_falls_back_to_defaults_when_bare_url_has_no_requirements(
+    client: TestClient,
+    app_with_overrides: tuple[FastAPI, ScriptedResumeClient, ScriptedLetterClient],
+) -> None:
+    """Bare-URL run where sibling returned no usable requirements
+    block (or non-dict, or non-string title/company) keeps the
+    Job/Company defaults rather than crashing."""
+    app, _, _ = app_with_overrides
+    from jobai.api.routes.tailor import get_resume_client  # noqa: PLC0415
+
+    # Sibling returns requirements with non-string title + non-dict
+    # company so both inner `isinstance` guards fall through.
+    weird_resume = ScriptedResumeClient(
+        run_record={
+            "id": "rs_x",
+            "tailored": {"name": "Jane Doe"},
+            "requirements": {
+                "title": 42,  # not a str -> guard skips
+                "company": None,  # not a str -> guard skips
+            },
+        },
+    )
+    app.dependency_overrides[get_resume_client] = lambda: weird_resume
+
+    create = client.post(
+        "/api/tailor/url",
+        json={"jd_url": "https://strange.example.com/some-new-jd/y"},
+    )
+    run_id = create.json()["tailor_run_id"]
+    export = client.get(f"/api/tailor/runs/{run_id}/export").json()
+    assert export["title"] == "Job"
+    assert export["company"] == "Company"
+
+
+def test_export_handles_run_without_resume_run_id(
+    tailor_app_db: Path,
+) -> None:
+    """A run that somehow reached terminal without a resume_run_id
+    (test fixture, migration weirdness) still exports cleanly --
+    we just skip the sibling call. Tests the ``if
+    record.resume_run_id`` branch directly because the route's
+    normal request flow always populates it."""
+    import sqlite3 as _sql3  # noqa: PLC0415
+
+    # Insert a SUCCEEDED bare-URL run with no resume_run_id set.
+    conn = _sql3.connect(tailor_app_db)
+    try:
+        conn.row_factory = _sql3.Row
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (jd_url, status, created_at, updated_at) "
+            "VALUES ('https://example.com/jd', 'succeeded', "
+            "        datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Build the app with sibling overrides but use the actual db.
+    monkeypatch_env_vars: dict[str, str] = {"JOBAI_DISABLE_SCHEDULER": "1"}
+    import os as _os  # noqa: PLC0415
+
+    for k, v in monkeypatch_env_vars.items():
+        _os.environ[k] = v
+    try:
+        app = create_app()
+        scripted_resume = ScriptedResumeClient()
+        scripted_letter = ScriptedLetterClient()
+        app.dependency_overrides[get_db_path] = lambda: tailor_app_db
+        app.dependency_overrides[get_resume_client] = lambda: scripted_resume
+        app.dependency_overrides[get_letter_client] = lambda: scripted_letter
+        with TestClient(app) as test_client:
+            export = test_client.get(f"/api/tailor/runs/{new_id}/export")
+            assert export.status_code == 200
+            body = export.json()
+            assert body["tailor_run_id"] == new_id
+            # No catalogue row + no sibling requirements -> defaults stick.
+            assert body["title"] == "Job"
+            assert body["company"] == "Company"
+    finally:
+        for k in monkeypatch_env_vars:
+            _os.environ.pop(k, None)
