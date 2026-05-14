@@ -90,3 +90,4 @@ jobai/api/static/
 
 # Session-context anchor — local-only, never committed.
 CLAUDE.md
+compose.override.yml
