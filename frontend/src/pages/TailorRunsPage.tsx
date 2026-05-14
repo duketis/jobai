@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, RefreshCcw } from "lucide-react";
+import { ExternalLink, Plus, RefreshCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { QABadge } from "@/components/QABadge";
+import { TailorFromUrlDialog } from "@/components/TailorFromUrlDialog";
 import { TailorStatusPill } from "@/components/TailorStatusPill";
 import {
   listTailorRuns,
@@ -31,6 +32,7 @@ const STATUS_FILTERS: { label: string; value: TailorRunStatus | "" }[] = [
  */
 export function TailorRunsPage() {
   const [status, setStatus] = useState<TailorRunStatus | "">("");
+  const [urlDialogOpen, setUrlDialogOpen] = useState(false);
 
   const query = useQuery({
     queryKey: ["tailor-runs", status],
@@ -65,16 +67,34 @@ export function TailorRunsPage() {
             )}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void query.refetch()}
-          className="h-9 px-3 rounded-md border border-border bg-background text-sm hover:border-foreground/40 inline-flex items-center gap-1.5"
-          title="Refetch the latest runs"
-        >
-          <RefreshCcw className="size-3.5" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setUrlDialogOpen(true)}
+            className="h-9 px-3 rounded-md bg-foreground text-background text-sm hover:bg-foreground/85 inline-flex items-center gap-1.5"
+            title="Paste any JD URL to kick a fresh tailor chain — catalogue match or direct URL"
+          >
+            <Plus className="size-4" />
+            New tailor from URL
+          </button>
+          <button
+            type="button"
+            onClick={() => void query.refetch()}
+            className="h-9 px-3 rounded-md border border-border bg-background text-sm hover:border-foreground/40 inline-flex items-center gap-1.5"
+            title="Refetch the latest runs"
+          >
+            <RefreshCcw className="size-3.5" />
+            Refresh
+          </button>
+        </div>
       </header>
+
+      {urlDialogOpen ? (
+        <TailorFromUrlDialog
+          onClose={() => setUrlDialogOpen(false)}
+          navigateOnSuccess={false}
+        />
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {STATUS_FILTERS.map((f) => (

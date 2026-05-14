@@ -25,6 +25,7 @@ export default defineConfig({
       include: [
         "src/components/QABadge.tsx",
         "src/components/TailorButton.tsx",
+        "src/components/TailorFromUrlDialog.tsx",
         "src/components/TailorStatusPill.tsx",
         "src/lib/useTailorRuns.ts",
         "src/pages/ContextPage.tsx",

@@ -3,7 +3,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
-  Link2,
   Loader2,
   MapPin,
   Search,
@@ -11,14 +10,13 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { TailorButton } from "@/components/TailorButton";
 import {
   getHealth,
   listJobIds,
   listJobs,
-  tailorFromUrl,
   tailorJobBatch,
   type JobSort,
   type JobsListParams,
@@ -293,8 +291,6 @@ export function JobsListPage() {
     batchMutation.mutate(ids);
   }
 
-  const [urlDialogOpen, setUrlDialogOpen] = useState(false);
-
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <header className="flex items-start justify-between gap-3 flex-wrap">
@@ -312,40 +308,23 @@ export function JobsListPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setUrlDialogOpen(true)}
-            className="h-9 px-3 rounded-md border border-border bg-background text-sm hover:border-foreground/40 transition-colors inline-flex items-center gap-1.5"
-            title="Paste any JD URL — jobai will try to match it in the catalogue, or tailor directly from the URL when there's no match"
-          >
-            <Link2 className="size-4" />
-            Tailor from URL
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectionMode((v) => !v);
-              if (selectionMode) setSelectedIds(new Set());
-            }}
-            className={cn(
-              "h-9 px-3 rounded-md border text-sm transition-colors",
-              selectionMode
-                ? "border-foreground bg-foreground text-background"
-                : "border-border bg-background hover:border-foreground/40",
-            )}
-            title={selectionMode ? "Exit batch mode" : "Select multiple jobs to tailor in one batch"}
-          >
-            {selectionMode ? "Cancel batch" : "Select to batch-tailor"}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setSelectionMode((v) => !v);
+            if (selectionMode) setSelectedIds(new Set());
+          }}
+          className={cn(
+            "h-9 px-3 rounded-md border text-sm transition-colors",
+            selectionMode
+              ? "border-foreground bg-foreground text-background"
+              : "border-border bg-background hover:border-foreground/40",
+          )}
+          title={selectionMode ? "Exit batch mode" : "Select multiple jobs to tailor in one batch"}
+        >
+          {selectionMode ? "Cancel batch" : "Select to batch-tailor"}
+        </button>
       </header>
-
-      {urlDialogOpen ? (
-        <TailorFromUrlDialog
-          onClose={() => setUrlDialogOpen(false)}
-        />
-      ) : null}
 
       {selectionMode && (
         <BatchActionBar
@@ -657,131 +636,6 @@ function BatchActionBar({
             ? `Tailor ${selectedCount} job${selectedCount === 1 ? "" : "s"}`
             : "Pick at least one job"}
       </button>
-    </div>
-  );
-}
-
-/**
- * Modal dialog: paste any JD URL, kick the chain.
- *
- * Two paths behind one button:
- *
- *  - URL is in jobai's catalogue → run uses the catalogue path
- *    (full metadata, the run appears against the existing job row,
- *    "matched job in catalogue" toast).
- *  - URL is NOT in the catalogue → run uses the URL directly
- *    (resumeai gets the URL, ``tailor_runs.jd_url`` is set, the
- *    run still shows up in /tailor-runs).
- *
- * Either way the user lands on the same /tailor-runs view to
- * watch progress, so the UX is "one paste, one result".
- */
-function TailorFromUrlDialog({ onClose }: { onClose: () => void }) {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [url, setUrl] = useState("");
-
-  const kick = useMutation({
-    mutationFn: (jdUrl: string) => tailorFromUrl(jdUrl),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
-      // Drop the user straight onto /tailor-runs so they can watch
-      // the chain walk through resume → letter → QA without having
-      // to find it themselves.
-      onClose();
-      navigate("/tailor-runs");
-    },
-  });
-
-  return (
-    <div
-      className="fixed inset-0 z-40 bg-black/40 flex items-start justify-center pt-24 px-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Tailor from URL"
-    >
-      <div className="bg-card border border-border rounded-md shadow-lg w-full max-w-xl p-5 space-y-4">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="text-lg font-semibold inline-flex items-center gap-2">
-              <Link2 className="size-4" /> Tailor from URL
-            </h2>
-            <p className="text-xs text-muted-foreground mt-1">
-              Paste any JD URL. jobai tries to match it against the catalogue
-              first; if there's no match, the URL goes straight to resumeai
-              and the run still tracks under /tailor-runs.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground p-1 rounded"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const trimmed = url.trim();
-            if (!trimmed) return;
-            kick.mutate(trimmed);
-          }}
-          className="space-y-3"
-        >
-          <input
-            type="url"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://jobs.lever.co/mistral/abc-123/apply"
-            required
-            autoFocus
-            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm font-mono"
-          />
-          {kick.error ? (
-            <p className="text-xs text-destructive">
-              {(kick.error as Error).message}
-            </p>
-          ) : null}
-          {kick.data ? (
-            <p className="text-xs text-muted-foreground">
-              {kick.data.matched_job_id !== null
-                ? `Matched job #${kick.data.matched_job_id} in the catalogue — tailoring now.`
-                : "No catalogue match — tailoring directly from the URL."}
-            </p>
-          ) : null}
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-9 px-3 rounded-md text-sm text-muted-foreground hover:text-foreground"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={kick.isPending || !url.trim()}
-              className={cn(
-                "h-9 px-3 rounded-md text-sm font-medium inline-flex items-center gap-1.5 transition-colors",
-                kick.isPending || !url.trim()
-                  ? "bg-muted text-muted-foreground cursor-not-allowed"
-                  : "bg-foreground text-background hover:bg-foreground/85",
-              )}
-            >
-              {kick.isPending ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Sparkles className="size-4" />
-              )}
-              {kick.isPending ? "Kicking…" : "Tailor"}
-            </button>
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

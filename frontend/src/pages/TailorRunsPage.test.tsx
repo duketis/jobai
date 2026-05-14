@@ -151,4 +151,18 @@ describe("TailorRunsPage", () => {
       expect(screen.getByText(/2m ago/)).toBeInTheDocument();
     });
   });
+
+  it("opens the Tailor-from-URL dialog from the header button", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderPage();
+    await userEvent.click(
+      screen.getByRole("button", { name: /New tailor from URL/ }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // Close it to exercise the onClose path.
+    await userEvent.click(screen.getByRole("button", { name: /Cancel/ }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+  });
 });
