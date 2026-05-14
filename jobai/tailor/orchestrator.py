@@ -27,6 +27,7 @@ from selectolax.parser import HTMLParser
 
 from jobai.db.connection import connect
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
+from jobai.tailor.filenames import build_pdf_filenames
 from jobai.tailor.layout_check import check_pdf_layout
 from jobai.tailor.models import (
     CoverletteraiTailorRequest,
@@ -129,7 +130,7 @@ async def run_chain(
             )
 
 
-async def _run_chain_inner(
+async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting harms readability more than it helps
     tailor_run_id: int,
     *,
     db_path: Path,
@@ -273,38 +274,101 @@ async def _run_chain_inner(
             if not assessment.must_fix_issues or attempts >= max_qa_attempts:
                 break
 
-            # Re-kick the cover letter with the QA feedback so the LLM
-            # has a concrete list of what to fix. If the retry itself
-            # fails (LLM produces a schema-violating letter, sibling
-            # 5xx, anything), keep the previous letter_run_id and stop
-            # retrying -- the first-pass letter is still a usable
-            # artefact and shouldn't be discarded just because the
-            # auto-fix overstep didn't render cleanly.
-            new_letter_run_id = await _rekick_letter_with_feedback(
-                tailor_run_id=tailor_run_id,
-                db_path=db_path,
-                letter_client=letter_client,
-                payload=payload,
-                resume_run_id=resume_run_id,
-                assessment=assessment,
-                sleeper=sleeper,
-                poll_interval_s=poll_interval_s,
-                max_polls=max_polls,
-            )
-            if new_letter_run_id is None:
-                _log.warning(
-                    "tailor_qa_retry_letter_failed",
-                    extra={
-                        "tailor_run_id": tailor_run_id,
-                        "previous_letter_run_id": letter_run_id,
-                    },
+            # Re-kick whichever artefact(s) the QA must-fix issues
+            # actually reference. v1.10.0 shipped letter-only retries
+            # on the assumption that resume content was "verifiable
+            # career data" the LLM wouldn't hallucinate over. v1.15.0
+            # learned otherwise: the resume can claim a wrong LOC /
+            # test count / coverage stat (run 22 saw "~38k Python
+            # LOC" while the verified context said "~15,700"), and
+            # the letter-only retry can't fix a resume-side problem.
+            targets = _retry_targets(assessment)
+            if "resume" in targets:
+                new_resume_run_id = await _rekick_resume_with_feedback(
+                    tailor_run_id=tailor_run_id,
+                    db_path=db_path,
+                    resume_client=resume_client,
+                    payload=payload,
+                    assessment=assessment,
+                    sleeper=sleeper,
+                    poll_interval_s=poll_interval_s,
+                    max_polls=max_polls,
                 )
-                break
-            letter_run_id = new_letter_run_id
+                if new_resume_run_id is not None:
+                    resume_run_id = new_resume_run_id
+                # If the resume retry failed we keep the original and
+                # still try the letter retry; both artefacts ship.
+            if "letter" in targets:
+                # Re-kick the cover letter with the QA feedback so the
+                # LLM has a concrete list of what to fix. The retry
+                # uses the LATEST resume_run_id so a freshly-corrected
+                # resume gets cited consistently in the letter body.
+                new_letter_run_id = await _rekick_letter_with_feedback(
+                    tailor_run_id=tailor_run_id,
+                    db_path=db_path,
+                    letter_client=letter_client,
+                    payload=payload,
+                    resume_run_id=resume_run_id,
+                    assessment=assessment,
+                    sleeper=sleeper,
+                    poll_interval_s=poll_interval_s,
+                    max_polls=max_polls,
+                )
+                if new_letter_run_id is None:
+                    _log.warning(
+                        "tailor_qa_retry_letter_failed",
+                        extra={
+                            "tailor_run_id": tailor_run_id,
+                            "previous_letter_run_id": letter_run_id,
+                        },
+                    )
+                    break
+                letter_run_id = new_letter_run_id
 
-    # ---- terminal success ----------------------------------------------
+    await _settle_terminal_success(
+        tailor_run_id=tailor_run_id,
+        db_path=db_path,
+        resume_client=resume_client,
+    )
+
+
+async def _settle_terminal_success(
+    *,
+    tailor_run_id: int,
+    db_path: Path,
+    resume_client: ResumeaiClient,
+) -> None:
+    """Cache the descriptive PDF filenames and mark the row succeeded.
+
+    Filename caching runs at the chain's tail so the list-runs endpoint
+    can return them without an N+1 sibling call per row. Fail-soft: a
+    sibling outage here leaves the row with NULL filenames and the PDF
+    route falls back to live computation.
+    """
+    resume_filename: str | None = None
+    letter_filename: str | None = None
+    try:
+        with connect(db_path) as conn:
+            resume_filename, letter_filename = await build_pdf_filenames(
+                conn=conn,
+                resume_client=resume_client,
+                tailor_run_id=tailor_run_id,
+            )
+    except Exception:  # noqa: BLE001 - filename caching is best-effort
+        _log.warning(
+            "tailor_filename_cache_failed",
+            extra={"tailor_run_id": tailor_run_id},
+            exc_info=True,
+        )
+
     with connect(db_path) as conn:
-        update_status(conn, tailor_run_id, status=TailorRunStatus.SUCCEEDED)
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.SUCCEEDED,
+            resume_filename=resume_filename,
+            letter_filename=letter_filename,
+        )
 
 
 async def _run_qa_stage(
@@ -457,6 +521,108 @@ def _recompute_status(
     if nice_to_fix_count > 0 or any(s < 80 for s in scores):
         return QAStatus.CONCERNS
     return QAStatus.PASS
+
+
+def _retry_targets(assessment: QAAssessment) -> set[str]:
+    """Decide which artefact(s) to re-kick from the QA must-fix list.
+
+    Scans every must-fix issue's summary + detail for keywords that
+    point at the resume vs the letter. Returns a set with one or both
+    of ``"resume"`` / ``"letter"``.
+
+    Default to ``{"letter"}`` when nothing matches -- the original
+    v1.10.0 behaviour, which is correct for the common "letter
+    overstates X" / "letter wording inconsistent" case where the
+    issue is freer-form letter content and the resume is fine.
+    Resume retries are added when the issues explicitly name the
+    resume so we don't burn a render cycle re-tailoring an artefact
+    the LLM had no complaint about.
+    """
+    targets: set[str] = set()
+    for issue in assessment.must_fix_issues:
+        text = f"{issue.summary} {issue.detail or ''}".lower()
+        if "resume" in text:
+            targets.add("resume")
+        if "letter" in text or "cover" in text:
+            targets.add("letter")
+    if not targets:
+        targets = {"letter"}
+    return targets
+
+
+async def _rekick_resume_with_feedback(
+    *,
+    tailor_run_id: int,
+    db_path: Path,
+    resume_client: ResumeaiClient,
+    payload: _JDPayload,
+    assessment: QAAssessment,
+    sleeper: Sleeper,
+    poll_interval_s: float,
+    max_polls: int,
+) -> str | None:
+    """Re-tailor the resume with the QA must-fix list appended.
+
+    Returns the new ``resume_run_id`` on success, or ``None`` if the
+    retry could not produce a usable artefact (kick exception, sibling
+    returned ``failed``, poll cap hit). Like the letter retry, this
+    is non-fatal: failure leaves the first-pass resume in place and
+    the chain still ships.
+
+    The row transitions through ``qa_retry_running`` so the UI shows
+    "auto-fix attempt" the same as it does for the letter retry path.
+    """
+    feedback_payload = _augment_payload_with_feedback(payload, assessment)
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RETRY_RUNNING,
+        )
+
+    try:
+        new_resume_run_id = await resume_client.kick(_build_resume_request(feedback_payload))
+    except Exception:  # noqa: BLE001 - retry-kick failure is non-fatal
+        _log.warning(
+            "tailor_qa_retry_resume_kick_failed",
+            extra={"tailor_run_id": tailor_run_id},
+            exc_info=True,
+        )
+        return None
+    with connect(db_path) as conn:
+        update_status(
+            conn,
+            tailor_run_id,
+            status=TailorRunStatus.QA_RETRY_RUNNING,
+            resume_run_id=new_resume_run_id,
+        )
+
+    try:
+        snapshot = await _poll_until_terminal(
+            kind="resume",
+            run_id=new_resume_run_id,
+            poll=resume_client.poll,
+            sleeper=sleeper,
+            poll_interval_s=poll_interval_s,
+            max_polls=max_polls,
+            db_path=db_path,
+            tailor_run_id=tailor_run_id,
+            status_field="resume_status",
+            outer_status=TailorRunStatus.QA_RETRY_RUNNING,
+        )
+    except TailorChainError:
+        _log.warning(
+            "tailor_qa_retry_resume_poll_cap_hit",
+            extra={
+                "tailor_run_id": tailor_run_id,
+                "retry_resume_run_id": new_resume_run_id,
+            },
+            exc_info=True,
+        )
+        return None
+    if snapshot.status not in _TERMINAL_SUCCESS:
+        return None
+    return new_resume_run_id
 
 
 async def _rekick_letter_with_feedback(

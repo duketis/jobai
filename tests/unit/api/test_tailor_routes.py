@@ -743,7 +743,9 @@ def test_sanitize_filename_part_strips_path_chars_and_falls_back() -> None:
     """``_sanitize_filename_part`` drops Windows/macOS-illegal chars,
     collapses runs of whitespace, ASCII-folds, and returns the
     fallback when the input sanitises to nothing."""
-    from jobai.api.routes.tailor import _sanitize_filename_part  # noqa: PLC0415
+    from jobai.tailor.filenames import sanitize_filename_part  # noqa: PLC0415
+
+    _sanitize_filename_part = sanitize_filename_part
 
     assert _sanitize_filename_part("My / Job: Title", fallback="Job") == "My Job Title"
     assert _sanitize_filename_part("   ", fallback="Job") == "Job"
@@ -773,7 +775,7 @@ async def test_build_pdf_filename_uses_default_when_job_row_deleted(
     """If the tailor row points at a job_id that no longer exists
     (catalogue trimmed, manual delete), the helper falls back to the
     'Job'/'Company' defaults rather than crashing on a None row."""
-    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+    from jobai.tailor.filenames import build_pdf_filename as _build_pdf_filename  # noqa: PLC0415
 
     conn = sqlite3.connect(tailor_app_db)
     conn.row_factory = sqlite3.Row
@@ -806,7 +808,7 @@ async def test_build_pdf_filename_when_resume_run_id_missing(
     """A row with no resume_run_id (manually inserted / chain crashed
     mid-flight) still produces a filename -- title + company come
     from the jobs row, name falls back to the 'Applicant' default."""
-    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+    from jobai.tailor.filenames import build_pdf_filename as _build_pdf_filename  # noqa: PLC0415
 
     conn = sqlite3.connect(tailor_app_db)
     conn.row_factory = sqlite3.Row
@@ -836,7 +838,7 @@ async def test_build_pdf_filename_handles_weird_sibling_payloads(
     """The helper type-narrows every sibling field defensively so a
     sibling returning ``{"tailored": "not-a-dict"}`` or a non-string
     name/title doesn't break filename construction."""
-    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+    from jobai.tailor.filenames import build_pdf_filename as _build_pdf_filename  # noqa: PLC0415
 
     class _WeirdResume(ScriptedResumeClient):
         async def get_run(self, run_id: str) -> dict[str, object]:
@@ -881,7 +883,7 @@ async def test_build_pdf_filename_url_path_with_non_string_fields(
     ``requirements`` dict whose ``title``/``company`` aren't strings
     (numeric ATS code, missing field), the helper keeps the
     fallbacks rather than coercing surprising types."""
-    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+    from jobai.tailor.filenames import build_pdf_filename as _build_pdf_filename  # noqa: PLC0415
 
     class _IntFields(ScriptedResumeClient):
         async def get_run(self, run_id: str) -> dict[str, object]:
@@ -922,7 +924,7 @@ async def test_build_pdf_filename_swallows_sibling_failure(
     to look up the applicant name, the helper returns a filename
     anyway -- the actual PDF stream is what the user cares about,
     not a perfect filename."""
-    from jobai.api.routes.tailor import _build_pdf_filename  # noqa: PLC0415
+    from jobai.tailor.filenames import build_pdf_filename as _build_pdf_filename  # noqa: PLC0415
 
     class _BoomResume(ScriptedResumeClient):
         async def get_run(self, run_id: str) -> dict[str, object]:
@@ -955,3 +957,109 @@ async def test_build_pdf_filename_swallows_sibling_failure(
     # Title + company still come from the seeded jobs row even when
     # the sibling fails; only the applicant name falls back.
     assert filename == "Applicant-Engineer-Acme-Resume.pdf"
+
+
+async def test_resolve_pdf_filename_falls_back_to_live_when_cache_empty(
+    tailor_app_db: Path,
+) -> None:
+    """v1.15.0 caches the filenames on the tailor_runs row at terminal
+    SUCCESS. Rows that finished before the cache landed have NULL --
+    the route helper falls back to building live so old runs keep
+    working without backfill."""
+    from jobai.api.routes.tailor import _resolve_pdf_filename  # noqa: PLC0415
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs (job_id, status, resume_run_id, created_at, updated_at) "
+            "VALUES (1, 'succeeded', 'rs_legacy', datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        filename = await _resolve_pdf_filename(
+            conn=conn,
+            resume_client=ScriptedResumeClient(
+                run_record={
+                    "id": "rs_legacy",
+                    "tailored": {"name": "Jane Doe"},
+                },
+            ),
+            tailor_run_id=new_id,
+            kind="resume",
+        )
+    finally:
+        conn.close()
+
+    # Live builder ran (cache was NULL); used the seeded job's
+    # title + company and the sibling's tailored.name.
+    assert filename == "Jane_Doe-Engineer-Acme-Resume.pdf"
+
+
+async def test_resolve_pdf_filename_returns_cached_when_present(
+    tailor_app_db: Path,
+) -> None:
+    """When the row already has a cached filename, the helper short-
+    circuits and returns it -- no sibling fetch, no live compute."""
+    from jobai.api.routes.tailor import _resolve_pdf_filename  # noqa: PLC0415
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "INSERT INTO tailor_runs ("
+            "job_id, status, resume_run_id, resume_filename, letter_filename, "
+            "created_at, updated_at"
+            ") VALUES (1, 'succeeded', 'rs_x', 'Cached-Resume.pdf', "
+            "'Cached-Letter.pdf', datetime('now'), datetime('now'))",
+        )
+        new_id = int(cursor.lastrowid or 0)
+        conn.commit()
+
+        class _BoomResume:
+            async def get_run(self, _run_id: str) -> dict[str, object]:
+                msg = "should not be called -- cache should short-circuit"
+                raise AssertionError(msg)
+
+        resume_filename = await _resolve_pdf_filename(
+            conn=conn,
+            resume_client=_BoomResume(),  # type: ignore[arg-type]
+            tailor_run_id=new_id,
+            kind="resume",
+        )
+        letter_filename = await _resolve_pdf_filename(
+            conn=conn,
+            resume_client=_BoomResume(),  # type: ignore[arg-type]
+            tailor_run_id=new_id,
+            kind="letter",
+        )
+    finally:
+        conn.close()
+
+    assert resume_filename == "Cached-Resume.pdf"
+    assert letter_filename == "Cached-Letter.pdf"
+
+
+async def test_resolve_pdf_filename_when_row_missing_falls_through_to_live(
+    tailor_app_db: Path,
+) -> None:
+    """Defensive: if the route somehow calls with a nonexistent run id,
+    ``_resolve_pdf_filename`` falls through to the live builder which
+    itself returns a sane default. Belt-and-braces -- production
+    routes always go through ``_require_artefact`` first."""
+    from jobai.api.routes.tailor import _resolve_pdf_filename  # noqa: PLC0415
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        conn.row_factory = sqlite3.Row
+        filename = await _resolve_pdf_filename(
+            conn=conn,
+            resume_client=ScriptedResumeClient(),
+            tailor_run_id=99_999,  # no such row
+            kind="resume",
+        )
+    finally:
+        conn.close()
+
+    assert filename == "Applicant-Job-Company-Resume.pdf"

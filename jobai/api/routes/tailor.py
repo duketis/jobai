@@ -15,7 +15,6 @@ just call ``stream_pdf``.
 from __future__ import annotations
 
 import asyncio
-import re
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -29,6 +28,7 @@ from jobai.api.dependencies import ConnDep, get_db_path
 from jobai.api.repository import find_jobs_by_url
 from jobai.api.runtime_settings import get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
+from jobai.tailor.filenames import build_pdf_filename
 from jobai.tailor.models import (
     KickBatchRequest,
     KickBatchResponse,
@@ -383,7 +383,7 @@ async def download_resume_pdf(
 ) -> StreamingResponse:
     """Proxy ``GET /runs/{resume_run_id}/pdf`` on resumeai for this row."""
     resume_run_id = _require_artefact(conn, tailor_run_id, kind="resume")
-    filename = await _build_pdf_filename(
+    filename = await _resolve_pdf_filename(
         conn=conn,
         resume_client=resume_client,
         tailor_run_id=tailor_run_id,
@@ -405,7 +405,7 @@ async def download_letter_pdf(
 ) -> StreamingResponse:
     """Proxy ``GET /api/runs/{letter_run_id}/pdf`` on coverletterai for this row."""
     letter_run_id = _require_artefact(conn, tailor_run_id, kind="letter")
-    filename = await _build_pdf_filename(
+    filename = await _resolve_pdf_filename(
         conn=conn,
         resume_client=resume_client,
         tailor_run_id=tailor_run_id,
@@ -478,93 +478,28 @@ async def _proxy_pdf(
     return StreamingResponse(_iter(), media_type=media_type, headers=headers)
 
 
-_FILENAME_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
-_FILENAME_WHITESPACE = re.compile(r"\s+")
-
-
-def _sanitize_filename_part(text: str | None, *, fallback: str) -> str:
-    """Strip path-illegal characters, collapse whitespace, ASCII-fold.
-
-    Returns ``fallback`` when the input is empty / None or sanitises
-    down to nothing -- keeps the final filename non-empty even for
-    bare-URL runs the sibling hasn't tagged with a title yet.
-    """
-    if not text:
-        return fallback
-    # Drop characters illegal on Windows + macOS, then collapse runs
-    # of whitespace to a single space, then ASCII-fold so the
-    # downloaded filename works across browsers and shells.
-    cleaned = _FILENAME_BAD_CHARS.sub(" ", text)
-    cleaned = _FILENAME_WHITESPACE.sub(" ", cleaned).strip(" .")
-    cleaned = cleaned.encode("ascii", "ignore").decode("ascii").strip()
-    return cleaned or fallback
-
-
-async def _build_pdf_filename(
+async def _resolve_pdf_filename(
     *,
     conn: sqlite3.Connection,
     resume_client: ResumeaiClient,
     tailor_run_id: int,
     kind: str,
 ) -> str:
-    """Compose ``<Name>-<JobTitle>-<Company>-<Resume|CoverLetter>.pdf``.
+    """Return the cached filename from the row, or compute live if absent.
 
-    Identity (applicant name) comes from the sibling's tailored payload
-    -- resumeai owns the identity. Title + company come from the
-    ``jobs`` row for catalogue runs, or from the sibling's parsed
-    requirements for bare-URL runs. Every field has a fallback so a
-    partially-populated row still produces a usable filename.
-
-    ``kind`` is ``"resume"`` or ``"letter"``.
+    v1.15.0 added the cache columns so the list-runs response can serve
+    filenames without an N+1 sibling fetch. Rows that finished before
+    the cache landed still have NULL filenames; fall back to the live
+    builder so old runs keep working.
     """
     record = get_tailor_run(conn, tailor_run_id)
-    # _require_artefact already validated the row exists when the route
-    # reached us; this is the defensive fallback for direct callers.
-    if record is None:  # pragma: no cover - the route guard runs first
-        suffix = "Resume" if kind == "resume" else "CoverLetter"
-        return f"Applicant-Job-Company-{suffix}.pdf"
-
-    title = "Job"
-    company = "Company"
-    if record.job_id is not None:
-        row = conn.execute(
-            "SELECT title, company FROM jobs WHERE id = ?",
-            (record.job_id,),
-        ).fetchone()
-        if row is not None:
-            title = row[0] or title
-            company = row[1] or company
-
-    # Pull the applicant name (and, for URL-only runs, title+company)
-    # from the sibling's tailored record. Wrapped in a defensive
-    # try/except: a sibling outage here only degrades the filename, it
-    # doesn't break the actual PDF stream the user is waiting on.
-    name = "Applicant"
-    if record.resume_run_id:
-        try:
-            resume_rec = await resume_client.get_run(record.resume_run_id)
-        except Exception:  # noqa: BLE001 - filename is best-effort
-            resume_rec = {}
-        tailored = resume_rec.get("tailored") if isinstance(resume_rec, dict) else None
-        if isinstance(tailored, dict):
-            name_val = tailored.get("name")
-            if isinstance(name_val, str):
-                name = name_val
-        if record.job_id is None:
-            reqs = resume_rec.get("requirements") if isinstance(resume_rec, dict) else None
-            if isinstance(reqs, dict):
-                t = reqs.get("title")
-                c = reqs.get("company")
-                if isinstance(t, str):
-                    title = t
-                if isinstance(c, str):
-                    company = c
-
-    name_s = _sanitize_filename_part(name, fallback="Applicant")
-    title_s = _sanitize_filename_part(title, fallback="Job")
-    company_s = _sanitize_filename_part(company, fallback="Company")
-    suffix = "Resume" if kind == "resume" else "CoverLetter"
-    # Replace spaces inside each part with underscores so the final
-    # filename reads as one hyphen-separated token per field.
-    parts = [p.replace(" ", "_") for p in (name_s, title_s, company_s, suffix)]
-    return "-".join(parts) + ".pdf"
+    if record is not None:
+        cached = record.resume_filename if kind == "resume" else record.letter_filename
+        if cached:
+            return cached
+    return await build_pdf_filename(
+        conn=conn,
+        resume_client=resume_client,
+        tailor_run_id=tailor_run_id,
+        kind=kind,
+    )

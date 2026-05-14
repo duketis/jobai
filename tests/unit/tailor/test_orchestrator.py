@@ -278,7 +278,10 @@ async def test_happy_path_runs_qa_when_client_supplied(
     assert final.qa_assessment.coverage_score == 90
     # The QA client saw the JD + tailored payloads pulled from siblings.
     assert qa.calls and "Engineer" in str(qa.calls[0]["user"])
-    assert scripted_resume_client.get_run_calls == ["rs_1"]
+    # Two get_run calls on resumeai: one for QA, one for filename cache
+    # at terminal SUCCESS (batched via build_pdf_filenames so the letter
+    # filename comes free).
+    assert scripted_resume_client.get_run_calls == ["rs_1", "rs_1"]
     assert scripted_letter_client.get_run_calls == ["ls_1"]
 
 
@@ -309,9 +312,11 @@ async def test_qa_skipped_when_no_client_supplied(
     assert final.status is TailorRunStatus.SUCCEEDED
     assert final.qa_status is None
     assert final.qa_assessment is None
-    # Neither sibling client was asked for its full record (we only
-    # need that for the QA stage).
-    assert scripted_resume_client.get_run_calls == []
+    # The letter sibling was never asked for its full record (we only
+    # need that for the QA stage). The resume sibling is hit once at
+    # terminal SUCCESS to build the cached filenames so the frontend
+    # can render proper download names.
+    assert scripted_resume_client.get_run_calls == ["rs_1"]
     assert scripted_letter_client.get_run_calls == []
 
 
@@ -1006,7 +1011,9 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     """End-to-end: when ``_gather_layout_issues`` returns a non-empty
     list (simulated via monkeypatch), the QA stage folds those into
     the assessment, status drops to fail, and the auto-fix loop
-    re-kicks the letter exactly like a content must-fix would."""
+    re-kicks the artefact the layout problem belongs to. v1.15.0:
+    a layout issue whose summary says ``resume: page 2...`` targets
+    the resume; the letter is left alone."""
     from jobai.tailor import orchestrator as orch  # noqa: PLC0415
     from jobai.tailor.models import QAIssue  # noqa: PLC0415
 
@@ -1045,12 +1052,14 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     with connect(tailor_db_path) as conn:
         final = get_tailor_run(conn, record.id)
     assert final is not None
-    # Auto-fix loop ran: 2 attempts, letter re-kicked once, layout
-    # issue cleared on the second pass.
+    # Auto-fix loop ran: 2 attempts. The resume was re-kicked because
+    # the layout-issue summary mentions "resume" -- the letter was
+    # left alone (its kick_requests count stays at 1, the initial).
     assert final.qa_attempts == 2
-    assert len(scripted_letter_client.kick_requests) == 2
-    # The retry kick's jd_text contains the layout-specific guidance.
-    retry_jd = scripted_letter_client.kick_requests[1].jd_text or ""
+    assert len(scripted_resume_client.kick_requests) == 2
+    assert len(scripted_letter_client.kick_requests) == 1
+    # The retry kick's jd_text carries the layout-specific guidance.
+    retry_jd = scripted_resume_client.kick_requests[1].jd_text or ""
     assert "LAYOUT:" in retry_jd
 
 
@@ -1437,3 +1446,261 @@ async def test_run_chain_qa_retry_poll_cap_keeps_first_pass(
     # Chain still settles SUCCEEDED with the first-pass letter.
     assert final.status is TailorRunStatus.SUCCEEDED
     assert final.letter_run_id == "ls_1"
+
+
+# ---------------------------------------------------------------------------
+# Resume-side retry (v1.15.0 — run 22 fix)
+# ---------------------------------------------------------------------------
+
+
+def _qa_resume_fail_then_pass() -> list[str]:
+    """First QA verdict flags a RESUME issue; second verdict passes.
+
+    Drives the resume-retry path: QA must-fix on the resume -> orchestrator
+    re-kicks the resume -> re-poll -> second QA -> pass."""
+    import json  # noqa: PLC0415
+
+    fail = json.dumps(
+        {
+            "status": "fail",
+            "coverage_score": 86,
+            "consistency_score": 55,
+            "format_score": 90,
+            "must_fix_issues": [
+                {
+                    "severity": "must_fix",
+                    "category": "consistency",
+                    "summary": "Resume cites ~38k LOC but verified context says ~15,700",
+                    "detail": "The resume bullet under personal_projects.jobai overstates LOC",
+                },
+            ],
+            "nice_to_fix_issues": [],
+            "summary": "fix the LOC mismatch in the resume",
+        },
+    )
+    return [fail, _good_qa_json()]
+
+
+async def test_qa_must_fix_on_resume_triggers_resume_rekick(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """When a must-fix issue's summary mentions ``resume``, the
+    orchestrator re-kicks resumeai (not coverletterai) with the QA
+    feedback appended. Fixes the v1.10.0 limitation that auto-fix
+    couldn't repair resume-side hallucinations -- see run 22, where
+    the resume claimed ~38k LOC but the verified context said
+    ~15,700, and the letter-only retry could never close the gap."""
+    _, sleeper = recording_sleeper
+    qa = _SequencedQAClient(_qa_resume_fail_then_pass())
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.qa_status is QAStatus.PASS
+    assert final.qa_attempts == 2
+    # The resume was kicked twice (initial + retry); the letter only
+    # once (the must-fix didn't mention the letter so no retry there).
+    assert len(scripted_resume_client.kick_requests) == 2
+    assert len(scripted_letter_client.kick_requests) == 1
+    # Retry kick's jd_text carries the QA feedback so the LLM has a
+    # concrete diff to apply.
+    retry_jd = scripted_resume_client.kick_requests[1].jd_text or ""
+    assert "Resume cites ~38k LOC" in retry_jd
+
+
+async def test_qa_resume_retry_kick_exception_keeps_first_pass(
+    tailor_db_path: Path,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If resumeai.kick() raises during the retry (sibling 5xx,
+    network blip), the chain falls back to the first-pass resume
+    rather than failing -- same shape as the letter-side resilience."""
+    from jobai.tailor.models import ResumeaiTailorRequest  # noqa: PLC0415
+
+    _, sleeper = recording_sleeper
+
+    resume_client = ScriptedResumeClient()
+    original_kick = resume_client.kick
+    call_count = {"n": 0}
+
+    async def _kick_then_boom(req: ResumeaiTailorRequest) -> str:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return await original_kick(req)
+        msg = "resumeai 503"
+        raise RuntimeError(msg)
+
+    resume_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
+
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # First-pass resume id preserved (the retry kick raised before
+    # producing a new id).
+    assert final.resume_run_id == "rs_1"
+
+
+async def test_qa_resume_retry_poll_cap_keeps_first_pass(
+    tailor_db_path: Path,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If the retry resume's poll hits the cap, the chain falls back
+    to the first-pass resume rather than failing."""
+    _, sleeper = recording_sleeper
+
+    resume_client = ScriptedResumeClient(
+        poll_statuses=["succeeded", "tailoring"],
+    )
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        max_polls=1,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # First-pass resume id preserved -- the cap-hit short-circuit
+    # returned None, so the orchestrator kept the original.
+    assert final.resume_run_id == "rs_1"
+
+
+async def test_qa_resume_retry_returns_failed_keeps_first_pass(
+    tailor_db_path: Path,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """If resumeai's retry render terminates with ``failed`` status,
+    keep the first-pass resume rather than failing the chain."""
+    _, sleeper = recording_sleeper
+
+    # First poll succeeds (initial render); second poll returns failed
+    # (retry render). Orchestrator falls back to first-pass id.
+    resume_client = ScriptedResumeClient(poll_statuses=["succeeded", "failed"])
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.resume_run_id == "rs_1"
+
+
+async def test_retry_targets_picks_resume_and_letter_independently() -> None:
+    """The keyword scan over must-fix issue text decides which
+    artefact(s) to retry. Resume-only, letter-only, both, and
+    none-mentioned (default to letter) all need to behave."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _retry_targets  # noqa: PLC0415
+
+    def _asses(*summaries: str) -> QAAssessment:
+        return QAAssessment(
+            status=QAStatus.FAIL,
+            coverage_score=80,
+            consistency_score=50,
+            format_score=90,
+            must_fix_issues=[
+                QAIssue(severity="must_fix", category="consistency", summary=s) for s in summaries
+            ],
+            nice_to_fix_issues=[],
+            summary="...",
+        )
+
+    assert _retry_targets(_asses("Resume cites 38k LOC")) == {"resume"}
+    assert _retry_targets(_asses("Cover letter claims X")) == {"letter"}
+    assert _retry_targets(
+        _asses("Resume cites 38k LOC", "Letter claims something else"),
+    ) == {"resume", "letter"}
+    # Nothing mentions either artefact -> default to letter (v1.10.0
+    # behaviour for must-fix issues that don't name an artefact).
+    assert _retry_targets(_asses("Tone too casual")) == {"letter"}
+
+
+async def test_filename_cache_failure_leaves_row_with_null_filenames(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the filename-build helper raises at terminal SUCCESS
+    (sibling outage, bad payload), the chain still settles SUCCEEDED
+    with NULL filename columns -- the PDF route falls back to live
+    computation in that case."""
+    from jobai.tailor import orchestrator as orch  # noqa: PLC0415
+
+    async def _boom(**_kwargs: object) -> tuple[str, str]:
+        msg = "build failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(orch, "build_pdf_filenames", _boom)
+
+    _, sleeper = recording_sleeper
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert final.resume_filename is None
+    assert final.letter_filename is None

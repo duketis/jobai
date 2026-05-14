@@ -138,6 +138,21 @@ class TailorRunRecord(BaseModel):
             "(orchestrator re-kicked the letter with QA feedback)."
         ),
     )
+    resume_filename: str | None = Field(
+        default=None,
+        description=(
+            "The descriptive PDF filename the resume should download as "
+            "(e.g. `Jane_Doe-Software_Engineer-Acme-Resume.pdf`). Populated "
+            "by the orchestrator at terminal SUCCESS so the frontend can "
+            "render it as a link label + `<a download=...>` attribute. "
+            "Null for runs that finished before v1.15.0 -- the PDF route "
+            "falls back to live computation in that case."
+        ),
+    )
+    letter_filename: str | None = Field(
+        default=None,
+        description=("Descriptive cover-letter filename, see `resume_filename`."),
+    )
     error: str | None = None
     created_at: str
     updated_at: str

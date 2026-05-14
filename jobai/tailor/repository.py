@@ -62,7 +62,7 @@ def create_tailor_run(
 _SELECT_COLUMNS = (
     "id, job_id, jd_url, status, resume_run_id, resume_status, "
     "letter_run_id, letter_status, qa_status, qa_assessment_json, "
-    "qa_attempts, error, "
+    "qa_attempts, resume_filename, letter_filename, error, "
     "created_at, updated_at, finished_at"
 )
 
@@ -116,6 +116,8 @@ def update_status(
     qa_status: QAStatus | None = None,
     qa_assessment: QAAssessment | None = None,
     qa_attempts: int | None = None,
+    resume_filename: str | None = None,
+    letter_filename: str | None = None,
     error: str | None = None,
 ) -> None:
     """Persist a state-machine transition.
@@ -147,6 +149,8 @@ def update_status(
     if qa_attempts is not None:
         sets.append("qa_attempts = ?")
         params.append(qa_attempts)
+    _maybe("resume_filename", resume_filename)
+    _maybe("letter_filename", letter_filename)
     _maybe("error", error)
 
     if status in TERMINAL_STATUSES:
@@ -179,6 +183,8 @@ def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
             else None
         ),
         qa_attempts=int(row["qa_attempts"]) if row["qa_attempts"] is not None else 0,
+        resume_filename=row["resume_filename"],
+        letter_filename=row["letter_filename"],
         error=row["error"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
