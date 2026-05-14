@@ -119,6 +119,18 @@ export interface SettingsView {
   anthropic_model: string;
   has_anthropic_api_key: boolean;
   has_claude_code_oauth_token: boolean;
+  /** Apply-profile fields (v1.17.0+) — non-secret strings the snapshot
+   * module pastes into each job's CHECKLIST.md so the user can copy-
+   * paste them into application forms without bouncing back here. */
+  apply_profile_full_name: string;
+  apply_profile_email: string;
+  apply_profile_phone: string;
+  apply_profile_location: string;
+  apply_profile_linkedin_url: string;
+  apply_profile_github_url: string;
+  apply_profile_right_to_work: string;
+  apply_profile_notice_period: string;
+  apply_profile_salary_expectation: string;
 }
 
 /** Lifecycle states a tailor chain walks through. Matches the backend enum

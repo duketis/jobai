@@ -48,6 +48,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         claude_code_oauth_token: "",
         clear_api_key: false,
         clear_token: false,
+        apply_profile_full_name: data.apply_profile_full_name,
+        apply_profile_email: data.apply_profile_email,
+        apply_profile_phone: data.apply_profile_phone,
+        apply_profile_location: data.apply_profile_location,
+        apply_profile_linkedin_url: data.apply_profile_linkedin_url,
+        apply_profile_github_url: data.apply_profile_github_url,
+        apply_profile_right_to_work: data.apply_profile_right_to_work,
+        apply_profile_notice_period: data.apply_profile_notice_period,
+        apply_profile_salary_expectation: data.apply_profile_salary_expectation,
       });
       setError(null);
       setRevealApiKey(false);
@@ -87,6 +96,25 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       payload.claude_code_oauth_token = "";
     } else if (draft.claude_code_oauth_token.trim()) {
       payload.claude_code_oauth_token = draft.claude_code_oauth_token.trim();
+    }
+    // Apply-profile fields: included whenever they differ from the
+    // saved view. An empty string clears the override (same semantics
+    // as the secret fields).
+    const profileKeys = [
+      "apply_profile_full_name",
+      "apply_profile_email",
+      "apply_profile_phone",
+      "apply_profile_location",
+      "apply_profile_linkedin_url",
+      "apply_profile_github_url",
+      "apply_profile_right_to_work",
+      "apply_profile_notice_period",
+      "apply_profile_salary_expectation",
+    ] as const;
+    for (const key of profileKeys) {
+      if (draft[key] !== data[key]) {
+        payload[key] = draft[key];
+      }
     }
     return payload;
   }
@@ -206,6 +234,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </p>
             </label>
 
+            <ApplyProfileSection draft={draft} setDraft={setDraft} />
+
             {error && (
               <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
                 {error}
@@ -251,6 +281,15 @@ interface DraftState {
   claude_code_oauth_token: string;
   clear_api_key: boolean;
   clear_token: boolean;
+  apply_profile_full_name: string;
+  apply_profile_email: string;
+  apply_profile_phone: string;
+  apply_profile_location: string;
+  apply_profile_linkedin_url: string;
+  apply_profile_github_url: string;
+  apply_profile_right_to_work: string;
+  apply_profile_notice_period: string;
+  apply_profile_salary_expectation: string;
 }
 
 const BLANK_DRAFT: DraftState = {
@@ -260,7 +299,111 @@ const BLANK_DRAFT: DraftState = {
   claude_code_oauth_token: "",
   clear_api_key: false,
   clear_token: false,
+  apply_profile_full_name: "",
+  apply_profile_email: "",
+  apply_profile_phone: "",
+  apply_profile_location: "",
+  apply_profile_linkedin_url: "",
+  apply_profile_github_url: "",
+  apply_profile_right_to_work: "",
+  apply_profile_notice_period: "",
+  apply_profile_salary_expectation: "",
 };
+
+interface ApplyProfileSectionProps {
+  draft: DraftState;
+  setDraft: React.Dispatch<React.SetStateAction<DraftState>>;
+}
+
+/**
+ * Apply-profile editor (v1.17.0+).
+ *
+ * The snapshot module pastes these values into each job's
+ * `CHECKLIST.md` so the user can copy-paste them into application
+ * forms without bouncing back here. Empty fields are skipped in the
+ * checklist; everything is optional.
+ */
+function ApplyProfileSection({ draft, setDraft }: ApplyProfileSectionProps) {
+  const fields: Array<{
+    key: keyof DraftState;
+    label: string;
+    placeholder: string;
+  }> = [
+    {
+      key: "apply_profile_full_name",
+      label: "Full name",
+      placeholder: "Jane Doe",
+    },
+    {
+      key: "apply_profile_email",
+      label: "Email",
+      placeholder: "jane@example.com",
+    },
+    {
+      key: "apply_profile_phone",
+      label: "Phone",
+      placeholder: "+61 400 000 000",
+    },
+    {
+      key: "apply_profile_location",
+      label: "Location",
+      placeholder: "Melbourne, Australia",
+    },
+    {
+      key: "apply_profile_linkedin_url",
+      label: "LinkedIn",
+      placeholder: "linkedin.com/in/janedoe",
+    },
+    {
+      key: "apply_profile_github_url",
+      label: "GitHub",
+      placeholder: "github.com/janedoe",
+    },
+    {
+      key: "apply_profile_right_to_work",
+      label: "Right to work",
+      placeholder: "Yes — Australian citizen",
+    },
+    {
+      key: "apply_profile_notice_period",
+      label: "Notice period",
+      placeholder: "Immediate / 4 weeks",
+    },
+    {
+      key: "apply_profile_salary_expectation",
+      label: "Salary expectation",
+      placeholder: "120k AUD + super",
+    },
+  ];
+  return (
+    <fieldset className="border-t border-border pt-4">
+      <legend className="text-sm font-medium mb-1">Apply profile</legend>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Pasted into each job's <code>CHECKLIST.md</code> so you can
+        copy-paste into application forms. Optional — leave anything blank
+        to skip it.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {fields.map((f) => (
+          <label key={f.key} className="block">
+            <span className="text-xs font-medium">{f.label}</span>
+            <input
+              type="text"
+              value={String(draft[f.key] ?? "")}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, [f.key]: e.target.value }))
+              }
+              placeholder={f.placeholder}
+              className="mt-0.5 w-full h-9 px-2 rounded-md border border-input bg-background text-sm"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
 
 function BackendSelector({
   value,

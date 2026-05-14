@@ -170,6 +170,15 @@ export interface SettingsUpdate {
   anthropic_api_key?: string;
   claude_code_oauth_token?: string;
   anthropic_model?: string;
+  apply_profile_full_name?: string;
+  apply_profile_email?: string;
+  apply_profile_phone?: string;
+  apply_profile_location?: string;
+  apply_profile_linkedin_url?: string;
+  apply_profile_github_url?: string;
+  apply_profile_right_to_work?: string;
+  apply_profile_notice_period?: string;
+  apply_profile_salary_expectation?: string;
 }
 
 export async function getSettings(): Promise<SettingsView> {
