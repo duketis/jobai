@@ -57,11 +57,13 @@ DEFAULT_POLL_INTERVAL_S: float = 10.0
 DEFAULT_MAX_POLLS: int = 180
 
 #: Cap on total QA passes per chain. The first pass is the initial
-#: grade; subsequent passes happen after the orchestrator re-kicks the
-#: cover letter with QA feedback. Anything above 2 burns LLM time
-#: without meaningful new signal (the model either gets it on the
-#: retry or it can't).
-DEFAULT_MAX_QA_ATTEMPTS: int = 2
+#: grade; each subsequent pass follows a retry of the artefact(s) that
+#: had must-fix issues. Three attempts is the sweet spot: the LLM is
+#: non-deterministic enough that the same JD can converge on attempt 1
+#: OR attempt 3, but past 3 the marginal signal is noise (the model
+#: that hasn't fixed a fabricated stat after seeing the verified
+#: context twice rarely fixes it on a fourth try).
+DEFAULT_MAX_QA_ATTEMPTS: int = 3
 
 # Sleeper signature: ``await sleeper(seconds)``. Defaults to ``asyncio.sleep``
 # in production; tests supply a recorder that records the requested delay and
@@ -293,6 +295,7 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
                     sleeper=sleeper,
                     poll_interval_s=poll_interval_s,
                     max_polls=max_polls,
+                    qa_context=qa_context,
                 )
                 if new_resume_run_id is not None:
                     resume_run_id = new_resume_run_id
@@ -313,6 +316,7 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
                     sleeper=sleeper,
                     poll_interval_s=poll_interval_s,
                     max_polls=max_polls,
+                    qa_context=qa_context,
                 )
                 if new_letter_run_id is None:
                     _log.warning(
@@ -560,6 +564,7 @@ async def _rekick_resume_with_feedback(
     sleeper: Sleeper,
     poll_interval_s: float,
     max_polls: int,
+    qa_context: str | None = None,
 ) -> str | None:
     """Re-tailor the resume with the QA must-fix list appended.
 
@@ -572,7 +577,11 @@ async def _rekick_resume_with_feedback(
     The row transitions through ``qa_retry_running`` so the UI shows
     "auto-fix attempt" the same as it does for the letter retry path.
     """
-    feedback_payload = _augment_payload_with_feedback(payload, assessment)
+    feedback_payload = _augment_payload_with_feedback(
+        payload,
+        assessment,
+        qa_context=qa_context,
+    )
     with connect(db_path) as conn:
         update_status(
             conn,
@@ -636,6 +645,7 @@ async def _rekick_letter_with_feedback(
     sleeper: Sleeper,
     poll_interval_s: float,
     max_polls: int,
+    qa_context: str | None = None,
 ) -> str | None:
     """Re-tailor the cover letter with the QA must-fix list appended.
 
@@ -653,7 +663,11 @@ async def _rekick_letter_with_feedback(
     when the schema caps at 2), not that the original artefact is
     bad. The caller logs the retry failure and ships the original.
     """
-    feedback_payload = _augment_payload_with_feedback(payload, assessment)
+    feedback_payload = _augment_payload_with_feedback(
+        payload,
+        assessment,
+        qa_context=qa_context,
+    )
     with connect(db_path) as conn:
         update_status(
             conn,
@@ -712,12 +726,29 @@ async def _rekick_letter_with_feedback(
 def _augment_payload_with_feedback(
     payload: _JDPayload,
     assessment: QAAssessment,
+    *,
+    qa_context: str | None = None,
 ) -> _JDPayload:
-    """Append the QA must-fix list to the JD text so the LLM sees both
-    the requirements AND the prior attempt's problems.
+    """Append QA feedback + verified-facts context to the JD text so
+    the LLM sees the requirements, the prior attempt's problems, AND
+    the ground truth it must conform to.
 
-    When the original payload had no jd_text (one-off URL path with no
-    catalogue match), this also surfaces the URL inline so the
+    Two things matter here for convergence:
+
+    1. **Verified context inline.** The siblings already pull from the
+       resumeai context pool, but the LLM has been observed to
+       hallucinate stats (e.g. ~38k LOC vs verified ~15,700) on every
+       attempt anyway. Pasting the verified block into the JD itself
+       puts ground truth literally in the prompt the LLM is reading
+       to generate the artefact -- no context-priority guessing.
+    2. **Strong, artefact-agnostic guidance.** The wording is generic
+       ("this submission") so the same augmenter works for resume and
+       letter retries. The hardest rule -- "use verified numbers
+       verbatim" -- is called out specifically so the LLM can't
+       substitute its own estimate.
+
+    When the original payload had no jd_text (one-off URL path with
+    no catalogue match), this also surfaces the URL inline so the
     feedback block isn't orphaned from any context.
     """
     base = payload.jd_text or f"JOB URL: {payload.jd_url}\n(JD content not pre-fetched)"
@@ -729,32 +760,52 @@ def _augment_payload_with_feedback(
         issue.category == "format" and "page" in issue.summary.lower()
         for issue in assessment.must_fix_issues
     )
-    guidance: list[str] = [
-        (
-            "When tailoring this cover letter, ground every claim in the "
+    guidance: list[str] = []
+    if qa_context:
+        guidance.append(
+            "When producing this submission, ground every numeric or "
+            "factual claim in the VERIFIED FACTS block below. Use those "
+            "numbers VERBATIM -- do not round, estimate, or substitute "
+            "your own figure. If a JD requirement isn't backed by the "
+            "candidate's verified experience, address it honestly "
+            "rather than overstating. If the verified facts don't "
+            "supply a specific number for something, write a general "
+            'phrase ("comprehensive test suite", "production-scale '
+            'system") rather than inventing one.',
+        )
+    else:
+        guidance.append(
+            "When producing this submission, ground every claim in the "
             "candidate's actual context. Do NOT attribute features to "
             "projects that don't have them, and do NOT invent metrics. "
             "If a JD requirement isn't backed by the candidate's "
-            "experience, address it honestly rather than overstating."
-        ),
-    ]
+            "experience, address it honestly rather than overstating.",
+        )
     if has_layout_issue:
         guidance.append(
             "LAYOUT: the previous PDF had orphan bullets or a split "
-            "section header. Produce a noticeably shorter letter this "
+            "section header. Produce a noticeably shorter artefact this "
             "time (aim for 3-4 fewer sentences, or tighter paragraphs) "
             "so the rendered output fits its page cleanly without a "
             "trailing line spilling over.",
         )
-    feedback_block = "\n".join(
-        [
-            "",
-            "QA FEEDBACK FROM PREVIOUS ATTEMPT — must address:",
-            *must_fix_lines,
-            "",
-            *guidance,
-        ],
-    )
+
+    sections: list[str] = [
+        "",
+        "QA FEEDBACK FROM PREVIOUS ATTEMPT — must address:",
+        *must_fix_lines,
+    ]
+    if qa_context:
+        sections.extend(
+            [
+                "",
+                "VERIFIED FACTS (single source of truth for the candidate's "
+                "projects and stats -- use these numbers verbatim):",
+                qa_context.strip(),
+            ],
+        )
+    sections.extend(["", *guidance])
+    feedback_block = "\n".join(sections)
     return _JDPayload(jd_url=payload.jd_url, jd_text=base + feedback_block)
 
 

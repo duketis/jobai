@@ -1167,6 +1167,118 @@ def test_augment_payload_with_feedback_inlines_url_when_no_jd_text() -> None:
     assert "missing tone match" in augmented.jd_text
 
 
+def test_augment_payload_with_feedback_inlines_verified_context_when_provided() -> None:
+    """When qa_context is supplied, the augmenter pastes the verified
+    facts block into the JD text so the retry LLM sees the ground
+    truth literally in the prompt -- not relying on the LLM to remember
+    to re-pull from the context pool. Closes the v1.15.0 hole where
+    same-JD retries non-deterministically failed to converge on
+    correct stats (run 23: kept the wrong number; run 24: corrected
+    it -- pure LLM nondeterminism)."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _augment_payload_with_feedback,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://x", jd_text="JD body")
+    assessment = QAAssessment(
+        status=QAStatus.FAIL,
+        coverage_score=85,
+        consistency_score=55,
+        format_score=88,
+        must_fix_issues=[
+            QAIssue(
+                severity="must_fix",
+                category="consistency",
+                summary="Resume cites ~38k LOC but verified context says ~15,700",
+            ),
+        ],
+        nice_to_fix_issues=[],
+        summary="LOC mismatch",
+    )
+    verified = (
+        "## VERIFIED jobai project stats\n"
+        "- Python LOC: ~15,700 across jobai/.\n"
+        "- 1126 backend tests at 100% line + branch coverage."
+    )
+    augmented = _augment_payload_with_feedback(
+        payload,
+        assessment,
+        qa_context=verified,
+    )
+    assert augmented.jd_text is not None
+    assert "VERIFIED FACTS" in augmented.jd_text
+    assert "Python LOC: ~15,700" in augmented.jd_text
+    assert "1126 backend tests" in augmented.jd_text
+    # Stronger guidance now insists on verbatim numbers + no estimating.
+    assert "VERBATIM" in augmented.jd_text
+
+
+def test_augment_payload_with_feedback_no_verified_block_when_no_context() -> None:
+    """The VERIFIED FACTS section is only emitted when qa_context is
+    supplied. Without it the augmenter behaves the same as v1.14.0 --
+    just the must-fix list + generic guidance."""
+    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _augment_payload_with_feedback,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://x", jd_text="JD body")
+    assessment = QAAssessment(
+        status=QAStatus.FAIL,
+        coverage_score=80,
+        consistency_score=60,
+        format_score=85,
+        must_fix_issues=[
+            QAIssue(severity="must_fix", category="content", summary="weak ending"),
+        ],
+        nice_to_fix_issues=[],
+        summary="...",
+    )
+    augmented = _augment_payload_with_feedback(payload, assessment)
+    assert augmented.jd_text is not None
+    assert "VERIFIED FACTS" not in augmented.jd_text
+
+
+async def test_run_chain_forwards_qa_context_into_retry_payload(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """End-to-end: when fetch_qa_context returns ground truth, the
+    retry kick's jd_text must carry the VERIFIED FACTS block. This is
+    the wiring that gives convergence its strongest signal."""
+    _, sleeper = recording_sleeper
+
+    async def _fetch() -> str | None:
+        return "## VERIFIED jobai project stats\n- Python LOC: ~15,700"
+
+    # Sequence: fail on first QA, pass on second; resume retry fires.
+    qa = _SequencedQAClient(_qa_resume_fail_then_pass())
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+        fetch_qa_context=_fetch,
+    )
+
+    # Resume was re-kicked; the retry payload must carry the verified
+    # facts block inline so the LLM sees ~15,700 in the prompt itself.
+    assert len(scripted_resume_client.kick_requests) == 2
+    retry_jd = scripted_resume_client.kick_requests[1].jd_text or ""
+    assert "VERIFIED FACTS" in retry_jd
+    assert "Python LOC: ~15,700" in retry_jd
+
+
 # ---------------------------------------------------------------------------
 # Pre-tailor context refresh hook
 # ---------------------------------------------------------------------------
@@ -1548,7 +1660,7 @@ async def test_qa_resume_retry_kick_exception_keeps_first_pass(
 
     resume_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
 
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1582,7 +1694,7 @@ async def test_qa_resume_retry_poll_cap_keeps_first_pass(
     resume_client = ScriptedResumeClient(
         poll_statuses=["succeeded", "tailoring"],
     )
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1617,7 +1729,7 @@ async def test_qa_resume_retry_returns_failed_keeps_first_pass(
     # First poll succeeds (initial render); second poll returns failed
     # (retry render). Orchestrator falls back to first-pass id.
     resume_client = ScriptedResumeClient(poll_statuses=["succeeded", "failed"])
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0], _qa_resume_fail_then_pass()[0]])
+    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
