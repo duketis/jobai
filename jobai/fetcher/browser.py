@@ -29,7 +29,7 @@ from typing import Any, Protocol, Self
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
 from jobai import __version__
-from jobai.fetcher.base import Response
+from jobai.fetcher.base import Response, WaitUntil
 
 #: Sources that need full Playwright control (form fill, click,
 #: multi-step navigation) pass a callable to
@@ -64,6 +64,7 @@ class _Driver(Protocol):
         headers: Mapping[str, str] | None,
         timeout_ms: float,
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response: ...
 
     async def run_in_page(
@@ -156,6 +157,7 @@ class PlaywrightDriver:
         headers: Mapping[str, str] | None,
         timeout_ms: float,
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         # Integration-only -- exercises Chromium nav, networkidle wait,
         # wait_for_selector, and the page.content() snapshot. The fake
@@ -176,8 +178,11 @@ class PlaywrightDriver:
             # goto returns immediately when the empty shell DOM
             # reaches idle - missing the SPA's data fetch entirely.
             # Also gives Cloudflare's challenge JS time to solve and
-            # redirect on protected sources.
-            response = await page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+            # redirect on protected sources. Callers whose SPA never
+            # reaches network idle (Seek job-detail pages poll
+            # forever) pass wait_until='domcontentloaded' and rely on
+            # wait_for_selector below to gate on the real content.
+            response = await page.goto(url, timeout=timeout_ms, wait_until=wait_until)
             if wait_for_selector is not None:
                 # Wait for the SPA to populate the requested selector
                 # (Next.js / Salesforce Lightning / React lazy-load
@@ -303,6 +308,7 @@ class BrowserFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to playwright
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         if method != "GET":
             msg = (
@@ -323,6 +329,7 @@ class BrowserFetcher:
             headers=headers,
             timeout_ms=timeout_ms,
             wait_for_selector=wait_for_selector,
+            wait_until=wait_until,
         )
 
     async def run_in_page(

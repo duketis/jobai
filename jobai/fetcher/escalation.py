@@ -27,7 +27,7 @@ from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import Any, Self
 
-from jobai.fetcher.base import Fetcher, Response
+from jobai.fetcher.base import Fetcher, Response, WaitUntil
 
 #: HTTP status codes that signal we should escalate. 401/404 are NOT
 #: in here — those mean "the source genuinely doesn't have this", not
@@ -79,6 +79,7 @@ class EscalatingFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to wrapped fetcher
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         if self._escalated:
             return await self._call_fallback(
@@ -89,6 +90,7 @@ class EscalatingFetcher:
                 data=data,
                 timeout=timeout,
                 wait_for_selector=wait_for_selector,
+                wait_until=wait_until,
             )
 
         response = await self._primary.fetch(
@@ -99,6 +101,7 @@ class EscalatingFetcher:
             data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
+            wait_until=wait_until,
         )
         if not _looks_blocked(response):
             return response
@@ -112,6 +115,7 @@ class EscalatingFetcher:
             data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
+            wait_until=wait_until,
         )
 
     async def _call_fallback(
@@ -124,6 +128,7 @@ class EscalatingFetcher:
         data: Mapping[str, str] | None,
         timeout: float | None,  # noqa: ASYNC109  - delegates to wrapped fetcher
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         if self._fallback is None:
             self._fallback = self._fallback_factory()
@@ -135,6 +140,7 @@ class EscalatingFetcher:
             data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
+            wait_until=wait_until,
         )
 
     # pragma: no cover applies to the whole body -- this is a delegation to

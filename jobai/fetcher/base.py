@@ -15,7 +15,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+#: Playwright navigation-completion conditions. ``networkidle`` is the
+#: default everywhere because it blocks ``goto`` until SPA XHRs settle
+#: and Cloudflare challenge JS resolves (load-bearing for NSW iWorkFor
+#: and other CF-gated sources). Sites whose SPA never reaches network
+#: idle (Seek's job-detail pages poll forever) opt into
+#: ``domcontentloaded`` and lean on ``wait_for_selector`` instead.
+#: HTTP-tier fetchers ignore it; the value is part of the Protocol so
+#: a source can request a nav strategy without knowing its tier.
+WaitUntil = Literal["commit", "domcontentloaded", "load", "networkidle"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +78,7 @@ class Fetcher(Protocol):
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to httpx, not asyncio.timeout
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         """Issue a request and return the :class:`Response`.
 
@@ -84,6 +95,12 @@ class Fetcher(Protocol):
         implementations ignore it; the value is part of the Protocol
         so sources can request rendering without caring which tier
         the runner picked.
+
+        ``wait_until`` selects the Playwright navigation-completion
+        condition (see :data:`WaitUntil`). Defaults to ``networkidle``
+        so existing callers are unchanged; pair ``domcontentloaded``
+        with ``wait_for_selector`` for SPAs that never go network-idle.
+        HTTP-tier implementations ignore it.
 
         ``data`` is a form-encoded body (``application/x-www-form-urlencoded``).
         Mirrors ``json`` for the form-POST case — Salesforce Aura

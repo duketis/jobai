@@ -30,7 +30,8 @@ from dataclasses import dataclass
 
 from selectolax.parser import HTMLParser
 
-from jobai.fetcher.base import Fetcher
+from jobai.fetcher.base import Fetcher, WaitUntil
+from jobai.sources.seek_detail import SEEK_JD_SELECTOR, parse_seek_description
 
 _log = logging.getLogger(__name__)
 
@@ -67,11 +68,15 @@ class DescriptionRecipe:
     actually serves the description body. ``wait_selector`` is
     forwarded to the fetcher so browser-tier renders block until
     the description block is in the DOM (HTTP-tier ignores it).
+    ``wait_until`` selects the navigation-completion strategy; it
+    defaults to ``networkidle`` and is overridden to
+    ``domcontentloaded`` for SPAs (Seek) whose pages never go idle.
     """
 
     parse: DescriptionParser
     fetch_url: UrlTransform = _identity_url
     wait_selector: str | None = None
+    wait_until: WaitUntil = "networkidle"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +162,15 @@ RECIPES: dict[str, DescriptionRecipe] = {
         fetch_url=_indeed_side_panel_url,
         wait_selector=_INDEED_DESCRIPTION_SELECTOR,
     ),
+    # Seek listing scrapes only capture the ~120-char card teaser; the
+    # full JD lives on the Cloudflare-gated /job/<id> detail page whose
+    # SPA never reaches network idle. domcontentloaded + the JD-block
+    # selector is the combination verified against live Seek.
+    "seek": DescriptionRecipe(
+        parse=parse_seek_description,
+        wait_selector=SEEK_JD_SELECTOR,
+        wait_until="domcontentloaded",
+    ),
 }
 
 
@@ -235,6 +249,7 @@ async def backfill_descriptions(
             response = await fetcher.fetch(
                 fetch_url,
                 wait_for_selector=recipe.wait_selector,
+                wait_until=recipe.wait_until,
             )
         except Exception as exc:  # noqa: BLE001 - any fetch failure ends one job, not the run
             _log.info(

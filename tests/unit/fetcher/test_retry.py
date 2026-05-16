@@ -32,6 +32,7 @@ class _ScriptedFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - matches Fetcher Protocol
         wait_for_selector: str | None = None,
+        wait_until: str = "networkidle",
     ) -> Response:
         self.calls.append(
             {

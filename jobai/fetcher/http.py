@@ -21,7 +21,7 @@ from typing import Any, Self
 import httpx
 
 from jobai import __version__
-from jobai.fetcher.base import Response
+from jobai.fetcher.base import Response, WaitUntil
 
 #: Default UA — versioned via ``jobai.__version__`` so a single bump
 #: propagates here, the browser fetcher, and the stealth fetcher.
@@ -55,11 +55,13 @@ class HttpFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
-        # ``wait_for_selector`` is part of the Fetcher Protocol so
-        # browser-tier sources can request rendering, but plain HTTP
-        # has nothing to wait for. Accept and ignore.
-        del wait_for_selector
+        # ``wait_for_selector`` / ``wait_until`` are part of the Fetcher
+        # Protocol so browser-tier sources can request rendering, but
+        # plain HTTP has nothing to wait for or navigate. Accept and
+        # ignore both.
+        del wait_for_selector, wait_until
         kwargs: dict[str, Any] = {}
         if headers is not None:
             kwargs["headers"] = dict(headers)

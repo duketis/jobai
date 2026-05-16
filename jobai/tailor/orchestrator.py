@@ -90,6 +90,7 @@ async def run_chain(
     max_qa_attempts: int = DEFAULT_MAX_QA_ATTEMPTS,
     refresh_context_scans: Callable[[], Awaitable[None]] | None = None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None = None,
+    resolve_jd_text: Callable[[str], Awaitable[str | None]] | None = None,
     snapshot_output_dir: Path | None = None,
 ) -> None:
     """Drive one tailor chain to terminal state.
@@ -122,6 +123,7 @@ async def run_chain(
             max_qa_attempts=max_qa_attempts,
             refresh_context_scans=refresh_context_scans,
             fetch_qa_context=fetch_qa_context,
+            resolve_jd_text=resolve_jd_text,
             snapshot_output_dir=snapshot_output_dir,
         )
     except Exception as exc:  # noqa: BLE001 - top-level boundary, see docstring
@@ -149,9 +151,15 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
     max_qa_attempts: int,
     refresh_context_scans: Callable[[], Awaitable[None]] | None,
     fetch_qa_context: Callable[[], Awaitable[str | None]] | None,
+    resolve_jd_text: Callable[[str], Awaitable[str | None]] | None,
     snapshot_output_dir: Path | None,
 ) -> None:
     payload = _load_jd_payload(db_path, tailor_run_id)
+    payload = await _resolve_thin_jd(
+        payload,
+        resolve_jd_text=resolve_jd_text,
+        tailor_run_id=tailor_run_id,
+    )
 
     # ---- context refresh -----------------------------------------------
     # Re-scan every local-project context entry so the siblings tailor
@@ -963,6 +971,41 @@ def _strip_html_to_text(html: str | None) -> str | None:
     if not text:
         return None
     return text
+
+
+async def _resolve_thin_jd(
+    payload: _JDPayload,
+    *,
+    resolve_jd_text: Callable[[str], Awaitable[str | None]] | None,
+    tailor_run_id: int,
+) -> _JDPayload:
+    """Fetch the full JD on-demand when the catalogue row is a teaser.
+
+    Catalogue rows for Cloudflare-SPA boards (Seek) only carry the
+    ~120-char listing teaser, so :func:`_load_jd_payload` leaves
+    ``jd_text`` ``None`` and we'd otherwise hand resumeai a URL it
+    can't fetch (hard 403). When a resolver is injected, fetch the full
+    JD now via jobai's stealth tier and forward it as ``jd_text`` so
+    the siblings never touch the hostile URL.
+
+    Fail-soft: no resolver, an already-populated payload, a resolver
+    that declines (``None``) or one that raises all return the original
+    payload unchanged -- i.e. the pre-resolver URL-path behaviour.
+    """
+    if resolve_jd_text is None or payload.jd_text is not None or payload.jd_url is None:
+        return payload
+    try:
+        resolved = await resolve_jd_text(payload.jd_url)
+    except Exception:  # noqa: BLE001 - never let JD prefetch block tailoring
+        _log.warning(
+            "tailor_jd_prefetch_failed",
+            extra={"tailor_run_id": tailor_run_id},
+            exc_info=True,
+        )
+        return payload
+    if resolved:
+        return _JDPayload(jd_url=payload.jd_url, jd_text=resolved)
+    return payload
 
 
 def _load_jd_payload(db_path: Path, tailor_run_id: int) -> _JDPayload:

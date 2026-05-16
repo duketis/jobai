@@ -39,6 +39,7 @@ class FakeBrowserFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
+        wait_until: str = "networkidle",
     ) -> Response:
         del method, headers, json, data, timeout, wait_for_selector
         self.calls.append(url)

@@ -1816,3 +1816,149 @@ async def test_filename_cache_failure_leaves_row_with_null_filenames(
     assert final.status is TailorRunStatus.SUCCEEDED
     assert final.resume_filename is None
     assert final.letter_filename is None
+
+
+# ---------------------------------------------------------------------------
+# on-demand JD resolution (Seek / Cloudflare-SPA boards)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_jd_text_fills_thin_catalogue_payload(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """Job 1 only has a teaser, so the resolver fires and both siblings
+    receive the fetched JD as jd_text instead of the un-fetchable URL."""
+    _, sleeper = recording_sleeper
+    seen: list[str] = []
+
+    async def _resolver(url: str) -> str | None:
+        seen.append(url)
+        return "FULL SEEK JOB DESCRIPTION " * 20
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        resolve_jd_text=_resolver,
+    )
+
+    assert seen == ["https://example.com/jd-1"]
+    resume_req = scripted_resume_client.kick_requests[0]
+    letter_req = scripted_letter_client.kick_requests[0]
+    assert resume_req.jd_text is not None
+    assert resume_req.jd_text.startswith("FULL SEEK JOB DESCRIPTION")
+    assert resume_req.jd_url is None
+    assert letter_req.jd_text == resume_req.jd_text
+
+
+async def test_resolve_jd_text_none_keeps_url_payload(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """Resolver declines (non-Seek / fetch miss) -> unchanged URL path."""
+    _, sleeper = recording_sleeper
+
+    async def _resolver(_url: str) -> str | None:
+        return None
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        resolve_jd_text=_resolver,
+    )
+
+    assert scripted_resume_client.kick_requests[0].jd_url == "https://example.com/jd-1"
+    assert scripted_resume_client.kick_requests[0].jd_text is None
+
+
+async def test_resolve_jd_text_exception_is_swallowed(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """A resolver blow-up must not fail the chain; fall back to the URL."""
+    _, sleeper = recording_sleeper
+
+    async def _resolver(_url: str) -> str | None:
+        msg = "stealth fetcher exploded"
+        raise RuntimeError(msg)
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        resolve_jd_text=_resolver,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    assert scripted_resume_client.kick_requests[0].jd_url == "https://example.com/jd-1"
+    assert scripted_resume_client.kick_requests[0].jd_text is None
+
+
+async def test_resolve_jd_text_skipped_when_payload_already_has_text(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+) -> None:
+    """Catalogue rows with a real description never pay the prefetch."""
+    _, sleeper = recording_sleeper
+    bare = sqlite3.connect(tailor_db_path)
+    try:
+        bare.execute(
+            "UPDATE jobs SET description_text = ? WHERE id = 1",
+            ("Substantial real description body. " * 20,),
+        )
+        bare.commit()
+    finally:
+        bare.close()
+
+    called = False
+
+    async def _resolver(_url: str) -> str | None:
+        nonlocal called
+        called = True
+        return "should not be used"
+
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        resolve_jd_text=_resolver,
+    )
+
+    assert called is False
+    assert scripted_resume_client.kick_requests[0].jd_text is not None
+    assert "Substantial real description body." in (
+        scripted_resume_client.kick_requests[0].jd_text or ""
+    )

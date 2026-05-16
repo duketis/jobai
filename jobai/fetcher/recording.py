@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from jobai.fetcher.base import Fetcher, Response
+from jobai.fetcher.base import Fetcher, Response, WaitUntil
 
 
 class RecordingFetcher:
@@ -51,6 +51,7 @@ class RecordingFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         response = await self._inner.fetch(
             url,
@@ -60,6 +61,7 @@ class RecordingFetcher:
             data=data,
             timeout=timeout,
             wait_for_selector=wait_for_selector,
+            wait_until=wait_until,
         )
         if response.is_ok:
             self._record(response)

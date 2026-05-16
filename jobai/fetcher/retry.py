@@ -34,7 +34,7 @@ from typing import Any, Self
 
 import httpx
 
-from jobai.fetcher.base import Fetcher, Response
+from jobai.fetcher.base import Fetcher, Response, WaitUntil
 
 _log = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class RetryingFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109  - delegates to inner fetcher
         wait_for_selector: str | None = None,
+        wait_until: WaitUntil = "networkidle",
     ) -> Response:
         for attempt in range(1, self._max_attempts + 1):
             try:
@@ -112,6 +113,7 @@ class RetryingFetcher:
                     data=data,
                     timeout=timeout,
                     wait_for_selector=wait_for_selector,
+                    wait_until=wait_until,
                 )
             except _TRANSIENT_EXCEPTIONS as exc:
                 if attempt >= self._max_attempts:

@@ -39,6 +39,7 @@ class _FakeDriver:
         headers: Mapping[str, str] | None,
         timeout_ms: float,
         wait_for_selector: str | None = None,
+        wait_until: str = "networkidle",
     ) -> Response:
         self.calls.append(
             {
@@ -46,6 +47,7 @@ class _FakeDriver:
                 "headers": dict(headers or {}),
                 "timeout_ms": timeout_ms,
                 "wait_for_selector": wait_for_selector,
+                "wait_until": wait_until,
             },
         )
         return self._response
@@ -112,6 +114,7 @@ async def test_fetch_passes_headers_and_timeout_to_driver() -> None:
             "headers": {"X-Run-Id": "abc"},
             "timeout_ms": 5_000.0,
             "wait_for_selector": None,
+            "wait_until": "networkidle",
         }
     ]
 
@@ -131,6 +134,24 @@ async def test_fetch_passes_wait_for_selector_to_driver() -> None:
             wait_for_selector="article[data-jobcard]",
         )
     assert driver.calls[0]["wait_for_selector"] == "article[data-jobcard]"
+
+
+async def test_fetch_defaults_wait_until_to_networkidle() -> None:
+    driver = _FakeDriver()
+    async with BrowserFetcher(driver=driver) as fetcher:
+        await fetcher.fetch("https://example.com/spa")
+    assert driver.calls[0]["wait_until"] == "networkidle"
+
+
+async def test_fetch_passes_wait_until_override_to_driver() -> None:
+    driver = _FakeDriver()
+    async with BrowserFetcher(driver=driver) as fetcher:
+        await fetcher.fetch(
+            "https://www.seek.com.au/job/1",
+            wait_for_selector='[data-automation="jobAdDetails"]',
+            wait_until="domcontentloaded",
+        )
+    assert driver.calls[0]["wait_until"] == "domcontentloaded"
 
 
 # ---------------------------------------------------------------------------

@@ -99,6 +99,7 @@ class _ScriptedFetcher:
         data: Mapping[str, str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109
         wait_for_selector: str | None = None,
+        wait_until: str = "networkidle",
     ) -> Response:
         self.calls.append(url)
         item = self._responses.get(url)
@@ -192,6 +193,14 @@ def test_parse_linkedin_description_returns_none_on_missing() -> None:
     assert _parse_linkedin_description("<html><body></body></html>") is None
 
 
+def test_seek_recipe_uses_domcontentloaded_and_jd_selector() -> None:
+    """Seek's detail SPA never goes network-idle; the recipe must opt
+    into domcontentloaded + the JD-container selector."""
+    recipe = RECIPES["seek"]
+    assert recipe.wait_until == "domcontentloaded"
+    assert recipe.wait_selector == '[data-automation="jobAdDetails"]'
+
+
 # ---------------------------------------------------------------------------
 # backfill_descriptions (end-to-end with fakes)
 # ---------------------------------------------------------------------------
@@ -216,6 +225,55 @@ async def test_backfill_fills_pending_linkedin_jobs(conn: sqlite3.Connection) ->
     assert result == BackfillResult(attempted=1, filled=1, skipped=0)
     row = conn.execute("SELECT description_text FROM jobs WHERE id = ?", (job_id,)).fetchone()
     assert row[0] == "Real description body."
+
+
+async def test_backfill_fills_seek_job_with_domcontentloaded(
+    conn: sqlite3.Connection,
+) -> None:
+    """A pending Seek row is filled from the JD container, and the
+    fetcher is driven with the verified domcontentloaded + selector
+    strategy rather than the default networkidle wait."""
+    job_id = _seed_job(conn, kind="seek", apply_url="https://www.seek.com.au/job/77")
+
+    seen: dict[str, object] = {}
+
+    class _RecordingFetcher:
+        async def fetch(
+            self,
+            url: str,
+            *,
+            method: str = "GET",
+            headers: Mapping[str, str] | None = None,
+            json: Any = None,
+            data: Mapping[str, str] | None = None,
+            timeout: float | None = None,  # noqa: ASYNC109
+            wait_for_selector: str | None = None,
+            wait_until: str = "networkidle",
+        ) -> Response:
+            seen["url"] = url
+            seen["wait_for_selector"] = wait_for_selector
+            seen["wait_until"] = wait_until
+            return _resp(
+                200,
+                body=(
+                    b'<html><body><div data-automation="jobAdDetails">'
+                    b"Full Seek JD body.</div></body></html>"
+                ),
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    result = await backfill_descriptions(conn, _RecordingFetcher())
+
+    assert result == BackfillResult(attempted=1, filled=1, skipped=0)
+    row = conn.execute(
+        "SELECT description_text FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row[0] == "Full Seek JD body."
+    assert seen["wait_until"] == "domcontentloaded"
+    assert seen["wait_for_selector"] == '[data-automation="jobAdDetails"]'
 
 
 async def test_backfill_skips_non_2xx(conn: sqlite3.Connection) -> None:

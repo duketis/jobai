@@ -15,6 +15,7 @@ just call ``stream_pdf``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -160,6 +161,26 @@ def _schedule_chain(
     async def _fetch_qa_context() -> str | None:
         return await fetch_qa_context_summary(resumeai_url)
 
+    async def _resolve_jd_text(jd_url: str) -> str | None:
+        # Seek catalogue rows only store the listing teaser and Seek's
+        # detail page is Cloudflare-gated, so resumeai can't fetch it
+        # (hard 403). Pull the full JD here on jobai's tier-3 stealth
+        # fetcher and hand it to the siblings as text. Non-Seek URLs
+        # fall through to the existing URL path (resumeai fetches).
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        if "seek.com" not in urlparse(jd_url).netloc.lower():
+            return None
+        from jobai.fetcher.dispatch import build_fetcher  # noqa: PLC0415
+        from jobai.sources.seek_detail import fetch_seek_jd_text  # noqa: PLC0415
+
+        fetcher = build_fetcher(tier=3)
+        try:
+            return await fetch_seek_jd_text(jd_url, fetcher)
+        finally:
+            with contextlib.suppress(Exception):
+                await fetcher.aclose()
+
     async def _factory() -> None:
         await run_chain(
             tailor_run_id,
@@ -170,6 +191,7 @@ def _schedule_chain(
             qa_client=qa_client,
             refresh_context_scans=_refresh,
             fetch_qa_context=_fetch_qa_context,
+            resolve_jd_text=_resolve_jd_text,
             snapshot_output_dir=snapshot_output_dir,
         )
 
