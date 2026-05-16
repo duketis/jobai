@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,28 @@ def test_register_sources_replaces_existing_jobs(seeded_db: Path) -> None:
     )
     assert first == second == 2
     assert len(scheduler.get_jobs()) == 2
+
+
+def test_register_sources_schedules_first_run_on_boot(seeded_db: Path) -> None:
+    """Every source must fire on scheduler start, not cadence later.
+
+    Without an explicit next_run_time the IntervalTrigger would defer
+    the first scrape by up to a full cadence (an hour for the hourly
+    seeds), leaving the catalogue stale after every restart.
+    """
+    before = datetime.now(UTC)
+    scheduler = build_scheduler()
+    register_sources(
+        scheduler,
+        db_path=seeded_db,
+        job_factory=lambda _id, _path: _noop_job,
+    )
+    after = datetime.now(UTC)
+    jobs = scheduler.get_jobs()
+    assert jobs
+    for job in jobs:
+        assert job.next_run_time is not None
+        assert before <= job.next_run_time <= after
 
 
 def test_register_sources_passes_id_and_path_to_factory(seeded_db: Path) -> None:

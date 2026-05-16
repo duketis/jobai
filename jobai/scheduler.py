@@ -25,6 +25,7 @@ import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -122,6 +123,16 @@ def register_sources(
         if existing.id.startswith(_JOB_ID_PREFIX):
             existing.remove()
 
+    # Fire every source once right after the scheduler starts, then on
+    # its interval. Without an explicit next_run_time, APScheduler's
+    # IntervalTrigger schedules the FIRST run at now + cadence — so a
+    # restart leaves the catalogue stale for up to an hour. The user's
+    # expectation (CLAUDE.md invariant #6) is "if the site is up it's
+    # collecting": scrape on boot, then hourly. _INITIAL_JITTER_SECONDS
+    # still spreads the boot burst so all same-cadence sources don't
+    # fire on the same tick.
+    boot_run = datetime.now(UTC)
+
     registered = 0
     for row in rows:
         scheduler.add_job(
@@ -133,6 +144,7 @@ def register_sources(
             max_instances=1,
             coalesce=True,
             jitter=_INITIAL_JITTER_SECONDS,
+            next_run_time=boot_run,
         )
         registered += 1
     return registered
