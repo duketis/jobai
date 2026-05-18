@@ -27,6 +27,7 @@ from jobai.fetcher.base import Fetcher
 from jobai.fetcher.browser import BrowserFetcher
 from jobai.fetcher.escalation import EscalatingFetcher
 from jobai.fetcher.http import HttpFetcher
+from jobai.fetcher.ratelimit import RateLimitedFetcher, get_global_limiter
 from jobai.fetcher.retry import RetryingFetcher
 from jobai.fetcher.stealth import build_stealth_fetcher
 
@@ -52,6 +53,15 @@ def build_fetcher(*, tier: int, persistent_session: bool = False) -> Fetcher:
             fallback_factory=BrowserFetcher,
         )
     if tier == 3:
-        return RetryingFetcher(build_stealth_fetcher(persistent_session=persistent_session))
+        # RateLimited innermost so every actual network hit (including
+        # each Retrying re-attempt) is paced; the limiter is the shared
+        # process-global so the per-host rate cap holds across *all*
+        # concurrent slug scrapes, not per-fetcher.
+        return RetryingFetcher(
+            RateLimitedFetcher(
+                build_stealth_fetcher(persistent_session=persistent_session),
+                limiter=get_global_limiter(),
+            ),
+        )
     msg = f"unknown fetcher tier: {tier} (expected 1, 2, or 3)"
     raise ValueError(msg)

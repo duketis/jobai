@@ -10,6 +10,7 @@ from jobai.fetcher.browser import BrowserFetcher, PlaywrightDriver
 from jobai.fetcher.dispatch import build_fetcher
 from jobai.fetcher.escalation import EscalatingFetcher
 from jobai.fetcher.http import HttpFetcher
+from jobai.fetcher.ratelimit import RateLimitedFetcher, get_global_limiter
 from jobai.fetcher.retry import RetryingFetcher
 
 
@@ -39,13 +40,19 @@ async def test_tier_2_returns_escalating_with_browser_fallback() -> None:
         await fetcher.aclose()
 
 
-async def test_tier_3_returns_retrying_stealth_fetcher() -> None:
+async def test_tier_3_returns_retrying_ratelimited_stealth_fetcher() -> None:
     fetcher = build_fetcher(tier=3)
     try:
         assert isinstance(fetcher, RetryingFetcher)
-        # The stealth tier wraps a BrowserFetcher under the hood
-        # (Patchright is wire-compatible).
-        assert isinstance(fetcher._inner, BrowserFetcher)
+        # Stealth tier: Retrying -> RateLimited -> BrowserFetcher
+        # (Patchright is wire-compatible). RateLimited is innermost so
+        # every retry attempt is paced too.
+        rl = fetcher._inner
+        assert isinstance(rl, RateLimitedFetcher)
+        assert isinstance(rl._inner, BrowserFetcher)
+        # The limiter is the shared process-global, not a per-fetcher
+        # one — that's what makes the rate cap hold across all slugs.
+        assert rl._limiter is get_global_limiter()
     finally:
         await fetcher.aclose()
 
@@ -63,10 +70,8 @@ async def test_tier_3_persistent_session_reaches_underlying_driver() -> None:
     fetcher = build_fetcher(tier=3, persistent_session=True)
     try:
         assert isinstance(fetcher, RetryingFetcher)
-        # The ``isinstance`` above narrows ``fetcher`` to
-        # RetryingFetcher; access ``_inner`` directly.
-        assert isinstance(fetcher, RetryingFetcher)
-        browser_fetcher = cast(BrowserFetcher, fetcher._inner)
+        rl = cast(RateLimitedFetcher, fetcher._inner)
+        browser_fetcher = cast(BrowserFetcher, rl._inner)
         driver = cast(PlaywrightDriver, browser_fetcher._driver)
         assert driver._persistent_session is True
     finally:
@@ -79,7 +84,8 @@ async def test_tier_3_persistent_session_default_is_false() -> None:
     fetcher = build_fetcher(tier=3)
     try:
         assert isinstance(fetcher, RetryingFetcher)
-        browser_fetcher = cast(BrowserFetcher, fetcher._inner)
+        rl = cast(RateLimitedFetcher, fetcher._inner)
+        browser_fetcher = cast(BrowserFetcher, rl._inner)
         driver = cast(PlaywrightDriver, browser_fetcher._driver)
         assert driver._persistent_session is False
     finally:
