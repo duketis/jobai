@@ -228,6 +228,55 @@ def test_infer_salary_command_accepts_limit_option(_isolated_db: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_normalise_posted_command_runs_against_empty_db(_isolated_db: Path) -> None:
+    """``jobai normalise-posted`` on an empty DB reports zero cleanly."""
+    runner.invoke(app, ["migrate"])
+
+    result = runner.invoke(app, ["normalise-posted"])
+
+    assert result.exit_code == 0, result.output
+    assert "normalise-posted: inspected 0, updated 0" in result.output
+
+
+def test_normalise_posted_command_rewrites_relative_label(
+    _isolated_db: Path,
+) -> None:
+    """End-to-end CLI smoke: a row carrying Seek's "8d ago" label is
+    rewritten to ISO-8601, measured back from its first_seen_at."""
+    runner.invoke(app, ["migrate"])
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        conn.execute(
+            "INSERT INTO jobs ("
+            "  dedup_key, title, company, company_norm, apply_url, "
+            "  posted_at, first_seen_at, last_seen_at, fingerprint_json"
+            ") VALUES ('k1', 'Engineer', 'Seek Co', 'seek-co', "
+            "'https://e.example/1', '8d ago', "
+            "'2026-05-10T00:00:00+00:00', datetime('now'), '{}')",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["normalise-posted"])
+    assert result.exit_code == 0, result.output
+    assert "updated 1" in result.output
+    assert "parsed=1" in result.output
+
+    conn = sqlite3.connect(_isolated_db)
+    try:
+        stored = conn.execute("SELECT posted_at FROM jobs").fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == "2026-05-02T00:00:00+00:00"
+
+
+def test_normalise_posted_command_accepts_limit_option(_isolated_db: Path) -> None:
+    runner.invoke(app, ["migrate"])
+    result = runner.invoke(app, ["normalise-posted", "--limit", "10"])
+    assert result.exit_code == 0, result.output
+
+
 def test_run_unknown_source_fails_cleanly(_isolated_db: Path) -> None:
     runner.invoke(app, ["migrate"])
 

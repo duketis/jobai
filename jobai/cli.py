@@ -29,6 +29,7 @@ from jobai.dedup.fuzzy import DEFAULT_SIMILARITY_THRESHOLD
 from jobai.dedup.reconcile import DEFAULT_WINDOW_DAYS, reconcile_fuzzy_duplicates
 from jobai.fetcher.dispatch import build_fetcher
 from jobai.observability.logging import configure_logging, get_logger
+from jobai.pipeline.posted_at_normalisation import backfill_posted_at
 from jobai.pipeline.remote_inference import backfill_remote_types
 from jobai.pipeline.runner import RunResult, run_source
 from jobai.pipeline.salary_inference import backfill_salaries
@@ -181,6 +182,35 @@ def infer_salary_cmd(
         result = backfill_salaries(conn, limit=limit)
     typer.echo(
         f"infer-salary: inspected {result.inspected}, updated {result.updated}",
+    )
+
+
+@app.command(name="normalise-posted")
+def normalise_posted_cmd(
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Cap the pass at N rows (default: every row with a posted_at).",
+    ),
+) -> None:
+    """Repair ``posted_at`` for every job that has a value.
+
+    Boards emit anything from ISO timestamps to ``"8d ago"`` /
+    ``"Just posted"`` / ``"14/05/2026"``. This pass rewrites each
+    ``jobs.posted_at`` to ISO-8601 UTC (relative strings resolved
+    against the row's ``first_seen_at``), or NULL when it can't be
+    parsed — so ``posted_newest`` sorts chronologically instead of
+    lexically. Future scrapes get the same treatment automatically
+    inside the runner.
+    """
+    settings = get_settings()
+    configure_logging(level=settings.log_level)
+    with connect(settings.db_path) as conn:
+        result = backfill_posted_at(conn, limit=limit)
+    typer.echo(
+        f"normalise-posted: inspected {result.inspected}, "
+        f"updated {result.updated} "
+        f"→ parsed={result.parsed} nulled={result.nulled}",
     )
 
 
