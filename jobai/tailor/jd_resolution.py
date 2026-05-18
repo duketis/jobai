@@ -43,11 +43,16 @@ _HOST_TO_KIND: tuple[tuple[str, str], ...] = (
     ("indeed.", "indeed"),
 )
 
-#: Host substring -> a ``(url, fetcher) -> str | None`` resolver for
-#: JS-SPA boards that need a JSON-API rewrite rather than an HTML
-#: recipe. Checked before :data:`_HOST_TO_KIND`.
-_DETAIL_RESOLVERS: tuple[tuple[str, Callable[[str, Fetcher], Awaitable[str | None]]], ...] = (
-    ("careers.microsoft.com", fetch_eightfold_jd_text),
+#: Host substring -> ``(fetch tier, resolver)`` for JS-SPA boards
+#: that need a JSON-API rewrite rather than an HTML recipe. Checked
+#: before :data:`_HOST_TO_KIND`. The tier matters: Eightfold's
+#: ``/api/apply/v2/jobs`` is a *plain JSON API* — tier 1 (httpx)
+#: returns raw JSON, but tier 3 (Patchright browser) wraps it in
+#: Chrome's JSON-viewer HTML and the parse fails. So each SPA
+#: resolver declares the tier its endpoint actually wants.
+_Resolver = Callable[[str, Fetcher], Awaitable[str | None]]
+_DETAIL_RESOLVERS: tuple[tuple[str, int, _Resolver], ...] = (
+    ("careers.microsoft.com", 1, fetch_eightfold_jd_text),
 )
 
 
@@ -59,13 +64,11 @@ def _kind_for(url: str) -> str | None:
     return None
 
 
-def _detail_resolver_for(
-    url: str,
-) -> Callable[[str, Fetcher], Awaitable[str | None]] | None:
+def _detail_resolver_for(url: str) -> tuple[int, _Resolver] | None:
     host = urlparse(url).netloc.lower()
-    for needle, resolver in _DETAIL_RESOLVERS:
+    for needle, tier, resolver in _DETAIL_RESOLVERS:
         if needle in host:
-            return resolver
+            return tier, resolver
     return None
 
 
@@ -75,20 +78,21 @@ async def resolve_jd_text(jd_url: str) -> str | None:
     ``None`` means "let the sibling fetch this URL itself" — correct
     for every non-gated, non-SPA board. For Seek / LinkedIn / Indeed
     it runs the board's detail recipe; for Eightfold (Microsoft
-    Careers) it runs the JSON-API resolver. Everything goes through
-    one fresh tier-3 stealth fetcher; any failure (no handler,
-    non-2xx, unparsable body, fetcher error) is swallowed and returns
-    ``None`` so the chain degrades to the plain URL path.
+    Careers) it runs the JSON-API resolver at the tier that endpoint
+    needs. Each handler fetches through one fresh fetcher; any failure
+    (no handler, non-2xx, unparsable body, fetcher error) is swallowed
+    and returns ``None`` so the chain degrades to the plain URL path.
     """
-    resolver = _detail_resolver_for(jd_url)
-    kind = None if resolver is not None else _kind_for(jd_url)
-    if resolver is None and kind is None:
+    detail = _detail_resolver_for(jd_url)
+    kind = None if detail is not None else _kind_for(jd_url)
+    if detail is None and kind is None:
         return None
 
-    fetcher = build_fetcher(tier=3)
+    tier = detail[0] if detail is not None else 3
+    fetcher = build_fetcher(tier=tier)
     try:
-        if resolver is not None:
-            return await resolver(jd_url, fetcher)
+        if detail is not None:
+            return await detail[1](jd_url, fetcher)
         recipe = RECIPES.get(kind or "")
         if recipe is None:  # pragma: no cover - _HOST_TO_KIND keys are RECIPES keys
             return None

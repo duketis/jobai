@@ -64,8 +64,20 @@ def _resp(status: int, body: bytes) -> Response:
     )
 
 
-def _patch_fetcher(monkeypatch: pytest.MonkeyPatch, fetcher: _FakeFetcher) -> None:
-    monkeypatch.setattr(jd_resolution, "build_fetcher", lambda *, tier: fetcher)
+def _patch_fetcher(
+    monkeypatch: pytest.MonkeyPatch,
+    fetcher: _FakeFetcher,
+) -> list[int]:
+    """Patch build_fetcher to return ``fetcher``; return the list the
+    requested tiers are recorded into so tests can assert tier choice."""
+    tiers: list[int] = []
+
+    def _build(*, tier: int) -> _FakeFetcher:
+        tiers.append(tier)
+        return fetcher
+
+    monkeypatch.setattr(jd_resolution, "build_fetcher", _build)
+    return tiers
 
 
 async def test_non_gated_host_defers_to_sibling(
@@ -81,11 +93,12 @@ async def test_seek_url_resolved_via_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fetcher = _FakeFetcher(_resp(200, _SEEK_HTML.encode()))
-    _patch_fetcher(monkeypatch, fetcher)
+    tiers = _patch_fetcher(monkeypatch, fetcher)
     text = await jd_resolution.resolve_jd_text("https://www.seek.com.au/job/12345678")
     assert text == "Seek JD body."
     # Seek's recipe drives the verified domcontentloaded + selector combo.
     assert fetcher.calls[0]["wait_until"] == "domcontentloaded"
+    assert tiers == [3]  # gated board → stealth browser tier
 
 
 async def test_linkedin_url_rewritten_to_guest_fragment(
@@ -121,7 +134,7 @@ async def test_microsoft_careers_resolved_via_eightfold_json_api(
         {"name": "Software Engineer", "job_description": "<p>Azure team.</p>"}
     ).encode()
     fetcher = _FakeFetcher(_resp(200, body))
-    _patch_fetcher(monkeypatch, fetcher)
+    tiers = _patch_fetcher(monkeypatch, fetcher)
     text = await jd_resolution.resolve_jd_text(
         "https://apply.careers.microsoft.com/careers/job/1970393556621959?src=LinkedIn",
     )
@@ -129,6 +142,9 @@ async def test_microsoft_careers_resolved_via_eightfold_json_api(
     assert fetcher.calls[0]["url"] == (
         "https://apply.careers.microsoft.com/api/apply/v2/jobs/1970393556621959"
     )
+    # Eightfold is a plain JSON API → tier 1 (httpx), NOT the browser
+    # tier (which would wrap the JSON in HTML-viewer markup).
+    assert tiers == [1]
 
 
 async def test_non_2xx_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
