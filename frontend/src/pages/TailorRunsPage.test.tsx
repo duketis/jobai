@@ -508,4 +508,53 @@ describe("TailorRunsPage", () => {
     // Back to Any
     await userEvent.click(screen.getByRole("button", { name: /^Any$/ }));
   });
+
+  it("shows a Stop button on an in-flight run and POSTs cancel", async () => {
+    let resolveCancel!: (value: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/cancel") && init?.method === "POST") {
+        return new Promise<Response>((resolve) => {
+          resolveCancel = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [makeRun({ id: 91, status: "letter_running" })],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const stop = await screen.findByRole("button", { name: /^Stop$/ });
+    await userEvent.click(stop);
+    // Disabled + relabelled while the cancel POST is in flight.
+    expect(
+      await screen.findByRole("button", { name: /Stopping/ }),
+    ).toBeDisabled();
+    resolveCancel(
+      new Response(JSON.stringify(makeRun({ id: 91, status: "failed" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(
+        calls.some((u) => u.endsWith("/api/tailor/runs/91/cancel")),
+      ).toBe(true);
+    });
+  });
+
+  it("shows no Stop button once a run is terminal", async () => {
+    stubFetch([makeRun({ id: 92, status: "succeeded" })]);
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText("#92")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /^Stop$/ })).toBeNull();
+  });
 });

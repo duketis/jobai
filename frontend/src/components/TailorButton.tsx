@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Sparkles } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 
 import {
+  cancelTailorRun,
   tailorOneJob,
   tailorRunLetterPdfUrl,
   tailorRunResumePdfUrl,
@@ -37,11 +38,21 @@ export function TailorButton({ jobId, latestRun }: TailorButtonProps) {
     },
   });
 
-  const inFlight =
+  const cancelMutation = useMutation({
+    mutationFn: (runId: number) => cancelTailorRun(runId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
+    },
+  });
+
+  const cancellable =
     latestRun !== null &&
     (latestRun.status === "pending" ||
       latestRun.status === "resume_running" ||
-      latestRun.status === "letter_running");
+      latestRun.status === "letter_running" ||
+      latestRun.status === "qa_running");
+
+  const inFlight = cancellable;
 
   const succeeded = latestRun !== null && latestRun.status === "succeeded";
 
@@ -81,6 +92,27 @@ export function TailorButton({ jobId, latestRun }: TailorButtonProps) {
             {latestRun.letter_filename ?? "Letter.pdf"}
           </a>
         </>
+      )}
+
+      {cancellable && latestRun !== null && (
+        <button
+          type="button"
+          disabled={cancelMutation.isPending}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            cancelMutation.mutate(latestRun.id);
+          }}
+          className={cn(
+            "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors",
+            "border border-destructive/50 text-destructive hover:bg-destructive/10",
+            cancelMutation.isPending && "cursor-not-allowed opacity-60",
+          )}
+          title="Stop this tailor run"
+        >
+          <X className="size-3" />
+          {cancelMutation.isPending ? "Stopping..." : "Stop"}
+        </button>
       )}
 
       <button

@@ -14,6 +14,7 @@ import { QABadge } from "@/components/QABadge";
 import { TailorFromUrlDialog } from "@/components/TailorFromUrlDialog";
 import { TailorStatusPill } from "@/components/TailorStatusPill";
 import {
+  cancelTailorRun,
   listTailorRuns,
   setTailorRunApplied,
   tailorRunExportUrl,
@@ -192,6 +193,17 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
       void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
     },
   });
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelTailorRun(run.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
+    },
+  });
+  const cancellable =
+    run.status === "pending" ||
+    run.status === "resume_running" ||
+    run.status === "letter_running" ||
+    run.status === "qa_running";
 
   async function copyJobContextLink(event: React.MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -265,6 +277,24 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
               <Check className="size-3" />
               Applied
             </span>
+          )}
+          {cancellable && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                cancelMutation.mutate();
+              }}
+              disabled={cancelMutation.isPending}
+              className={cn(
+                "h-7 px-2.5 rounded-md text-[11px] font-medium border transition-colors",
+                "border-destructive/50 text-destructive hover:bg-destructive/10",
+                cancelMutation.isPending && "opacity-50 cursor-not-allowed",
+              )}
+              title="Stop this tailor run"
+            >
+              {cancelMutation.isPending ? "Stopping..." : "Stop"}
+            </button>
           )}
           {succeeded && (
             <>

@@ -135,6 +135,65 @@ describe("TailorButton", () => {
     });
   });
 
+  it("shows a Stop button for an in-flight run and POSTs cancel", async () => {
+    const client = makeQueryClient();
+    render(
+      <WithQueryClient client={client}>
+        <TailorButton
+          jobId={7}
+          latestRun={makeRun({ id: 42, status: "letter_running" })}
+        />
+      </WithQueryClient>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Stop/ }));
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/tailor/runs/42/cancel",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("shows no Stop button once the run is terminal", () => {
+    const client = makeQueryClient();
+    render(
+      <WithQueryClient client={client}>
+        <TailorButton jobId={7} latestRun={makeRun({ status: "succeeded" })} />
+      </WithQueryClient>,
+    );
+    expect(screen.queryByRole("button", { name: /Stop/ })).toBeNull();
+  });
+
+  it("disables Stop and shows 'Stopping...' while cancel is pending", async () => {
+    let resolveFetch!: (value: Response) => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeQueryClient();
+    render(
+      <WithQueryClient client={client}>
+        <TailorButton
+          jobId={7}
+          latestRun={makeRun({ id: 42, status: "qa_running" })}
+        />
+      </WithQueryClient>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Stop/ }));
+    expect(
+      await screen.findByRole("button", { name: /Stopping/ }),
+    ).toBeDisabled();
+    resolveFetch(
+      new Response(JSON.stringify(makeRun({ status: "failed" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  });
+
   it("shows 'Kicking...' while the mutation is pending", async () => {
     let resolveFetch!: (value: Response) => void;
     globalThis.fetch = vi.fn(

@@ -295,6 +295,15 @@ export async function setTailorRunApplied(
   });
 }
 
+/** Stop an in-flight tailor run; returns the fresh (failed) record. */
+export async function cancelTailorRun(
+  tailorRunId: number,
+): Promise<TailorRunRecord> {
+  return fetchJson<TailorRunRecord>(`/tailor/runs/${tailorRunId}/cancel`, {
+    method: "POST",
+  });
+}
+
 /**
  * Stream a chat turn and yield each parsed {@link AgentStreamEvent}.
  *
