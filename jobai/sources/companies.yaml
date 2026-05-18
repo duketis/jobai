@@ -261,6 +261,57 @@ linkedin:
     display_name: LinkedIn — Remote jobs (Australia)
     default_tier: 3
     cadence_seconds: 3600
+  # Each guest query caps at ~1,000 results regardless of endpoint, so
+  # the only lever for more coverage is more distinct query slugs.
+  # These stay LOCATION / WORK-MODE / RECENCY only (no role keywords)
+  # to keep the catalogue generic (invariant #1). Major regional
+  # centres each form their own ~1,000 bucket:
+  - account: location=Newcastle%2C%20New%20South%20Wales%2C%20Australia
+    display_name: LinkedIn — All jobs (Newcastle)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Wollongong%2C%20New%20South%20Wales%2C%20Australia
+    display_name: LinkedIn — All jobs (Wollongong)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Gold%20Coast%2C%20Queensland%2C%20Australia
+    display_name: LinkedIn — All jobs (Gold Coast)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sunshine%20Coast%2C%20Queensland%2C%20Australia
+    display_name: LinkedIn — All jobs (Sunshine Coast)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Cairns%2C%20Queensland%2C%20Australia
+    display_name: LinkedIn — All jobs (Cairns)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Townsville%2C%20Queensland%2C%20Australia
+    display_name: LinkedIn — All jobs (Townsville)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Geelong%2C%20Victoria%2C%20Australia
+    display_name: LinkedIn — All jobs (Geelong)
+    default_tier: 3
+    cadence_seconds: 3600
+  # Work-mode partitions of the national set — on-site (f_WT=1) and
+  # hybrid (f_WT=3) are each their own ~1,000 bucket distinct from the
+  # remote one above and the unfiltered city slugs.
+  - account: location=Australia&f_WT=1
+    display_name: LinkedIn — On-site jobs (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_WT=3
+    display_name: LinkedIn — Hybrid jobs (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  # Recency partition: past-24h national feed (``f_TPR=r86400``).
+  # Surfaces brand-new postings that the broad query's first ~1,000
+  # may already have pushed past — runs hourly so nothing is missed.
+  - account: location=Australia&f_TPR=r86400
+    display_name: LinkedIn — Last 24h (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
