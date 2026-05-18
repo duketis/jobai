@@ -31,6 +31,12 @@ from dataclasses import dataclass
 from selectolax.parser import HTMLParser
 
 from jobai.fetcher.base import Fetcher, WaitUntil
+from jobai.sources.linkedin_detail import (
+    guest_jd_url,
+)
+from jobai.sources.linkedin_detail import (
+    parse_linkedin_description as _parse_linkedin_description,
+)
 from jobai.sources.seek_detail import SEEK_JD_SELECTOR, parse_seek_description
 
 _log = logging.getLogger(__name__)
@@ -84,21 +90,16 @@ class DescriptionRecipe:
 # ---------------------------------------------------------------------------
 
 
-def _parse_linkedin_description(html: str) -> str | None:
-    """Pull the description out of a LinkedIn ``/jobs/view/<id>`` page.
+def _linkedin_guest_url(apply_url: str) -> str:
+    """Map a LinkedIn apply URL to its auth-free guest JD fragment.
 
-    LinkedIn renders the description into ``div.description__text``
-    on the public guest detail page. ``show-more-less-html__markup``
-    is its inner wrapper; either selector reaches the same content.
+    The ``/jobs/view/<slug>-<id>`` page carries auth-wall markup; the
+    guest ``jobPosting/<id>`` fragment serves the same description
+    with none. Falls back to the original URL when no LinkedIn job id
+    can be extracted (non-LinkedIn rows, malformed URLs) so the fetch
+    still happens rather than silently skipping the job.
     """
-    tree = HTMLParser(html)
-    node = tree.css_first("div.description__text") or tree.css_first(
-        "div.show-more-less-html__markup",
-    )
-    if node is None:
-        return None
-    text = node.text(strip=True)
-    return text or None
+    return guest_jd_url(apply_url) or apply_url
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +157,10 @@ def _parse_indeed_description(html: str) -> str | None:
 #: new source doesn't accidentally hit a detail-page request storm
 #: against an endpoint nobody has calibrated against.
 RECIPES: dict[str, DescriptionRecipe] = {
-    "linkedin": DescriptionRecipe(parse=_parse_linkedin_description),
+    "linkedin": DescriptionRecipe(
+        parse=_parse_linkedin_description,
+        fetch_url=_linkedin_guest_url,
+    ),
     "indeed": DescriptionRecipe(
         parse=_parse_indeed_description,
         fetch_url=_indeed_side_panel_url,

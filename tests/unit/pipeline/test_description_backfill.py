@@ -18,7 +18,6 @@ from jobai.pipeline.description_backfill import (
     DescriptionRecipe,
     _indeed_side_panel_url,
     _parse_indeed_description,
-    _parse_linkedin_description,
     backfill_descriptions,
     select_pending_jobs,
 )
@@ -171,26 +170,18 @@ def test_select_pending_jobs_treats_empty_string_as_pending(
 
 
 # ---------------------------------------------------------------------------
-# _parse_linkedin_description
+# recipe wiring
 # ---------------------------------------------------------------------------
 
 
-def test_parse_linkedin_description_extracts_text() -> None:
-    html = (
-        "<html><body>"
-        '<div class="description__text"><p>Build cool things.</p>'
-        "<p>Remote-friendly.</p></div></body></html>"
+def test_linkedin_recipe_rewrites_to_guest_fragment() -> None:
+    """The LinkedIn recipe fetches the auth-free guest fragment, not
+    the auth-walled /jobs/view page (parser lives in linkedin_detail)."""
+    recipe = RECIPES["linkedin"]
+    assert (
+        recipe.fetch_url("https://au.linkedin.com/jobs/view/x-4413516164")
+        == "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4413516164"
     )
-    assert _parse_linkedin_description(html) == "Build cool things.Remote-friendly."
-
-
-def test_parse_linkedin_description_falls_back_to_inner_wrapper() -> None:
-    html = '<html><body><div class="show-more-less-html__markup">Markup body</div></body></html>'
-    assert _parse_linkedin_description(html) == "Markup body"
-
-
-def test_parse_linkedin_description_returns_none_on_missing() -> None:
-    assert _parse_linkedin_description("<html><body></body></html>") is None
 
 
 def test_seek_recipe_uses_domcontentloaded_and_jd_selector() -> None:
