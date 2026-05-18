@@ -9,13 +9,18 @@ from pathlib import Path
 import pytest
 
 from jobai.db.connection import connect
-from jobai.tailor.models import TailorRunStatus
+from jobai.tailor.models import QAStatus, TailorRunStatus
 from jobai.tailor.repository import (
     ORPHAN_ERROR,
     create_tailor_run,
+    delete_tailor_run,
+    delete_tailor_runs,
     get_tailor_run,
     list_tailor_runs,
     reap_orphaned_runs,
+    reset_for_rerun,
+    set_applied,
+    update_resume_qa,
     update_status,
 )
 
@@ -264,3 +269,72 @@ def test_reap_orphaned_runs_safe_on_db_without_table() -> None:
         assert reap_orphaned_runs(bare) == 0
     finally:
         bare.close()
+
+
+# ---------------------------------------------------------------------------
+# reset_for_rerun + delete (v1.29.0)
+# ---------------------------------------------------------------------------
+
+
+def test_reset_for_rerun_clears_outputs_keeps_identity(conn: sqlite3.Connection) -> None:
+    """Re-run reuses the SAME row: job_id / created_at / applied_at
+    survive; every artefact / status / QA field is wiped to pending."""
+    rec = create_tailor_run(conn, job_id=1)
+    created = rec.created_at
+    update_status(
+        conn,
+        rec.id,
+        status=TailorRunStatus.SUCCEEDED,
+        resume_run_id="rs_1",
+        letter_run_id="ls_1",
+        qa_status=QAStatus.FAIL,
+        error="boom",
+    )
+    update_resume_qa(conn, rec.id, status=QAStatus.PASS)
+    set_applied(conn, rec.id, applied=True)
+
+    fresh = reset_for_rerun(conn, rec.id)
+    assert fresh is not None
+    assert fresh.status is TailorRunStatus.PENDING
+    assert fresh.resume_run_id is None
+    assert fresh.letter_run_id is None
+    assert fresh.qa_status is None
+    assert fresh.resume_qa_status is None
+    assert fresh.qa_attempts == 0
+    assert fresh.error is None
+    assert fresh.finished_at is None
+    # Identity preserved.
+    assert fresh.job_id == 1
+    assert fresh.created_at == created
+    assert fresh.applied_at is not None  # re-tailoring doesn't un-apply
+
+
+def test_reset_for_rerun_returns_none_for_missing(conn: sqlite3.Connection) -> None:
+    assert reset_for_rerun(conn, 99_999) is None
+
+
+def test_delete_tailor_run_removes_row(conn: sqlite3.Connection) -> None:
+    rec = create_tailor_run(conn, job_id=1)
+    assert delete_tailor_run(conn, rec.id) is True
+    assert get_tailor_run(conn, rec.id) is None
+    # Second delete of the same id is a no-op.
+    assert delete_tailor_run(conn, rec.id) is False
+
+
+def test_delete_tailor_runs_bulk_counts_and_skips_unknown(
+    conn: sqlite3.Connection,
+) -> None:
+    a = create_tailor_run(conn, job_id=1)
+    b = create_tailor_run(conn, job_id=1)
+    c = create_tailor_run(conn, job_id=1)
+    # b + c + an unknown id -> only the two real rows are removed.
+    assert delete_tailor_runs(conn, [b.id, c.id, 99_999]) == 2
+    assert get_tailor_run(conn, a.id) is not None
+    assert get_tailor_run(conn, b.id) is None
+    assert get_tailor_run(conn, c.id) is None
+
+
+def test_delete_tailor_runs_empty_is_noop(conn: sqlite3.Connection) -> None:
+    rec = create_tailor_run(conn, job_id=1)
+    assert delete_tailor_runs(conn, []) == 0
+    assert get_tailor_run(conn, rec.id) is not None

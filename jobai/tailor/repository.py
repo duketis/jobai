@@ -269,6 +269,61 @@ def set_applied(
     return get_tailor_run(conn, tailor_run_id)
 
 
+def reset_for_rerun(
+    conn: sqlite3.Connection,
+    tailor_run_id: int,
+) -> TailorRunRecord | None:
+    """Wipe a finished run's outputs back to ``pending`` in place.
+
+    Re-running reuses the SAME row (the user explicitly does not want
+    a fresh row per re-run filling the list) — ``job_id`` / ``jd_url``
+    / ``created_at`` are kept so the chain re-loads the same JD, and
+    ``applied_at`` is kept (re-tailoring doesn't un-apply the job).
+    Every artefact / status / QA field is cleared so the row starts
+    clean. Returns the fresh record, or ``None`` if the row is gone
+    (caller maps to 404).
+    """
+    cursor = conn.execute(
+        "UPDATE tailor_runs SET "
+        "  status = 'pending', resume_run_id = NULL, resume_status = NULL, "
+        "  letter_run_id = NULL, letter_status = NULL, "
+        "  qa_status = NULL, qa_assessment_json = NULL, "
+        "  resume_qa_status = NULL, resume_qa_assessment_json = NULL, "
+        "  qa_attempts = 0, resume_filename = NULL, letter_filename = NULL, "
+        "  error = NULL, finished_at = NULL, updated_at = ? "
+        "WHERE id = ?",
+        (_now(), tailor_run_id),
+    )
+    if cursor.rowcount == 0:
+        return None
+    conn.commit()
+    return get_tailor_run(conn, tailor_run_id)
+
+
+def delete_tailor_run(conn: sqlite3.Connection, tailor_run_id: int) -> bool:
+    """Delete one run row. Returns ``True`` if a row was removed."""
+    cursor = conn.execute("DELETE FROM tailor_runs WHERE id = ?", (tailor_run_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_tailor_runs(conn: sqlite3.Connection, ids: list[int]) -> int:
+    """Delete many run rows; return how many were removed.
+
+    Empty input is a no-op (0). The ``IN`` placeholders are "?"
+    literals built from the id count — not interpolated input.
+    """
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    cursor = conn.execute(
+        f"DELETE FROM tailor_runs WHERE id IN ({placeholders})",  # noqa: S608 - bound "?" literals
+        ids,
+    )
+    conn.commit()
+    return int(cursor.rowcount)
+
+
 def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
     qa_status_raw = row["qa_status"]
     qa_assessment_raw = row["qa_assessment_json"]
