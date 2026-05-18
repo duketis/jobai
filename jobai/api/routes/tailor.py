@@ -15,7 +15,6 @@ just call ``stream_pdf``.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -164,24 +163,13 @@ def _schedule_chain(
         return await fetch_qa_context_summary(resumeai_url)
 
     async def _resolve_jd_text(jd_url: str) -> str | None:
-        # Seek catalogue rows only store the listing teaser and Seek's
-        # detail page is Cloudflare-gated, so resumeai can't fetch it
-        # (hard 403). Pull the full JD here on jobai's tier-3 stealth
-        # fetcher and hand it to the siblings as text. Non-Seek URLs
-        # fall through to the existing URL path (resumeai fetches).
-        from urllib.parse import urlparse  # noqa: PLC0415
+        # Every anti-bot-gated board we scrape (Seek / LinkedIn /
+        # Indeed) gets its full JD pulled here on jobai's stealth tier
+        # so the siblings never hit a 403 / auth wall. Non-gated boards
+        # resolve to None and the sibling fetches the URL itself.
+        from jobai.tailor.jd_resolution import resolve_jd_text  # noqa: PLC0415
 
-        if "seek.com" not in urlparse(jd_url).netloc.lower():
-            return None
-        from jobai.fetcher.dispatch import build_fetcher  # noqa: PLC0415
-        from jobai.sources.seek_detail import fetch_seek_jd_text  # noqa: PLC0415
-
-        fetcher = build_fetcher(tier=3)
-        try:
-            return await fetch_seek_jd_text(jd_url, fetcher)
-        finally:
-            with contextlib.suppress(Exception):
-                await fetcher.aclose()
+        return await resolve_jd_text(jd_url)
 
     async def _factory() -> None:
         await run_chain(

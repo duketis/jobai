@@ -627,36 +627,25 @@ async def test_schedule_chain_wires_refresh_closure_with_url(
     assert seen_urls == ["http://resumeai:8765"]
 
 
-async def test_schedule_chain_resolve_jd_text_fetches_seek_only(
+async def test_schedule_chain_resolve_jd_text_delegates_to_shared_resolver(
     monkeypatch: pytest.MonkeyPatch,
     tailor_app_db: Path,
 ) -> None:
-    """The injected ``resolve_jd_text`` closure must (a) pull a Seek JD
-    via the tier-3 stealth fetcher and (b) decline non-Seek URLs so
-    resumeai keeps fetching those itself."""
+    """The injected ``resolve_jd_text`` closure forwards the URL to the
+    shared multi-platform resolver (Seek / LinkedIn / Indeed handled
+    there; non-gated boards return None and the sibling fetches)."""
     from jobai.api.routes.tailor import _schedule_chain  # noqa: PLC0415
     from jobai.tailor.worker import TailorPool  # noqa: PLC0415
 
-    built_tiers: list[int] = []
-    closed = False
+    seen: list[str] = []
 
-    class _FakeFetcher:
-        async def aclose(self) -> None:
-            nonlocal closed
-            closed = True
+    async def _fake_resolve(jd_url: str) -> str | None:
+        seen.append(jd_url)
+        return f"JD::{jd_url}" if "linkedin.com" in jd_url else None
 
-    def _fake_build_fetcher(*, tier: int) -> _FakeFetcher:
-        built_tiers.append(tier)
-        return _FakeFetcher()
-
-    async def _fake_fetch_seek(url: str, fetcher: Any) -> str | None:
-        assert isinstance(fetcher, _FakeFetcher)
-        return f"SEEK JD for {url}"
-
-    monkeypatch.setattr("jobai.fetcher.dispatch.build_fetcher", _fake_build_fetcher)
     monkeypatch.setattr(
-        "jobai.sources.seek_detail.fetch_seek_jd_text",
-        _fake_fetch_seek,
+        "jobai.tailor.jd_resolution.resolve_jd_text",
+        _fake_resolve,
     )
 
     captured: list[Any] = []
@@ -692,15 +681,14 @@ async def test_schedule_chain_resolve_jd_text_fetches_seek_only(
     await pool.drain()
 
     resolver = captured[0]
-    seek_result = await resolver("https://www.seek.com.au/job/91797185")
-    assert seek_result == "SEEK JD for https://www.seek.com.au/job/91797185"
-    assert built_tiers == [3]
-    assert closed is True
-
-    other_result = await resolver("https://boards.greenhouse.io/acme/jobs/1")
-    assert other_result is None
-    # build_fetcher was not invoked a second time for the non-Seek URL.
-    assert built_tiers == [3]
+    li = await resolver("https://au.linkedin.com/jobs/view/x-4413516164")
+    assert li == "JD::https://au.linkedin.com/jobs/view/x-4413516164"
+    other = await resolver("https://boards.greenhouse.io/acme/jobs/1")
+    assert other is None
+    assert seen == [
+        "https://au.linkedin.com/jobs/view/x-4413516164",
+        "https://boards.greenhouse.io/acme/jobs/1",
+    ]
 
 
 def test_letter_client_dep_503_when_attribute_missing() -> None:
