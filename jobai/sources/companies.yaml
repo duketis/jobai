@@ -214,10 +214,16 @@ seek:
     cadence_seconds: 3600
 
 # LinkedIn fingerprints aggressively — needs the stealth (Patchright)
-# fetcher (default_tier: 3). Account is the URL-encoded query string
-# for /jobs/search. Anonymous LinkedIn caps at ~1,000 results per
-# query, so multiplying location slugs is the lever. Each slug is
-# LOCATION-only (no `keywords`) to keep the catalogue generic.
+# fetcher (default_tier: 3), and every request is paced by the global
+# per-host rate limiter (jobai.fetcher.ratelimit) so slug count no
+# longer drives request *rate*. Account is the URL-encoded guest
+# query (resolved against the seeMoreJobPostings chunk endpoint).
+# Guest LinkedIn caps at ~1,000 results PER QUERY, so coverage scales
+# with the number of near-disjoint query slugs: location + work-mode
+# + recency + experience-level + job-type (no role `keywords`, so the
+# catalogue stays generic). Cadence is tiered: broad discovery +
+# freshness slugs hourly; the deep facet partitions every 6h (they're
+# sparse and slow-changing — re-walking them hourly is wasted load).
 linkedin:
   - account: location=Australia
     display_name: LinkedIn — All jobs (Australia)
@@ -300,11 +306,11 @@ linkedin:
   - account: location=Australia&f_WT=1
     display_name: LinkedIn — On-site jobs (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_WT=3
     display_name: LinkedIn — Hybrid jobs (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   # Recency partition: past-24h national feed (``f_TPR=r86400``).
   # Surfaces brand-new postings that the broad query's first ~1,000
   # may already have pushed past — runs hourly so nothing is missed.
@@ -321,46 +327,46 @@ linkedin:
   - account: location=Australia&f_E=1
     display_name: LinkedIn — Internship (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_E=2
     display_name: LinkedIn — Entry level (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_E=3
     display_name: LinkedIn — Associate (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_E=4
     display_name: LinkedIn — Mid-Senior (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_E=5
     display_name: LinkedIn — Director (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_E=6
     display_name: LinkedIn — Executive (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   # Job-type partition of the national set (``f_JT``): full-time,
   # contract, part-time, temporary, internship. Another near-disjoint
   # axis orthogonal to the experience + work-mode + city slugs above.
   - account: location=Australia&f_JT=F
     display_name: LinkedIn — Full-time (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_JT=C
     display_name: LinkedIn — Contract (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_JT=P
     display_name: LinkedIn — Part-time (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_JT=T
     display_name: LinkedIn — Temporary (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   # Big-metro x experience-level cross. The unfiltered city
   # slugs above cap at ~1,000 per city, but Sydney/Melbourne/
   # Brisbane/Perth/Adelaide each have far more than that — so
@@ -371,134 +377,134 @@ linkedin:
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=1
     display_name: LinkedIn — Sydney Internship
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=2
     display_name: LinkedIn — Sydney Entry
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=3
     display_name: LinkedIn — Sydney Associate
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=4
     display_name: LinkedIn — Sydney Mid-Senior
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=5
     display_name: LinkedIn — Sydney Director
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=6
     display_name: LinkedIn — Sydney Executive
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=1
     display_name: LinkedIn — Melbourne Internship
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=2
     display_name: LinkedIn — Melbourne Entry
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=3
     display_name: LinkedIn — Melbourne Associate
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=4
     display_name: LinkedIn — Melbourne Mid-Senior
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=5
     display_name: LinkedIn — Melbourne Director
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=6
     display_name: LinkedIn — Melbourne Executive
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=1
     display_name: LinkedIn — Brisbane Internship
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=2
     display_name: LinkedIn — Brisbane Entry
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=3
     display_name: LinkedIn — Brisbane Associate
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=4
     display_name: LinkedIn — Brisbane Mid-Senior
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=5
     display_name: LinkedIn — Brisbane Director
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=6
     display_name: LinkedIn — Brisbane Executive
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=1
     display_name: LinkedIn — Perth Internship
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=2
     display_name: LinkedIn — Perth Entry
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=3
     display_name: LinkedIn — Perth Associate
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=4
     display_name: LinkedIn — Perth Mid-Senior
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=5
     display_name: LinkedIn — Perth Director
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=6
     display_name: LinkedIn — Perth Executive
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=1
     display_name: LinkedIn — Adelaide Internship
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=2
     display_name: LinkedIn — Adelaide Entry
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=3
     display_name: LinkedIn — Adelaide Associate
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=4
     display_name: LinkedIn — Adelaide Mid-Senior
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=5
     display_name: LinkedIn — Adelaide Director
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=6
     display_name: LinkedIn — Adelaide Executive
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   # Deeper national recency tiers. Past-week / past-month each
   # surface their own ~1,000 freshest that the unfiltered broad
   # query has already pushed past the cap.
   - account: location=Australia&f_TPR=r604800
     display_name: LinkedIn — Last 7d (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
   - account: location=Australia&f_TPR=r2592000
     display_name: LinkedIn — Last 30d (Australia)
     default_tier: 3
-    cadence_seconds: 3600
+    cadence_seconds: 21600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
