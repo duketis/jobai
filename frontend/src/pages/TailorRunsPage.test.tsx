@@ -557,4 +557,299 @@ describe("TailorRunsPage", () => {
     });
     expect(screen.queryByRole("button", { name: /^Stop$/ })).toBeNull();
   });
+
+  it("POSTs /rerun when the Re-run button is clicked on a terminal run", async () => {
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/rerun") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(makeRun({ id: 100, status: "pending" })),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [makeRun({ id: 100, status: "succeeded" })],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const rerun = await screen.findByRole("button", { name: /Re-run/ });
+    expect(rerun).toHaveAttribute(
+      "title",
+      expect.stringContaining("Re-run this tailor in place"),
+    );
+    await userEvent.click(rerun);
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(
+        (c) => c[1]?.method === "POST",
+      );
+      expect(
+        calls.some((c) =>
+          String(c[0]).endsWith("/api/tailor/runs/100/rerun"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("disables the Re-run button + shows 'Re-running...' while pending", async () => {
+    let resolveRerun!: (value: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/rerun") && init?.method === "POST") {
+        return new Promise<Response>((resolve) => {
+          resolveRerun = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [makeRun({ id: 101, status: "failed", error: "boom" })],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const rerun = await screen.findByRole("button", { name: /Re-run/ });
+    await userEvent.click(rerun);
+    const pending = await screen.findByRole("button", {
+      name: /Re-running\.\.\./,
+    });
+    expect(pending).toBeDisabled();
+    resolveRerun(
+      new Response(JSON.stringify(makeRun({ id: 101, status: "pending" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(
+        calls.some((u) => u.endsWith("/api/tailor/runs/101/rerun")),
+      ).toBe(true);
+    });
+  });
+
+  it("two-step Delete: arms then DELETEs the run", async () => {
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (
+        /\/api\/tailor\/runs\/\d+$/.test(url) &&
+        init?.method === "DELETE"
+      ) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [makeRun({ id: 110, status: "succeeded" })],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    const del = await screen.findByRole("button", { name: /^Delete$/ });
+    expect(
+      screen.queryByRole("button", { name: /Confirm delete\?/ }),
+    ).toBeNull();
+    // First click only arms — no DELETE request yet.
+    await userEvent.click(del);
+    expect(
+      screen.getByRole("button", { name: /Confirm delete\?/ }),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some((c) => c[1]?.method === "DELETE"),
+    ).toBe(false);
+    // Second click confirms — DELETE fires.
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm delete\?/ }),
+    );
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(
+        (c) => c[1]?.method === "DELETE",
+      );
+      expect(
+        calls.some((c) =>
+          String(c[0]).endsWith("/api/tailor/runs/110"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("Delete armed state expires after 3s (fake timers)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({
+        advanceTimers: vi.advanceTimersByTime.bind(vi),
+      });
+      const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (
+          /\/api\/tailor\/runs\/\d+$/.test(url) &&
+          init?.method === "DELETE"
+        ) {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              items: [makeRun({ id: 111, status: "failed", error: "x" })],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      renderPage();
+      const del = await screen.findByRole("button", { name: /^Delete$/ });
+      await user.click(del);
+      expect(
+        screen.getByRole("button", { name: /Confirm delete\?/ }),
+      ).toBeInTheDocument();
+      // After 3s the armed state resets back to "Delete".
+      vi.advanceTimersByTime(3100);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /^Delete$/ }),
+        ).toBeInTheDocument();
+      });
+      // A single click now only re-arms — it does NOT delete.
+      await user.click(screen.getByRole("button", { name: /^Delete$/ }));
+      expect(
+        fetchMock.mock.calls.some((c) => c[1]?.method === "DELETE"),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides Re-run / Delete and shows Stop for a non-terminal run", async () => {
+    stubFetch([makeRun({ id: 120, status: "letter_running" })]);
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText("#120")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /Re-run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete$/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /^Stop$/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("selection mode: toggles checkboxes, bulk-deletes, then exits", async () => {
+    const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/tailor/runs/delete") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ deleted: 1 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [makeRun({ id: 130, status: "succeeded" })],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText("#130")).toBeInTheDocument();
+    });
+    // No checkboxes / bulk bar before selection mode.
+    expect(
+      screen.queryByLabelText(/Select tailor run/),
+    ).toBeNull();
+    expect(screen.queryByLabelText("Bulk actions")).toBeNull();
+
+    // Enter selection mode. The toggle button is unambiguous by title
+    // (its label flips Select <-> Done, and "Done" collides with the
+    // status-filter chip of the same text).
+    const selectionToggle = screen.getByTitle(
+      /Select multiple runs to bulk-delete/,
+    );
+    expect(selectionToggle).toHaveTextContent("Select");
+    await userEvent.click(selectionToggle);
+    expect(selectionToggle).toHaveTextContent("Done");
+    const checkbox = screen.getByLabelText("Select tailor run 130");
+    expect(checkbox).toBeInTheDocument();
+    const bar = screen.getByLabelText("Bulk actions");
+    expect(bar).toBeInTheDocument();
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    // Bulk delete disabled with nothing selected.
+    const bulkDelete = screen.getByRole("button", {
+      name: /Delete 0 selected/,
+    });
+    expect(bulkDelete).toBeDisabled();
+
+    // Tick the row -> "1 selected" + the <li> gets a ring class.
+    await userEvent.click(checkbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(checkbox.closest("li")?.className).toContain("ring-2");
+
+    // Untick -> back to 0 selected (covers the Set.delete branch).
+    await userEvent.click(checkbox);
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+
+    // Re-tick and bulk delete (arm then confirm).
+    await userEvent.click(checkbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /Delete 1 selected/ }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm delete 1\?/ }),
+    );
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith("/api/tailor/runs/delete") &&
+          c[1]?.method === "POST",
+      );
+      expect(post).toBeDefined();
+      const body = JSON.parse(String(post?.[1]?.body));
+      expect(body).toEqual({ ids: [130] });
+    });
+    // Bulk-delete success exits selection mode.
+    await waitFor(() => {
+      expect(selectionToggle).toHaveTextContent("Select");
+    });
+  });
+
+  it("clicking 'Select' again exits selection mode and clears state", async () => {
+    stubFetch([makeRun({ id: 140, status: "succeeded" })]);
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText("#140")).toBeInTheDocument();
+    });
+    const selectionToggle = screen.getByTitle(
+      /Select multiple runs to bulk-delete/,
+    );
+    await userEvent.click(selectionToggle);
+    const checkbox = screen.getByLabelText("Select tailor run 140");
+    await userEvent.click(checkbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    // Toggle selection mode off — checkboxes + bulk bar disappear.
+    await userEvent.click(selectionToggle);
+    expect(screen.queryByLabelText(/Select tailor run/)).toBeNull();
+    expect(screen.queryByLabelText("Bulk actions")).toBeNull();
+    // Re-entering selection mode shows a cleared selection.
+    await userEvent.click(selectionToggle);
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+  });
 });

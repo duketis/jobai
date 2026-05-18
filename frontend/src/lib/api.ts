@@ -304,6 +304,39 @@ export async function cancelTailorRun(
   });
 }
 
+/** Re-run a finished run in place (reuses the row); returns the reset record. */
+export async function rerunTailorRun(
+  tailorRunId: number,
+): Promise<TailorRunRecord> {
+  return fetchJson<TailorRunRecord>(`/tailor/runs/${tailorRunId}/rerun`, {
+    method: "POST",
+  });
+}
+
+/** Delete a tailor run. 204 No Content — no body to parse. */
+export async function deleteTailorRun(tailorRunId: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/tailor/runs/${tailorRunId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `DELETE /tailor/runs/${tailorRunId} → ${response.status}`,
+      response.status,
+      "",
+    );
+  }
+}
+
+/** Bulk-delete runs by id; returns how many rows were actually removed. */
+export async function bulkDeleteTailorRuns(
+  ids: number[],
+): Promise<{ deleted: number }> {
+  return fetchJson<{ deleted: number }>(`/tailor/runs/delete`, {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
 /**
  * Stream a chat turn and yield each parsed {@link AgentStreamEvent}.
  *

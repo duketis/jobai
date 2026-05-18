@@ -7,6 +7,8 @@ import {
   ExternalLink,
   Plus,
   RefreshCcw,
+  RotateCcw,
+  Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -14,8 +16,11 @@ import { QABadge } from "@/components/QABadge";
 import { TailorFromUrlDialog } from "@/components/TailorFromUrlDialog";
 import { TailorStatusPill } from "@/components/TailorStatusPill";
 import {
+  bulkDeleteTailorRuns,
   cancelTailorRun,
+  deleteTailorRun,
   listTailorRuns,
+  rerunTailorRun,
   setTailorRunApplied,
   tailorRunExportUrl,
   tailorRunLetterPdfUrl,
@@ -53,6 +58,29 @@ export function TailorRunsPage() {
   const [status, setStatus] = useState<TailorRunStatus | "">("");
   const [appliedFilter, setAppliedFilter] = useState<AppliedFilter>("all");
   const [urlDialogOpen, setUrlDialogOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const queryClient = useQueryClient();
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => bulkDeleteTailorRuns(ids),
+    onSuccess: () => {
+      setSelected(new Set());
+      setSelectionMode(false);
+      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
+    },
+  });
+
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
 
   const query = useQuery({
     queryKey: ["tailor-runs", status, appliedFilter],
@@ -105,6 +133,22 @@ export function TailorRunsPage() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              setSelectionMode((v) => !v);
+              setSelected(new Set());
+            }}
+            className={cn(
+              "h-9 px-3 rounded-md border text-sm inline-flex items-center gap-1.5",
+              selectionMode
+                ? "border-foreground bg-foreground text-background"
+                : "border-border bg-background hover:border-foreground/40",
+            )}
+            title="Select multiple runs to bulk-delete"
+          >
+            {selectionMode ? "Done" : "Select"}
+          </button>
+          <button
+            type="button"
             onClick={() => void query.refetch()}
             className="h-9 px-3 rounded-md border border-border bg-background text-sm hover:border-foreground/40 inline-flex items-center gap-1.5"
             title="Refetch the latest runs"
@@ -114,6 +158,29 @@ export function TailorRunsPage() {
           </button>
         </div>
       </header>
+
+      {selectionMode ? (
+        <div
+          className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+          aria-label="Bulk actions"
+        >
+          <span className="text-muted-foreground">
+            {selected.size} selected
+          </span>
+          <ConfirmButton
+            label={
+              <span className="inline-flex items-center gap-1">
+                <Trash2 className="size-3" />
+                Delete {selected.size} selected
+              </span>
+            }
+            armedLabel={`Confirm delete ${selected.size}?`}
+            disabled={selected.size === 0 || bulkDeleteMutation.isPending}
+            onConfirm={() => bulkDeleteMutation.mutate([...selected])}
+            title="Delete every selected run (irreversible)"
+          />
+        </div>
+      ) : null}
 
       {urlDialogOpen ? (
         <TailorFromUrlDialog
@@ -175,29 +242,52 @@ export function TailorRunsPage() {
 
       <ul className="space-y-2">
         {items.map((run) => (
-          <TailorRunRow key={run.id} run={run} />
+          <TailorRunRow
+            key={run.id}
+            run={run}
+            selectionMode={selectionMode}
+            selected={selected.has(run.id)}
+            onToggleSelected={() => toggleSelected(run.id)}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function TailorRunRow({ run }: { run: TailorRunRecord }) {
+function TailorRunRow({
+  run,
+  selectionMode,
+  selected,
+  onToggleSelected,
+}: {
+  run: TailorRunRecord;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelected: () => void;
+}) {
   const succeeded = run.status === "succeeded";
+  const terminal = run.status === "succeeded" || run.status === "failed";
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
+  const invalidate = () =>
+    void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
   const appliedMutation = useMutation({
     mutationFn: (applied: boolean) => setTailorRunApplied(run.id, applied),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
-    },
+    onSuccess: invalidate,
   });
   const cancelMutation = useMutation({
     mutationFn: () => cancelTailorRun(run.id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["tailor-runs"] });
-    },
+    onSuccess: invalidate,
+  });
+  const rerunMutation = useMutation({
+    mutationFn: () => rerunTailorRun(run.id),
+    onSuccess: invalidate,
+  });
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTailorRun(run.id),
+    onSuccess: invalidate,
   });
   const cancellable =
     run.status === "pending" ||
@@ -224,15 +314,28 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
       className={cn(
         "rounded-md border border-border bg-card text-sm",
         run.status === "failed" && "border-destructive/40 bg-destructive/5",
+        selected && "ring-2 ring-foreground/40",
       )}
     >
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        aria-label={`Toggle details for tailor run ${run.id}`}
-        className="w-full text-left px-3 py-2 flex flex-wrap items-center gap-3 hover:bg-muted/30 transition-colors rounded-md"
-      >
+      <div className="flex items-stretch">
+        {selectionMode ? (
+          <label className="flex items-center pl-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelected}
+              aria-label={`Select tailor run ${run.id}`}
+              className="size-4 accent-foreground"
+            />
+          </label>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-label={`Toggle details for tailor run ${run.id}`}
+          className="flex-1 min-w-0 text-left px-3 py-2 flex flex-wrap items-center gap-3 hover:bg-muted/30 transition-colors rounded-md"
+        >
         {expanded ? (
           <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />
         ) : (
@@ -353,11 +456,45 @@ function TailorRunRow({ run }: { run: TailorRunRecord }) {
               </button>
             </>
           )}
+          {terminal && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                rerunMutation.mutate();
+              }}
+              disabled={rerunMutation.isPending}
+              className={cn(
+                "h-7 px-2.5 rounded-md text-[11px] font-medium border transition-colors inline-flex items-center gap-1",
+                "border-foreground/30 text-foreground hover:bg-foreground hover:text-background",
+                rerunMutation.isPending && "opacity-50 cursor-not-allowed",
+              )}
+              title="Re-run this tailor in place (reuses this row — won't add a new one)"
+            >
+              <RotateCcw className="size-3" />
+              {rerunMutation.isPending ? "Re-running..." : "Re-run"}
+            </button>
+          )}
+          {terminal && (
+            <ConfirmButton
+              label={
+                <span className="inline-flex items-center gap-1">
+                  <Trash2 className="size-3" />
+                  Delete
+                </span>
+              }
+              armedLabel="Confirm delete?"
+              disabled={deleteMutation.isPending}
+              onConfirm={() => deleteMutation.mutate()}
+              title="Delete this run (irreversible)"
+            />
+          )}
           <span className="text-xs text-muted-foreground" title={run.created_at}>
             {formatRelative(run.created_at)}
           </span>
         </div>
       </button>
+      </div>
       {expanded ? <TailorRunDetail run={run} /> : null}
     </li>
   );
@@ -443,6 +580,57 @@ function DetailRow({
       <span className="text-muted-foreground">{label}</span>
       <span>{children}</span>
     </div>
+  );
+}
+
+/**
+ * Two-step destructive button: first click arms ("Confirm?"), second
+ * click within 3s fires ``onConfirm``. Avoids an irreversible delete
+ * on a single misclick without a modal — and is deterministically
+ * testable (no window.confirm to mock).
+ */
+function ConfirmButton({
+  label,
+  armedLabel,
+  onConfirm,
+  disabled,
+  className,
+  title,
+}: {
+  label: React.ReactNode;
+  armedLabel: React.ReactNode;
+  onConfirm: () => void;
+  disabled?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={title}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (armed) {
+          setArmed(false);
+          onConfirm();
+        } else {
+          setArmed(true);
+          window.setTimeout(() => setArmed(false), 3000);
+        }
+      }}
+      className={cn(
+        "h-7 px-2.5 rounded-md text-[11px] font-medium border transition-colors",
+        armed
+          ? "border-destructive bg-destructive/15 text-destructive"
+          : "border-destructive/50 text-destructive hover:bg-destructive/10",
+        disabled && "opacity-50 cursor-not-allowed",
+        className,
+      )}
+    >
+      {armed ? armedLabel : label}
+    </button>
   );
 }
 
