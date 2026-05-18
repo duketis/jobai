@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Iterator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -506,3 +507,64 @@ async def test_run_source_falls_back_to_html_when_text_description_is_null(
     assert row["salary_min"] == 130_000
     assert row["salary_max"] == 170_000
     assert row["salary_currency"] == "AUD"
+
+
+# ---------------------------------------------------------------------------
+# Normalisation: ``_normalise_posted_at`` integration in the run loop
+# ---------------------------------------------------------------------------
+
+
+async def test_run_source_normalises_relative_posted_at_to_iso(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """Seek / Indeed hand us "8d ago" labels. The canonical row must
+    never carry that raw text — it broke posted_newest sorting."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Seek Co",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        posted_at="8d ago",
+    )
+    source = _FixedSource("seekco", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    stored = conn.execute("SELECT posted_at FROM jobs").fetchone()["posted_at"]
+    parsed = datetime.fromisoformat(stored)
+    assert parsed.tzinfo is not None
+    age_days = (datetime.now(UTC) - parsed).total_seconds() / 86_400
+    assert 7.9 < age_days < 8.1
+
+
+async def test_run_source_leaves_posted_at_null_when_source_omits_it(
+    conn: sqlite3.Connection,
+    source_row: SourceRow,
+) -> None:
+    """No posted_at on the source → NULL stays NULL. The normaliser
+    must not invent a timestamp to fill the column."""
+    job = NormalizedJob(
+        source_external_id="1",
+        title="Senior Engineer",
+        company="Atlassian",
+        apply_url="https://example.com/1",
+        raw_data={"id": "1"},
+        posted_at=None,
+    )
+    source = _FixedSource("atlassian", [job])
+
+    await run_source(
+        conn=conn,
+        source=source,
+        source_row=source_row,
+        fetcher=_StubFetcher(),
+    )
+
+    assert conn.execute("SELECT posted_at FROM jobs").fetchone()["posted_at"] is None

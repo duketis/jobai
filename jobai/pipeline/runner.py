@@ -32,6 +32,7 @@ from jobai.dedup.promote import promote_to_canonical_jobs
 from jobai.fetcher.base import Fetcher
 from jobai.fetcher.recording import RecordingFetcher
 from jobai.observability.logging import get_logger
+from jobai.pipeline.posted_at_normalisation import normalise_posted_at
 from jobai.pipeline.remote_inference import infer_remote_type
 from jobai.pipeline.salary_inference import infer_salary, text_from_html
 from jobai.pipeline.schema_change import (
@@ -111,6 +112,12 @@ async def run_source(
             # surfaced a structured salary, leave it alone; otherwise
             # try to infer one from the title + description text.
             promotable = _ensure_salary(promotable)
+            # Boards put anything from real ISO timestamps to "8d ago"
+            # / "Just posted" in posted_at. Normalise to ISO-8601 UTC
+            # (or NULL) here so the canonical row never carries the raw
+            # label — that label broke posted_newest sorting and the
+            # UI's relative-time formatter.
+            promotable = _normalise_posted_at(promotable)
             promote_to_canonical_jobs(
                 conn,
                 source_id=source_row.id,
@@ -216,6 +223,20 @@ def _ensure_salary(job: NormalizedJob) -> NormalizedJob:
         salary_max=salary_max,
         salary_currency=currency,
     )
+
+
+def _normalise_posted_at(job: NormalizedJob) -> NormalizedJob:
+    """Return ``job`` with ``posted_at`` normalised to ISO-8601 UTC.
+
+    Relative labels ("8d ago", "Just posted") are resolved against
+    the scrape instant — that's "now" at the moment we observe the
+    listing. ISO inputs are reformatted idempotently; unparseable
+    text becomes ``None`` (NULL sorts last, raw text sorts randomly).
+    """
+    normalised = normalise_posted_at(job.posted_at, now=datetime.now(UTC))
+    if normalised == job.posted_at:
+        return job
+    return dataclasses.replace(job, posted_at=normalised)
 
 
 def _start_run(conn: sqlite3.Connection, *, source_id: int, tier: int) -> int:
