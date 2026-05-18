@@ -32,6 +32,7 @@ from jobai.api.runtime_settings import get_effective_agent_config
 from jobai.tailor.client import CoverletteraiClient, ResumeaiClient
 from jobai.tailor.filenames import build_pdf_filename
 from jobai.tailor.models import (
+    TERMINAL_STATUSES,
     KickBatchRequest,
     KickBatchResponse,
     KickByUrlRequest,
@@ -49,6 +50,7 @@ from jobai.tailor.repository import (
     get_tailor_run,
     list_tailor_runs,
     set_applied,
+    update_status,
 )
 from jobai.tailor.worker import TailorPool
 
@@ -195,7 +197,7 @@ def _schedule_chain(
             snapshot_output_dir=snapshot_output_dir,
         )
 
-    pool.submit(_factory)
+    pool.submit(_factory, key=tailor_run_id)
 
 
 # -- Routes ---------------------------------------------------------------
@@ -458,6 +460,44 @@ def set_run_applied(
     if record is None:
         raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
     return record
+
+
+@router.post(
+    "/runs/{tailor_run_id}/cancel",
+    response_model=TailorRunRecord,
+    summary="Stop an in-flight tailor run.",
+)
+def cancel_run(
+    conn: ConnDep,
+    pool: PoolDep,
+    tailor_run_id: int,
+) -> TailorRunRecord:
+    """Cancel a still-running tailor run and mark it failed.
+
+    404 if the run doesn't exist, 409 if it already finished
+    (succeeded/failed — nothing to stop). Otherwise the in-process
+    task is cancelled best-effort (it may already be orphaned) and
+    the row is *authoritatively* marked failed so the UI stops
+    showing it as running even when no live task remained.
+    """
+    record = get_tailor_run(conn, tailor_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
+    if record.status in TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"tailor run {tailor_run_id} already {record.status.value}",
+        )
+    pool.cancel(tailor_run_id)
+    update_status(
+        conn,
+        tailor_run_id,
+        status=TailorRunStatus.FAILED,
+        error="Cancelled by user.",
+    )
+    fresh = get_tailor_run(conn, tailor_run_id)
+    assert fresh is not None  # noqa: S101 - row existed two statements ago
+    return fresh
 
 
 class TailorRunExport(BaseModel):

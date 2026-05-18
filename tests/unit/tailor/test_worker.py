@@ -88,3 +88,44 @@ async def test_drain_logs_and_swallows_task_exceptions(
         await pool.drain()
     # The structured ``error`` field carries the exception string.
     assert any(getattr(r, "error", None) == "kaboom" for r in caplog.records)
+
+
+async def test_cancel_returns_false_for_unknown_key() -> None:
+    """No task tracked for the key -> False (orphaned / never keyed)."""
+    pool = TailorPool(max_concurrent=1)
+    assert pool.cancel(12345) is False
+
+
+async def test_cancel_interrupts_a_running_keyed_task() -> None:
+    """A keyed in-flight task is actually cancelled, not just flagged."""
+    pool = TailorPool(max_concurrent=1)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _long() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    task = pool.submit(_long, key=99)
+    await started.wait()
+    assert pool.cancel(99) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
+
+
+async def test_cancel_returns_false_after_task_done_and_key_is_cleared() -> None:
+    """Once the task finishes the key is dropped so a late cancel is a
+    no-op (and can't blow up on a stale handle)."""
+    pool = TailorPool(max_concurrent=1)
+
+    async def _quick() -> None:
+        return None
+
+    task = pool.submit(_quick, key=7)
+    await task
+    assert pool.cancel(7) is False

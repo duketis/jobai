@@ -33,22 +33,51 @@ class TailorPool:
             raise ValueError(msg)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._tasks: set[asyncio.Task[None]] = set()
+        # Maps a caller-supplied key (the tailor_run id) to its live
+        # task so a cancel request can actually interrupt the work
+        # instead of just flipping the DB row while the chain keeps
+        # burning sibling calls in the background.
+        self._by_key: dict[int, asyncio.Task[None]] = {}
 
     @property
     def active_tasks(self) -> int:
         """Number of submitted-but-not-finished tasks. Useful for tests."""
         return len(self._tasks)
 
-    def submit(self, factory: JobFactory) -> asyncio.Task[None]:
+    def submit(self, factory: JobFactory, *, key: int | None = None) -> asyncio.Task[None]:
         """Schedule ``factory()`` under the semaphore.
 
         Returns the wrapper task so callers (mostly tests) can await it
-        directly. Production callers fire-and-forget.
+        directly. Production callers fire-and-forget. ``key`` (the
+        tailor_run id) registers the task for :meth:`cancel`; it's
+        cleared automatically when the task finishes.
         """
         task = asyncio.create_task(self._guarded(factory))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        if key is not None:
+            self._by_key[key] = task
+
+            def _drop_key(_t: asyncio.Task[None], k: int = key) -> None:
+                self._by_key.pop(k, None)
+
+            task.add_done_callback(_drop_key)
         return task
+
+    def cancel(self, key: int) -> bool:
+        """Request cancellation of the task submitted under ``key``.
+
+        Returns ``True`` if a live task was found and cancellation was
+        requested, ``False`` if no task is tracked for ``key`` (already
+        finished, orphaned by a restart, or never submitted with a
+        key). Best-effort: the caller still authoritatively marks the
+        DB row failed so a keyless / dead task can't leave a zombie.
+        """
+        task = self._by_key.get(key)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     async def drain(self) -> None:
         """Await every outstanding task. Logs but never re-raises failures."""

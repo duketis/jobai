@@ -1402,3 +1402,63 @@ def test_export_handles_run_without_resume_run_id(
     finally:
         for k in monkeypatch_env_vars:
             _os.environ.pop(k, None)
+
+
+# ---------------------------------------------------------------------------
+# Cancel endpoint (stop an in-flight run)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_returns_404_for_unknown_run(client: TestClient) -> None:
+    assert client.post("/api/tailor/runs/99999/cancel").status_code == 404
+
+
+def test_cancel_returns_409_when_run_already_terminal(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    """A finished chain has nothing to stop -> 409, not a silent
+    second 'failed' write that would clobber the artefacts."""
+    from jobai.tailor.models import TailorRunStatus  # noqa: PLC0415
+    from jobai.tailor.repository import (  # noqa: PLC0415
+        create_tailor_run,
+        update_status,
+    )
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        record = create_tailor_run(conn, job_id=1)
+        update_status(conn, record.id, status=TailorRunStatus.SUCCEEDED)
+    finally:
+        conn.close()
+
+    resp = client.post(f"/api/tailor/runs/{record.id}/cancel")
+    assert resp.status_code == 409
+    assert "already" in resp.json()["detail"]
+
+
+def test_cancel_marks_non_terminal_run_failed(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    """An orphaned-but-still-'running' row (no live task) is
+    authoritatively marked failed with the cancel reason, so the UI
+    stops showing it as running even when pool.cancel finds nothing."""
+    from jobai.tailor.models import TailorRunStatus  # noqa: PLC0415
+    from jobai.tailor.repository import (  # noqa: PLC0415
+        create_tailor_run,
+        update_status,
+    )
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        record = create_tailor_run(conn, job_id=1)
+        update_status(conn, record.id, status=TailorRunStatus.LETTER_RUNNING)
+    finally:
+        conn.close()
+
+    resp = client.post(f"/api/tailor/runs/{record.id}/cancel")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["error"] == "Cancelled by user."
