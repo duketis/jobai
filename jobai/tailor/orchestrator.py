@@ -59,12 +59,14 @@ DEFAULT_MAX_POLLS: int = 180
 
 #: Cap on total QA passes per chain. The first pass is the initial
 #: grade; each subsequent pass follows a retry of the artefact(s) that
-#: had must-fix issues. Three attempts is the sweet spot: the LLM is
-#: non-deterministic enough that the same JD can converge on attempt 1
-#: OR attempt 3, but past 3 the marginal signal is noise (the model
-#: that hasn't fixed a fabricated stat after seeing the verified
-#: context twice rarely fixes it on a fourth try).
-DEFAULT_MAX_QA_ATTEMPTS: int = 3
+#: had must-fix issues. Bounded on purpose: "keep iterating until QA
+#: passes" cannot be unbounded — a genuinely unsatisfiable QA rule
+#: (e.g. contradictory user context) would loop forever and burn the
+#: API budget. 6 gives the non-deterministic LLM materially more
+#: shots at convergence than the old 3 while still terminating; a run
+#: that still fails after 6 ships with the visible FAIL verdict + its
+#: best-effort artefacts (never a fake "pass").
+DEFAULT_MAX_QA_ATTEMPTS: int = 6
 
 # Sleeper signature: ``await sleeper(seconds)``. Defaults to ``asyncio.sleep``
 # in production; tests supply a recorder that records the requested delay and
@@ -331,6 +333,12 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
                     qa_context=qa_context,
                 )
                 if new_letter_run_id is None:
+                    # A transient retry-render failure must NOT abort
+                    # the whole convergence loop (it used to `break`
+                    # here — that's exactly why run #49 settled after a
+                    # single attempt). Keep the previous letter and
+                    # keep iterating up to the attempt cap; a later
+                    # attempt's render may succeed and converge.
                     _log.warning(
                         "tailor_qa_retry_letter_failed",
                         extra={
@@ -338,8 +346,8 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
                             "previous_letter_run_id": letter_run_id,
                         },
                     )
-                    break
-                letter_run_id = new_letter_run_id
+                else:
+                    letter_run_id = new_letter_run_id
 
     await _settle_terminal_success(
         tailor_run_id=tailor_run_id,

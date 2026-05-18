@@ -837,7 +837,10 @@ async def test_qa_retry_letter_failure_keeps_first_pass_letter(
     letter_client = ScriptedLetterClient(
         poll_statuses=["succeeded", "failed"],
     )
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
+    # failed retry no longer aborts the loop, so QA is asked again on
+    # the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -848,6 +851,7 @@ async def test_qa_retry_letter_failure_keeps_first_pass_letter(
         letter_client=letter_client,
         sleeper=sleeper,
         qa_client=qa,
+        max_qa_attempts=2,
     )
 
     with connect(tailor_db_path) as conn:
@@ -1502,7 +1506,10 @@ async def test_run_chain_qa_retry_letter_kick_exception_keeps_first_pass(
 
     letter_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
 
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
+    # failed retry no longer aborts the loop, so QA is asked again on
+    # the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1513,6 +1520,7 @@ async def test_run_chain_qa_retry_letter_kick_exception_keeps_first_pass(
         letter_client=letter_client,
         sleeper=sleeper,
         qa_client=qa,
+        max_qa_attempts=2,
     )
 
     with connect(tailor_db_path) as conn:
@@ -1538,7 +1546,10 @@ async def test_run_chain_qa_retry_poll_cap_keeps_first_pass(
     # (return 'tailoring' forever). Run with max_polls=1 so the retry
     # hits the cap on its very first re-poll.
     letter_client = ScriptedLetterClient(poll_statuses=["succeeded", "tailoring"])
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]])
+    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
+    # failed retry no longer aborts the loop, so QA is asked again on
+    # the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1550,6 +1561,7 @@ async def test_run_chain_qa_retry_poll_cap_keeps_first_pass(
         sleeper=sleeper,
         qa_client=qa,
         max_polls=1,
+        max_qa_attempts=2,
     )
 
     with connect(tailor_db_path) as conn:
@@ -1671,6 +1683,7 @@ async def test_qa_resume_retry_kick_exception_keeps_first_pass(
         letter_client=scripted_letter_client,
         sleeper=sleeper,
         qa_client=qa,
+        max_qa_attempts=3,
     )
 
     with connect(tailor_db_path) as conn:
@@ -1706,6 +1719,7 @@ async def test_qa_resume_retry_poll_cap_keeps_first_pass(
         sleeper=sleeper,
         qa_client=qa,
         max_polls=1,
+        max_qa_attempts=3,
     )
 
     with connect(tailor_db_path) as conn:
@@ -1740,6 +1754,7 @@ async def test_qa_resume_retry_returns_failed_keeps_first_pass(
         letter_client=scripted_letter_client,
         sleeper=sleeper,
         qa_client=qa,
+        max_qa_attempts=3,
     )
 
     with connect(tailor_db_path) as conn:
