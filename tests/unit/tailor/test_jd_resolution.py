@@ -8,6 +8,7 @@ failure mode degrades to None instead of raising.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -109,6 +110,25 @@ async def test_indeed_url_resolved_via_recipe(
     _patch_fetcher(monkeypatch, fetcher)
     text = await jd_resolution.resolve_jd_text("https://au.indeed.com/viewjob?jk=abc123")
     assert text == "Indeed JD body."
+
+
+async def test_microsoft_careers_resolved_via_eightfold_json_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Eightfold detail resolver runs (JSON-API rewrite), not the
+    HTML-recipe path — this is the run #49 fix."""
+    body = json.dumps(
+        {"name": "Software Engineer", "job_description": "<p>Azure team.</p>"}
+    ).encode()
+    fetcher = _FakeFetcher(_resp(200, body))
+    _patch_fetcher(monkeypatch, fetcher)
+    text = await jd_resolution.resolve_jd_text(
+        "https://apply.careers.microsoft.com/careers/job/1970393556621959?src=LinkedIn",
+    )
+    assert text == "Azure team."
+    assert fetcher.calls[0]["url"] == (
+        "https://apply.careers.microsoft.com/api/apply/v2/jobs/1970393556621959"
+    )
 
 
 async def test_non_2xx_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
