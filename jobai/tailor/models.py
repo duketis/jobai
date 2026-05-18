@@ -130,6 +130,12 @@ class TailorRunRecord(BaseModel):
     letter_status: str | None = None
     qa_status: QAStatus | None = None
     qa_assessment: QAAssessment | None = None
+    #: Verdict of the *resume-only* QA gate, which runs (and fixes)
+    #: before the cover letter is ever kicked. ``qa_status`` /
+    #: ``qa_assessment`` above carry the final letter-stage verdict.
+    #: NULL on pre-v1.28.0 rows and when no qa_client is configured.
+    resume_qa_status: QAStatus | None = None
+    resume_qa_assessment: QAAssessment | None = None
     qa_attempts: int = Field(
         default=0,
         description=(

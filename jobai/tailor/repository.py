@@ -62,6 +62,7 @@ def create_tailor_run(
 _SELECT_COLUMNS = (
     "id, job_id, jd_url, status, resume_run_id, resume_status, "
     "letter_run_id, letter_status, qa_status, qa_assessment_json, "
+    "resume_qa_status, resume_qa_assessment_json, "
     "qa_attempts, resume_filename, letter_filename, error, "
     "applied_at, created_at, updated_at, finished_at"
 )
@@ -173,6 +174,31 @@ def update_status(
     conn.commit()
 
 
+def update_resume_qa(
+    conn: sqlite3.Connection,
+    tailor_run_id: int,
+    *,
+    status: QAStatus,
+    assessment: QAAssessment | None = None,
+) -> None:
+    """Persist the resume-only QA gate's verdict.
+
+    Kept separate from :func:`update_status` so the resume gate never
+    touches ``qa_status`` / ``qa_assessment_json`` (those carry the
+    final letter-stage verdict the API + UI badge read). ``assessment``
+    is JSON-serialised; ``None`` while the gate is still ``running``.
+    """
+    sets = ["resume_qa_status = ?", "updated_at = ?"]
+    params: list[object] = [status.value, _now()]
+    if assessment is not None:
+        sets.append("resume_qa_assessment_json = ?")
+        params.append(assessment.model_dump_json())
+    params.append(tailor_run_id)
+    sql = f"UPDATE tailor_runs SET {', '.join(sets)} WHERE id = ?"  # noqa: S608 - column names are literals
+    conn.execute(sql, params)
+    conn.commit()
+
+
 #: Message stamped on the ``error`` column when the startup reaper
 #: fails a run the previous process left mid-flight.
 ORPHAN_ERROR = (
@@ -246,6 +272,8 @@ def set_applied(
 def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
     qa_status_raw = row["qa_status"]
     qa_assessment_raw = row["qa_assessment_json"]
+    resume_qa_status_raw = row["resume_qa_status"]
+    resume_qa_assessment_raw = row["resume_qa_assessment_json"]
     raw_job_id = row["job_id"]
     return TailorRunRecord(
         id=int(row["id"]),
@@ -260,6 +288,12 @@ def _row_to_record(row: sqlite3.Row) -> TailorRunRecord:
         qa_assessment=(
             QAAssessment.model_validate(json.loads(qa_assessment_raw))
             if qa_assessment_raw
+            else None
+        ),
+        resume_qa_status=(QAStatus(resume_qa_status_raw) if resume_qa_status_raw else None),
+        resume_qa_assessment=(
+            QAAssessment.model_validate(json.loads(resume_qa_assessment_raw))
+            if resume_qa_assessment_raw
             else None
         ),
         qa_attempts=int(row["qa_attempts"]) if row["qa_attempts"] is not None else 0,
