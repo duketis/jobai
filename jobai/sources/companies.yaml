@@ -312,6 +312,55 @@ linkedin:
     display_name: LinkedIn — Last 24h (Australia)
     default_tier: 3
     cadence_seconds: 3600
+  # Experience-level partition of the national set. The ~1,000 cap is
+  # PER QUERY, and facets multiply: ``f_E`` 1..6 (internship, entry,
+  # associate, mid-senior, director, executive) are near-disjoint, so
+  # this is ~6x more national coverage. Seniority is not a role bias
+  # (invariant #1 is about profession, not level) so the catalogue
+  # stays generic.
+  - account: location=Australia&f_E=1
+    display_name: LinkedIn — Internship (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_E=2
+    display_name: LinkedIn — Entry level (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_E=3
+    display_name: LinkedIn — Associate (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_E=4
+    display_name: LinkedIn — Mid-Senior (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_E=5
+    display_name: LinkedIn — Director (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_E=6
+    display_name: LinkedIn — Executive (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  # Job-type partition of the national set (``f_JT``): full-time,
+  # contract, part-time, temporary, internship. Another near-disjoint
+  # axis orthogonal to the experience + work-mode + city slugs above.
+  - account: location=Australia&f_JT=F
+    display_name: LinkedIn — Full-time (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_JT=C
+    display_name: LinkedIn — Contract (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_JT=P
+    display_name: LinkedIn — Part-time (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_JT=T
+    display_name: LinkedIn — Temporary (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
