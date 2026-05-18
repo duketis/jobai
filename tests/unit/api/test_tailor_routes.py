@@ -1450,3 +1450,99 @@ def test_cancel_marks_non_terminal_run_failed(
     body = resp.json()
     assert body["status"] == "failed"
     assert body["error"] == "Cancelled by user."
+
+
+# ---------------------------------------------------------------------------
+# Re-run + delete + bulk-delete (v1.29.0)
+# ---------------------------------------------------------------------------
+
+
+def _seed(tailor_app_db: Path, *, status: str) -> int:
+    from jobai.tailor.models import TailorRunStatus  # noqa: PLC0415
+    from jobai.tailor.repository import (  # noqa: PLC0415
+        create_tailor_run,
+        update_status,
+    )
+
+    conn = sqlite3.connect(tailor_app_db)
+    try:
+        rec = create_tailor_run(conn, job_id=1)
+        update_status(conn, rec.id, status=TailorRunStatus(status))
+    finally:
+        conn.close()
+    return rec.id
+
+
+def test_rerun_404_for_unknown_run(client: TestClient) -> None:
+    assert client.post("/api/tailor/runs/99999/rerun").status_code == 404
+
+
+def test_rerun_409_when_run_still_in_flight(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    run_id = _seed(tailor_app_db, status="letter_running")
+    resp = client.post(f"/api/tailor/runs/{run_id}/rerun")
+    assert resp.status_code == 409
+    assert "stop it first" in resp.json()["detail"]
+
+
+def test_rerun_reuses_the_same_row_and_requeues(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    """Re-run must NOT create a new row — the whole point is to not
+    grow the list. Same id back, chain re-queued (scripted clients
+    drive it to a terminal state by the time the block ends)."""
+    run_id = _seed(tailor_app_db, status="failed")
+    resp = client.post(f"/api/tailor/runs/{run_id}/rerun")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == run_id
+    # Still exactly one row for this job (re-used, not duplicated).
+    listing = client.get("/api/tailor/runs").json()["items"]
+    assert [r["id"] for r in listing].count(run_id) == 1
+
+
+def test_delete_run_204_then_gone(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    run_id = _seed(tailor_app_db, status="succeeded")
+    assert client.delete(f"/api/tailor/runs/{run_id}").status_code == 204
+    assert client.get(f"/api/tailor/runs/{run_id}").status_code == 404
+
+
+def test_delete_run_404_for_unknown(client: TestClient) -> None:
+    assert client.delete("/api/tailor/runs/99999").status_code == 404
+
+
+def test_delete_in_flight_run_cancels_then_removes(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    """Deleting a still-running run cancels its task first so a zombie
+    chain can't keep writing to a deleted row."""
+    run_id = _seed(tailor_app_db, status="letter_running")
+    assert client.delete(f"/api/tailor/runs/{run_id}").status_code == 204
+    assert client.get(f"/api/tailor/runs/{run_id}").status_code == 404
+
+
+def test_bulk_delete_removes_set_skips_unknown(
+    client: TestClient,
+    tailor_app_db: Path,
+) -> None:
+    keep = _seed(tailor_app_db, status="succeeded")
+    a = _seed(tailor_app_db, status="failed")
+    b = _seed(tailor_app_db, status="succeeded")
+    resp = client.post("/api/tailor/runs/delete", json={"ids": [a, b, 99999]})
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 2
+    assert client.get(f"/api/tailor/runs/{keep}").status_code == 200
+    assert client.get(f"/api/tailor/runs/{a}").status_code == 404
+    assert client.get(f"/api/tailor/runs/{b}").status_code == 404
+
+
+def test_bulk_delete_empty_is_noop(client: TestClient) -> None:
+    resp = client.post("/api/tailor/runs/delete", json={"ids": []})
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 0

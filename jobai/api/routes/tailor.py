@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -46,8 +46,11 @@ from jobai.tailor.orchestrator import run_chain
 from jobai.tailor.qa import QAClient, build_qa_client
 from jobai.tailor.repository import (
     create_tailor_run,
+    delete_tailor_run,
+    delete_tailor_runs,
     get_tailor_run,
     list_tailor_runs,
+    reset_for_rerun,
     set_applied,
     update_status,
 )
@@ -486,6 +489,107 @@ def cancel_run(
     fresh = get_tailor_run(conn, tailor_run_id)
     assert fresh is not None  # noqa: S101 - row existed two statements ago
     return fresh
+
+
+@router.post(
+    "/runs/{tailor_run_id}/rerun",
+    response_model=TailorRunRecord,
+    summary="Re-run a finished tailor run in place (reuses the row).",
+)
+async def rerun_run(
+    conn: ConnDep,
+    pool: PoolDep,
+    resume_client: ResumeDep,
+    letter_client: LetterDep,
+    qa_client: QADep,
+    db_path: DbPathDep,
+    resumeai_url: ResumeaiUrlDep,
+    snapshot_output_dir: TailorOutputDirDep,
+    tailor_run_id: int,
+) -> TailorRunRecord:
+    """Reset a finished run to ``pending`` and re-queue its chain.
+
+    Reuses the SAME row (same job/JD) so re-tailoring doesn't grow
+    the list. 404 if the run doesn't exist; 409 if it's still running
+    (use Stop first — re-running an in-flight chain would race two
+    chains onto one row).
+    """
+    record = get_tailor_run(conn, tailor_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
+    if record.status not in TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"tailor run {tailor_run_id} is {record.status.value}; stop it first",
+        )
+    reset = reset_for_rerun(conn, tailor_run_id)
+    assert reset is not None  # noqa: S101 - row existed two statements ago
+    _schedule_chain(
+        pool=pool,
+        tailor_run_id=tailor_run_id,
+        db_path=db_path,
+        resume_client=resume_client,
+        letter_client=letter_client,
+        qa_client=qa_client,
+        resumeai_url=resumeai_url,
+        snapshot_output_dir=snapshot_output_dir,
+    )
+    return reset
+
+
+@router.delete(
+    "/runs/{tailor_run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a tailor run.",
+)
+def delete_run(
+    conn: ConnDep,
+    pool: PoolDep,
+    tailor_run_id: int,
+) -> None:
+    """Delete one run row. 404 if it doesn't exist.
+
+    If the run is still in-flight its in-process task is cancelled
+    first so a zombie chain can't keep writing to a deleted row.
+    """
+    record = get_tailor_run(conn, tailor_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"tailor run {tailor_run_id} not found")
+    if record.status not in TERMINAL_STATUSES:
+        pool.cancel(tailor_run_id)
+    delete_tailor_run(conn, tailor_run_id)
+
+
+class BulkDeleteRequest(BaseModel):
+    """Body for ``POST /api/tailor/runs/delete`` — ids to remove."""
+
+    ids: list[int]
+
+
+class BulkDeleteResponse(BaseModel):
+    """How many rows the bulk delete actually removed."""
+
+    deleted: int
+
+
+@router.post(
+    "/runs/delete",
+    response_model=BulkDeleteResponse,
+    summary="Bulk-delete tailor runs by id.",
+)
+def bulk_delete_runs(
+    conn: ConnDep,
+    pool: PoolDep,
+    body: BulkDeleteRequest,
+) -> BulkDeleteResponse:
+    """Delete every run in ``ids`` (cancelling any still in-flight).
+
+    Unknown ids are silently skipped; ``deleted`` is the count of
+    rows actually removed. Empty list is a no-op.
+    """
+    for run_id in body.ids:
+        pool.cancel(run_id)
+    return BulkDeleteResponse(deleted=delete_tailor_runs(conn, body.ids))
 
 
 class TailorRunExport(BaseModel):
