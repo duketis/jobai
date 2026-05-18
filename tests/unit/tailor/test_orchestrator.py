@@ -984,34 +984,24 @@ def test_recompute_status_fail_when_score_below_60_or_must_fix_present() -> None
     assert _recompute_status(90, 85, 88, must_fix_count=1, nice_to_fix_count=0) is QAStatus.FAIL
 
 
-async def test_gather_layout_issues_collects_from_both_clients() -> None:
-    """Walks both sibling stream_pdf endpoints; issues from BOTH PDFs
-    get folded into the merged list with appropriate document_label."""
+async def test_layout_issues_for_pdf_fetches_and_checks_one_pdf() -> None:
+    """The single-doc helper streams exactly the one PDF it's given and
+    runs the heuristic on it (blank PDF -> no issues, but the fetch
+    path is exercised). Each QA gate owns one document now."""
     import httpx  # noqa: PLC0415
 
-    from jobai.tailor.orchestrator import _gather_layout_issues  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _layout_issues_for_pdf  # noqa: PLC0415
 
-    # Bytes that look enough like a PDF for pypdf to parse but with
-    # no extractable text -- so layout check returns no issues. The
-    # path itself is what matters here; the issue-merge logic is
-    # tested separately above.
     pdf = _make_minimal_pdf_bytes()
     resume_client = ScriptedResumeClient(
         stream_response=httpx.Response(200, content=pdf),
     )
-    letter_client = ScriptedLetterClient(
-        stream_response=httpx.Response(200, content=pdf),
+    issues = await _layout_issues_for_pdf(
+        client=resume_client,
+        run_id="rs_1",
+        document_label="resume",
     )
-    issues = await _gather_layout_issues(
-        resume_client=resume_client,
-        letter_client=letter_client,
-        resume_run_id="rs_1",
-        letter_run_id="ls_1",
-    )
-    # Both PDFs fetched (verified via stream_calls) -- no issues for
-    # a blank PDF, but the path was exercised.
     assert resume_client.stream_calls == ["rs_1"]
-    assert letter_client.stream_calls == ["ls_1"]
     assert issues == []
 
 
@@ -1022,13 +1012,11 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     recording_sleeper: tuple[list[float], Sleeper],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End-to-end: layout merge lives only in the letter QA gate
-    (``_run_qa_stage``); the resume QA gate has no PDF pair yet so it
-    never merges layout. When ``_gather_layout_issues`` returns a
-    non-empty list (simulated via monkeypatch) on the first letter-gate
-    pass, the gate folds it into the assessment, the status drops to
-    fail, and the letter is re-kicked with the LAYOUT guidance. The
-    resume is left alone -- gate 2 only ever re-kicks the letter."""
+    """End-to-end: a COVER-LETTER layout fault is found in the letter
+    gate (``_run_qa_stage``) and re-kicks the letter. The resume gate
+    layout-checks the resume PDF too (clean here), so it never merges a
+    letter issue and the resume is left alone -- gate 2 only ever
+    re-kicks the letter, gate 1 only the resume."""
     from jobai.tailor import orchestrator as orch  # noqa: PLC0415
     from jobai.tailor.models import QAIssue  # noqa: PLC0415
 
@@ -1038,21 +1026,21 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
         summary="cover letter: page 2 starts with 1 bullet stranded before 'Profile'",
     )
 
-    call_count = {"n": 0}
+    letter_calls = {"n": 0}
 
-    async def fake_gather(**_kwargs: object) -> list[QAIssue]:
-        call_count["n"] += 1
-        # Return the layout issue on the FIRST pass only; the retry
-        # produces a clean PDF (no layout issues) so the chain settles.
-        if call_count["n"] == 1:
-            return [layout_issue]
-        return []
+    async def fake_layout(*, client: object, run_id: str, document_label: str) -> list[QAIssue]:
+        # The resume gate's PDF is clean in this scenario; the letter's
+        # is faulty on the FIRST letter-gate pass only (retry is clean).
+        if document_label != "cover letter":
+            return []
+        letter_calls["n"] += 1
+        return [layout_issue] if letter_calls["n"] == 1 else []
 
-    monkeypatch.setattr(orch, "_gather_layout_issues", fake_gather)
+    monkeypatch.setattr(orch, "_layout_issues_for_pdf", fake_layout)
 
     _, sleeper = recording_sleeper
-    # 1 good clears the resume gate (no layout merge there); the letter
-    # gate then gets 2 goods -- attempt 1 has the layout issue merged in
+    # 1 good clears the resume gate (clean resume PDF); the letter gate
+    # then gets 2 goods -- attempt 1 has the layout issue merged in
     # (fail) and re-kicks the letter, attempt 2 sees a clean PDF and
     # settles.
     qa = _SequencedQAClient([_good_qa_json(), _good_qa_json(), _good_qa_json()])
@@ -1082,30 +1070,98 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     assert "LAYOUT:" in retry_jd
 
 
-async def test_gather_layout_issues_continues_when_one_fetch_fails() -> None:
-    """If one sibling's stream_pdf raises, the other still runs and
-    its issues are returned -- a transient fetch error doesn't take
-    the layout check down."""
+async def test_resume_gate_layout_issue_triggers_resume_rekick(
+    tailor_db_path: Path,
+    scripted_resume_client: ScriptedResumeClient,
+    scripted_letter_client: ScriptedLetterClient,
+    recording_sleeper: tuple[list[float], Sleeper],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for run #49: a RESUME page-break/orphan-header is now
+    found in gate 1 (the resume gate layout-checks the resume PDF) and
+    re-kicks the RESUME with concrete trim guidance. Previously this
+    fault could only surface in gate 2, which re-kicks only the letter,
+    so the resume bug survived all 6 attempts and the run failed."""
+    from jobai.tailor import orchestrator as orch  # noqa: PLC0415
+    from jobai.tailor.models import QAIssue, QAStatus  # noqa: PLC0415
+
+    orphan = QAIssue(
+        severity="must_fix",
+        category="format",
+        summary=(
+            "resume: section header 'DiUS - WhichCar' at the bottom of "
+            "page 1 but its content starts on page 2"
+        ),
+        detail="Trim the section above by 2-3 lines so the header moves down.",
+    )
+
+    resume_calls = {"n": 0}
+
+    async def fake_layout(*, client: object, run_id: str, document_label: str) -> list[QAIssue]:
+        # Faulty resume PDF on the FIRST resume-gate pass; the resume
+        # re-kick produces a clean PDF so gate 1 converges. The cover
+        # letter is always clean here.
+        if document_label != "resume":
+            return []
+        resume_calls["n"] += 1
+        return [orphan] if resume_calls["n"] == 1 else []
+
+    monkeypatch.setattr(orch, "_layout_issues_for_pdf", fake_layout)
+
+    _, sleeper = recording_sleeper
+    # Resume gate: attempt 1 LLM-good but layout-faulty (-> fail ->
+    # re-kick resume), attempt 2 LLM-good + clean PDF (-> pass). Letter
+    # gate: 1 good clears it first try.
+    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json(), _good_qa_json()])
+    with connect(tailor_db_path) as conn:
+        record = create_tailor_run(conn, job_id=1)
+
+    await run_chain(
+        record.id,
+        db_path=tailor_db_path,
+        resume_client=scripted_resume_client,
+        letter_client=scripted_letter_client,
+        sleeper=sleeper,
+        qa_client=qa,
+    )
+
+    with connect(tailor_db_path) as conn:
+        final = get_tailor_run(conn, record.id)
+    assert final is not None
+    assert final.status is TailorRunStatus.SUCCEEDED
+    # Gate 1 converged ON THE RESUME: the resume was kicked twice
+    # (initial + layout re-kick), the letter only once. This is the
+    # exact fix -- before, a resume layout fault could never re-kick
+    # the resume.
+    assert len(scripted_resume_client.kick_requests) == 2
+    assert len(scripted_letter_client.kick_requests) == 1
+    # The resume gate's verdict settles PASS once the clean PDF lands.
+    assert final.resume_qa_status is QAStatus.PASS
+    assert final.qa_status is QAStatus.PASS
+    # The resume retry kick carries layout-specific trim guidance.
+    retry_jd = scripted_resume_client.kick_requests[1].jd_text or ""
+    assert "LAYOUT:" in retry_jd
+
+
+async def test_layout_issues_for_pdf_returns_empty_on_fetch_error() -> None:
+    """If the sibling's stream_pdf raises (sibling 5xx, network blip),
+    the helper returns [] -- layout is an addition, not a gate, and a
+    transient fetch error must not break the QA stage."""
     import httpx  # noqa: PLC0415
 
-    from jobai.tailor.orchestrator import _gather_layout_issues  # noqa: PLC0415
+    from jobai.tailor.orchestrator import _layout_issues_for_pdf  # noqa: PLC0415
 
-    class _ExplodingResume:
+    class _ExplodingClient:
         async def stream_pdf(self, _run_id: str) -> httpx.Response:
             msg = "network blew up"
             raise RuntimeError(msg)
 
-    letter_client = ScriptedLetterClient(
-        stream_response=httpx.Response(200, content=_make_minimal_pdf_bytes()),
+    issues = await _layout_issues_for_pdf(
+        client=_ExplodingClient(),  # type: ignore[arg-type]
+        run_id="rs_1",
+        document_label="resume",
     )
-    issues = await _gather_layout_issues(
-        resume_client=_ExplodingResume(),  # type: ignore[arg-type]
-        letter_client=letter_client,
-        resume_run_id="rs_1",
-        letter_run_id="ls_1",
-    )
-    assert letter_client.stream_calls == ["ls_1"]
-    assert issues == []  # blank PDF has no layout issues
+    assert issues == []
 
 
 def _make_minimal_pdf_bytes() -> bytes:

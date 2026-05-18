@@ -459,16 +459,16 @@ async def _run_qa_stage(
         user_context=qa_context,
     )
 
-    # Layout check: pull the rendered PDFs and run heuristic checks for
-    # orphan bullets / split section headers. The LLM grades content
-    # consistency but is blind to pagination (it reads JSON, not the
-    # PDF). Layout issues become must-fix in the assessment so the
-    # auto-fix loop triggers a retry with concrete trim instructions.
-    layout_issues = await _gather_layout_issues(
-        resume_client=resume_client,
-        letter_client=letter_client,
-        resume_run_id=resume_run_id,
-        letter_run_id=letter_run_id,
+    # Layout check on the rendered COVER LETTER PDF only. The resume
+    # PDF was already layout-checked in gate 1 (the only gate that can
+    # re-kick the resume); gate 2 re-kicks only the letter, so it must
+    # not raise a resume layout must-fix it can never resolve. The LLM
+    # grades content from JSON and is blind to pagination -- this
+    # heuristic catches orphan bullets / split headers in the letter.
+    layout_issues = await _layout_issues_for_pdf(
+        client=letter_client,
+        run_id=letter_run_id,
+        document_label="cover letter",
     )
     if layout_issues:
         assessment = _merge_layout_into_assessment(assessment, layout_issues)
@@ -503,8 +503,11 @@ async def _run_resume_qa_stage(
     never touches ``qa_status`` (that carries the final letter-stage
     verdict the API/UI read). The run's overall status stays
     ``RESUME_RUNNING`` — we're still in the resume phase until the
-    letter is kicked. Layout checks are deferred to gate 2 (the PDF
-    pair only exists then).
+    letter is kicked. The rendered RESUME PDF is layout-checked HERE
+    (the resume PDF already exists at gate 1) so a split/orphan section
+    header becomes a resume must-fix while this gate can still re-kick
+    the resume -- gate 2 re-kicks only the letter and could never fix
+    it (run #49's six-attempt dead-end).
     """
     with connect(db_path) as conn:
         update_resume_qa(conn, tailor_run_id, status=QAStatus.RUNNING)
@@ -523,6 +526,19 @@ async def _run_resume_qa_stage(
         stage="resume",
     )
 
+    # Layout check on the rendered RESUME PDF. The LLM grades content
+    # from JSON and is blind to pagination; the heuristic catches
+    # orphan bullets / split section headers. Folding these in as
+    # must-fix here means the resume gate's auto-fix loop re-kicks the
+    # resume with concrete trim guidance -- the only gate that can.
+    resume_layout = await _layout_issues_for_pdf(
+        client=resume_client,
+        run_id=resume_run_id,
+        document_label="resume",
+    )
+    if resume_layout:
+        assessment = _merge_layout_into_assessment(assessment, resume_layout)
+
     with connect(db_path) as conn:
         update_resume_qa(
             conn,
@@ -533,35 +549,38 @@ async def _run_resume_qa_stage(
     return assessment
 
 
-async def _gather_layout_issues(
+async def _layout_issues_for_pdf(
     *,
-    resume_client: ResumeaiClient,
-    letter_client: CoverletteraiClient,
-    resume_run_id: str,
-    letter_run_id: str,
+    client: ResumeaiClient | CoverletteraiClient,
+    run_id: str,
+    document_label: str,
 ) -> list[QAIssue]:
-    """Fetch both rendered PDFs and run the heuristic layout checks.
+    """Fetch ONE rendered PDF and run the heuristic layout checks.
+
+    Each QA gate owns the PDF of the artefact it can actually re-kick:
+    the resume gate (gate 1) checks the resume PDF -- so a split/orphan
+    section header is found while the resume can still be regenerated --
+    and the letter gate (gate 2) checks the cover-letter PDF. A resume
+    layout fault must never surface only in gate 2, which can re-kick
+    only the letter (that dead-end was run #49's six-attempt failure).
 
     Failures here (sibling 404, malformed PDF) just return an empty
     list -- layout issues are an addition, not a gate, and a hiccup
     in the layout path must not break the QA stage.
     """
-    issues: list[QAIssue] = []
-    for kind, client, run_id in (
-        ("resume", resume_client, resume_run_id),
-        ("cover letter", letter_client, letter_run_id),
-    ):
+    try:
+        response = await client.stream_pdf(run_id)
         try:
-            response = await client.stream_pdf(run_id)
-            try:
-                pdf_bytes = await response.aread()
-            finally:
-                await response.aclose()
-        except Exception:  # noqa: BLE001 - report-and-continue per artefact
-            _log.warning("layout_check_fetch_failed", extra={"kind": kind, "run_id": run_id})
-            continue
-        issues.extend(check_pdf_layout(pdf_bytes, document_label=kind))
-    return issues
+            pdf_bytes = await response.aread()
+        finally:
+            await response.aclose()
+    except Exception:  # noqa: BLE001 - report-and-continue, layout is not a gate
+        _log.warning(
+            "layout_check_fetch_failed",
+            extra={"document_label": document_label, "run_id": run_id},
+        )
+        return []
+    return check_pdf_layout(pdf_bytes, document_label=document_label)
 
 
 def _merge_layout_into_assessment(
