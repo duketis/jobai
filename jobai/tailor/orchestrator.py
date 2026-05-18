@@ -39,7 +39,11 @@ from jobai.tailor.models import (
     TailorRunStatus,
 )
 from jobai.tailor.qa import QAClient, assess
-from jobai.tailor.repository import get_tailor_run, update_status
+from jobai.tailor.repository import (
+    get_tailor_run,
+    update_resume_qa,
+    update_status,
+)
 from jobai.tailor.snapshot import write_snapshot
 
 _log = logging.getLogger(__name__)
@@ -139,7 +143,7 @@ async def run_chain(
             )
 
 
-async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting harms readability more than it helps
+async def _run_chain_inner(  # noqa: PLR0912, PLR0915 - linear chain state machine (resume → gate 1 → letter → gate 2 → settle); splitting the gates into helpers hides the sequence that is the whole point
     tailor_run_id: int,
     *,
     db_path: Path,
@@ -208,6 +212,60 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
         msg = f"resumeai run {resume_run_id} ended in status {resume_snapshot.status!r}"
         raise TailorChainError(msg)
 
+    # ---- QA context summary --------------------------------------------
+    # Pulled once per chain so BOTH gates (resume + letter) and every
+    # auto-fix retry see the SAME ground truth. Non-fatal: QA without
+    # ground truth falls back to within-artefact consistency checks.
+    qa_context: str | None = None
+    if fetch_qa_context is not None:
+        try:
+            qa_context = await fetch_qa_context()
+        except Exception:  # noqa: BLE001 - never let context-fetch break QA
+            _log.warning(
+                "tailor_qa_context_fetch_failed",
+                extra={"tailor_run_id": tailor_run_id},
+                exc_info=True,
+            )
+
+    # ---- GATE 1: resume QA (blocks the cover letter) -------------------
+    # The cover letter is grounded ON the resume, so a wrong resume
+    # number would propagate into a letter that then "agrees" with a
+    # wrong resume. Grade + fix the resume against (JD + verified
+    # context) FIRST; only then write the letter. Bounded iterate-to-
+    # cap (v1.27.0 philosophy): a run that still fails ships its
+    # best-effort resume with the verdict on ``resume_qa_status`` —
+    # never a fake pass.
+    if qa_client is not None:
+        attempts = 0
+        while attempts < max_qa_attempts:  # pragma: no branch
+            attempts += 1
+            resume_assessment = await _run_resume_qa_stage(
+                tailor_run_id=tailor_run_id,
+                db_path=db_path,
+                resume_client=resume_client,
+                resume_run_id=resume_run_id,
+                qa_client=qa_client,
+                qa_model=qa_model,
+                qa_context=qa_context,
+            )
+            if not resume_assessment.must_fix_issues or attempts >= max_qa_attempts:
+                break
+            new_resume_run_id = await _rekick_resume_with_feedback(
+                tailor_run_id=tailor_run_id,
+                db_path=db_path,
+                resume_client=resume_client,
+                payload=payload,
+                assessment=resume_assessment,
+                sleeper=sleeper,
+                poll_interval_s=poll_interval_s,
+                max_polls=max_polls,
+                qa_context=qa_context,
+            )
+            if new_resume_run_id is not None:
+                resume_run_id = new_resume_run_id
+            # A failed resume retry keeps the previous resume and keeps
+            # iterating to the cap rather than aborting the gate.
+
     # ---- cover letter ---------------------------------------------------
     with connect(db_path) as conn:
         update_status(conn, tailor_run_id, status=TailorRunStatus.LETTER_RUNNING)
@@ -238,38 +296,13 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
         msg = f"coverletterai run {letter_run_id} ended in status {letter_snapshot.status!r}"
         raise TailorChainError(msg)
 
-    # ---- QA context summary --------------------------------------------
-    # Pull the verified + project-scan context once per chain so every
-    # QA pass (initial + auto-fix retries) sees the same ground truth.
-    # Failures here are not fatal -- QA without ground truth falls back
-    # to within-artefact consistency checks.
-    qa_context: str | None = None
-    if fetch_qa_context is not None:
-        try:
-            qa_context = await fetch_qa_context()
-        except Exception:  # noqa: BLE001 - never let context-fetch break QA
-            _log.warning(
-                "tailor_qa_context_fetch_failed",
-                extra={"tailor_run_id": tailor_run_id},
-                exc_info=True,
-            )
-
-    # ---- QA + auto-fix loop --------------------------------------------
-    #
-    # First pass grades the initial resume + letter. If the verdict
-    # flags must-fix issues AND we have attempts left, re-kick the
-    # cover letter with the QA feedback appended to the JD payload --
-    # the LLM sees "here's the JD, and here's what went wrong last
-    # time, do better" and produces a corrected letter. Then re-run
-    # QA. Loops until QA accepts or the attempt cap is hit. The
-    # current ``letter_run_id`` always points at the LATEST attempt
-    # so PDF downloads + the UI reflect the final artefact.
+    # ---- GATE 2: letter QA (letter vs resume + JD + context) ----------
+    # The resume already passed its own gate, so any contradiction
+    # here is the LETTER's to fix — this gate only ever re-kicks the
+    # letter. Same bounded iterate-to-cap; a failed retry render keeps
+    # the previous letter and keeps trying (v1.27.0).
     if qa_client is not None:
         attempts = 0
-        # The natural-exit branch (condition false on a recheck) is
-        # unreachable: every iteration breaks before incrementing past
-        # the cap. Pragma'd so the False branch doesn't drag coverage
-        # while the True branch is exercised normally.
         while attempts < max_qa_attempts:  # pragma: no branch
             attempts += 1
             assessment = await _run_qa_stage(
@@ -284,70 +317,33 @@ async def _run_chain_inner(  # noqa: PLR0912 - chain state machine; splitting ha
                 attempts=attempts,
                 qa_context=qa_context,
             )
-            # Stop if QA passed, or if we have no must-fix work to drive
-            # a retry against (concerns + only nice-to-fix is acceptable),
-            # or if we've burned our retry budget.
             if not assessment.must_fix_issues or attempts >= max_qa_attempts:
                 break
-
-            # Re-kick whichever artefact(s) the QA must-fix issues
-            # actually reference. v1.10.0 shipped letter-only retries
-            # on the assumption that resume content was "verifiable
-            # career data" the LLM wouldn't hallucinate over. v1.15.0
-            # learned otherwise: the resume can claim a wrong LOC /
-            # test count / coverage stat (run 22 saw "~38k Python
-            # LOC" while the verified context said "~15,700"), and
-            # the letter-only retry can't fix a resume-side problem.
-            targets = _retry_targets(assessment)
-            if "resume" in targets:
-                new_resume_run_id = await _rekick_resume_with_feedback(
-                    tailor_run_id=tailor_run_id,
-                    db_path=db_path,
-                    resume_client=resume_client,
-                    payload=payload,
-                    assessment=assessment,
-                    sleeper=sleeper,
-                    poll_interval_s=poll_interval_s,
-                    max_polls=max_polls,
-                    qa_context=qa_context,
+            new_letter_run_id = await _rekick_letter_with_feedback(
+                tailor_run_id=tailor_run_id,
+                db_path=db_path,
+                letter_client=letter_client,
+                payload=payload,
+                resume_run_id=resume_run_id,
+                assessment=assessment,
+                sleeper=sleeper,
+                poll_interval_s=poll_interval_s,
+                max_polls=max_polls,
+                qa_context=qa_context,
+            )
+            if new_letter_run_id is None:
+                # A transient retry-render failure must NOT abort the
+                # convergence loop — keep the previous letter and keep
+                # iterating to the cap (v1.27.0).
+                _log.warning(
+                    "tailor_qa_retry_letter_failed",
+                    extra={
+                        "tailor_run_id": tailor_run_id,
+                        "previous_letter_run_id": letter_run_id,
+                    },
                 )
-                if new_resume_run_id is not None:
-                    resume_run_id = new_resume_run_id
-                # If the resume retry failed we keep the original and
-                # still try the letter retry; both artefacts ship.
-            if "letter" in targets:
-                # Re-kick the cover letter with the QA feedback so the
-                # LLM has a concrete list of what to fix. The retry
-                # uses the LATEST resume_run_id so a freshly-corrected
-                # resume gets cited consistently in the letter body.
-                new_letter_run_id = await _rekick_letter_with_feedback(
-                    tailor_run_id=tailor_run_id,
-                    db_path=db_path,
-                    letter_client=letter_client,
-                    payload=payload,
-                    resume_run_id=resume_run_id,
-                    assessment=assessment,
-                    sleeper=sleeper,
-                    poll_interval_s=poll_interval_s,
-                    max_polls=max_polls,
-                    qa_context=qa_context,
-                )
-                if new_letter_run_id is None:
-                    # A transient retry-render failure must NOT abort
-                    # the whole convergence loop (it used to `break`
-                    # here — that's exactly why run #49 settled after a
-                    # single attempt). Keep the previous letter and
-                    # keep iterating up to the attempt cap; a later
-                    # attempt's render may succeed and converge.
-                    _log.warning(
-                        "tailor_qa_retry_letter_failed",
-                        extra={
-                            "tailor_run_id": tailor_run_id,
-                            "previous_letter_run_id": letter_run_id,
-                        },
-                    )
-                else:
-                    letter_run_id = new_letter_run_id
+            else:
+                letter_run_id = new_letter_run_id
 
     await _settle_terminal_success(
         tailor_run_id=tailor_run_id,
@@ -489,6 +485,54 @@ async def _run_qa_stage(
     return assessment
 
 
+async def _run_resume_qa_stage(
+    *,
+    tailor_run_id: int,
+    db_path: Path,
+    resume_client: ResumeaiClient,
+    resume_run_id: str,
+    qa_client: QAClient,
+    qa_model: str | None,
+    qa_context: str | None = None,
+) -> QAAssessment:
+    """Grade the RESUME alone against (JD + verified context).
+
+    This is gate 1 — it runs before the cover letter exists, so QA
+    sees no letter (``stage="resume"``). The verdict lands on the
+    dedicated ``resume_qa_*`` columns via :func:`update_resume_qa`; it
+    never touches ``qa_status`` (that carries the final letter-stage
+    verdict the API/UI read). The run's overall status stays
+    ``RESUME_RUNNING`` — we're still in the resume phase until the
+    letter is kicked. Layout checks are deferred to gate 2 (the PDF
+    pair only exists then).
+    """
+    with connect(db_path) as conn:
+        update_resume_qa(conn, tailor_run_id, status=QAStatus.RUNNING)
+
+    resume_record = await resume_client.get_run(resume_run_id)
+    jd = resume_record.get("requirements")
+    resume_tailored = resume_record.get("tailored")
+
+    assessment = await assess(
+        jd=jd if isinstance(jd, dict) else None,
+        resume_tailored=resume_tailored if isinstance(resume_tailored, dict) else None,
+        letter_tailored=None,
+        client=qa_client,
+        model=qa_model,
+        user_context=qa_context,
+        stage="resume",
+    )
+
+    with connect(db_path) as conn:
+        update_resume_qa(
+            conn,
+            tailor_run_id,
+            status=assessment.status,
+            assessment=assessment,
+        )
+    return assessment
+
+
 async def _gather_layout_issues(
     *,
     resume_client: ResumeaiClient,
@@ -569,33 +613,6 @@ def _recompute_status(
     if nice_to_fix_count > 0 or any(s < 80 for s in scores):
         return QAStatus.CONCERNS
     return QAStatus.PASS
-
-
-def _retry_targets(assessment: QAAssessment) -> set[str]:
-    """Decide which artefact(s) to re-kick from the QA must-fix list.
-
-    Scans every must-fix issue's summary + detail for keywords that
-    point at the resume vs the letter. Returns a set with one or both
-    of ``"resume"`` / ``"letter"``.
-
-    Default to ``{"letter"}`` when nothing matches -- the original
-    v1.10.0 behaviour, which is correct for the common "letter
-    overstates X" / "letter wording inconsistent" case where the
-    issue is freer-form letter content and the resume is fine.
-    Resume retries are added when the issues explicitly name the
-    resume so we don't burn a render cycle re-tailoring an artefact
-    the LLM had no complaint about.
-    """
-    targets: set[str] = set()
-    for issue in assessment.must_fix_issues:
-        text = f"{issue.summary} {issue.detail or ''}".lower()
-        if "resume" in text:
-            targets.add("resume")
-        if "letter" in text or "cover" in text:
-            targets.add("letter")
-    if not targets:
-        targets = {"letter"}
-    return targets
 
 
 async def _rekick_resume_with_feedback(

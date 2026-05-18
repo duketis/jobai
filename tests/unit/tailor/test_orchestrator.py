@@ -252,8 +252,9 @@ async def test_happy_path_runs_qa_when_client_supplied(
     scripted_letter_client: ScriptedLetterClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
-    """With ``qa_client`` supplied, the chain walks an extra qa_running
-    stage and persists the structured assessment on the row."""
+    """With ``qa_client`` supplied, the chain walks the resume QA gate
+    and the letter QA gate, persisting the final (letter-stage)
+    assessment on the row's ``qa_status`` / ``qa_assessment``."""
     _, sleeper = recording_sleeper
     qa = _ScriptedQAClient(_good_qa_json())
     with connect(tailor_db_path) as conn:
@@ -278,10 +279,12 @@ async def test_happy_path_runs_qa_when_client_supplied(
     assert final.qa_assessment.coverage_score == 90
     # The QA client saw the JD + tailored payloads pulled from siblings.
     assert qa.calls and "Engineer" in str(qa.calls[0]["user"])
-    # Two get_run calls on resumeai: one for QA, one for filename cache
-    # at terminal SUCCESS (batched via build_pdf_filenames so the letter
-    # filename comes free).
-    assert scripted_resume_client.get_run_calls == ["rs_1", "rs_1"]
+    # Three get_run calls on resumeai: the resume QA gate, the letter QA
+    # gate, and the filename cache at terminal SUCCESS (batched via
+    # build_pdf_filenames so the letter filename comes free). The letter
+    # sibling is asked for its full record once -- only the letter QA
+    # gate needs it (the resume gate grades the resume alone).
+    assert scripted_resume_client.get_run_calls == ["rs_1", "rs_1", "rs_1"]
     assert scripted_letter_client.get_run_calls == ["ls_1"]
 
 
@@ -668,11 +671,13 @@ async def test_qa_must_fix_triggers_letter_rekick_with_feedback(
     scripted_letter_client: ScriptedLetterClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
-    """QA returns must-fix → orchestrator re-kicks the letter with the
-    feedback in the JD payload → re-polls → re-runs QA → passes →
-    chain settles succeeded."""
+    """The resume QA gate passes on attempt 1, then the letter QA gate
+    returns must-fix → orchestrator re-kicks the letter with the
+    feedback in the JD payload → re-polls → re-runs letter QA → passes
+    → chain settles succeeded. (Resume gate consumes the leading good
+    verdict; the letter gate consumes the fail-then-pass pair.)"""
     _, sleeper = recording_sleeper
-    qa = _SequencedQAClient(_qa_fail_then_pass_responses())
+    qa = _SequencedQAClient([_good_qa_json(), *_qa_fail_then_pass_responses()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -706,14 +711,16 @@ async def test_qa_must_fix_stops_after_max_attempts(
     scripted_letter_client: ScriptedLetterClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
-    """When QA still flags must-fix after the retry, the chain stops
-    at max_qa_attempts rather than looping forever. Row still settles
-    succeeded -- the PDFs ship with the failing QA verdict attached."""
+    """When the letter QA gate still flags must-fix after the retry,
+    the chain stops at max_qa_attempts rather than looping forever.
+    Row still settles succeeded -- the PDFs ship with the failing QA
+    verdict attached. The leading good verdict clears the resume gate
+    on attempt 1; the two fails drive the letter gate to its cap."""
     _, sleeper = recording_sleeper
-    # Both QA passes return the same fail; orchestrator should give
-    # up after attempts == max_qa_attempts.
+    # Resume gate passes (1 good), then the letter gate gets two fails
+    # and should give up after attempts == max_qa_attempts.
     qa = _SequencedQAClient(
-        [_qa_fail_then_pass_responses()[0]] * 2,
+        [_good_qa_json(), *([_qa_fail_then_pass_responses()[0]] * 2)],
     )
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
@@ -795,7 +802,9 @@ async def test_qa_concerns_with_only_nice_to_fix_does_not_retry(
             "summary": "minor polish only",
         },
     )
-    qa = _SequencedQAClient([concerns_only_nice])
+    # Resume gate passes on attempt 1 (leading good); the letter gate
+    # then sees a concerns-only-nice verdict and must not retry.
+    qa = _SequencedQAClient([_good_qa_json(), concerns_only_nice])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -837,10 +846,11 @@ async def test_qa_retry_letter_failure_keeps_first_pass_letter(
     letter_client = ScriptedLetterClient(
         poll_statuses=["succeeded", "failed"],
     )
-    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
-    # failed retry no longer aborts the loop, so QA is asked again on
-    # the (capped) second attempt. max_qa_attempts=2 bounds it.
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
+    # Resume gate passes (leading good); the letter gate then gets two
+    # fail verdicts. With the v1.27.0 iterate-to-cap behaviour a failed
+    # retry no longer aborts the loop, so the letter QA is asked again
+    # on the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_good_qa_json(), *([_qa_fail_then_pass_responses()[0]] * 2)])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1012,19 +1022,20 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     recording_sleeper: tuple[list[float], Sleeper],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End-to-end: when ``_gather_layout_issues`` returns a non-empty
-    list (simulated via monkeypatch), the QA stage folds those into
-    the assessment, status drops to fail, and the auto-fix loop
-    re-kicks the artefact the layout problem belongs to. v1.15.0:
-    a layout issue whose summary says ``resume: page 2...`` targets
-    the resume; the letter is left alone."""
+    """End-to-end: layout merge lives only in the letter QA gate
+    (``_run_qa_stage``); the resume QA gate has no PDF pair yet so it
+    never merges layout. When ``_gather_layout_issues`` returns a
+    non-empty list (simulated via monkeypatch) on the first letter-gate
+    pass, the gate folds it into the assessment, the status drops to
+    fail, and the letter is re-kicked with the LAYOUT guidance. The
+    resume is left alone -- gate 2 only ever re-kicks the letter."""
     from jobai.tailor import orchestrator as orch  # noqa: PLC0415
     from jobai.tailor.models import QAIssue  # noqa: PLC0415
 
     layout_issue = QAIssue(
         severity="must_fix",
         category="format",
-        summary="resume: page 2 starts with 1 bullet stranded before 'Profile'",
+        summary="cover letter: page 2 starts with 1 bullet stranded before 'Profile'",
     )
 
     call_count = {"n": 0}
@@ -1040,7 +1051,11 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     monkeypatch.setattr(orch, "_gather_layout_issues", fake_gather)
 
     _, sleeper = recording_sleeper
-    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json()])
+    # 1 good clears the resume gate (no layout merge there); the letter
+    # gate then gets 2 goods -- attempt 1 has the layout issue merged in
+    # (fail) and re-kicks the letter, attempt 2 sees a clean PDF and
+    # settles.
+    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json(), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1056,14 +1071,14 @@ async def test_qa_stage_merges_layout_issues_into_assessment(
     with connect(tailor_db_path) as conn:
         final = get_tailor_run(conn, record.id)
     assert final is not None
-    # Auto-fix loop ran: 2 attempts. The resume was re-kicked because
-    # the layout-issue summary mentions "resume" -- the letter was
+    # Letter QA gate ran the auto-fix loop: 2 attempts. The LETTER was
+    # re-kicked (gate 2 only ever re-kicks the letter); the resume was
     # left alone (its kick_requests count stays at 1, the initial).
     assert final.qa_attempts == 2
-    assert len(scripted_resume_client.kick_requests) == 2
-    assert len(scripted_letter_client.kick_requests) == 1
+    assert len(scripted_resume_client.kick_requests) == 1
+    assert len(scripted_letter_client.kick_requests) == 2
     # The retry kick's jd_text carries the layout-specific guidance.
-    retry_jd = scripted_resume_client.kick_requests[1].jd_text or ""
+    retry_jd = scripted_letter_client.kick_requests[1].jd_text or ""
     assert "LAYOUT:" in retry_jd
 
 
@@ -1406,15 +1421,16 @@ async def test_run_chain_forwards_qa_context_into_assess_call(
     scripted_letter_client: ScriptedLetterClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
-    """The fetch_qa_context closure result must flow into the QA
-    client's user prompt so the model has ground truth to validate
-    numeric claims against."""
+    """The fetch_qa_context closure is invoked ONCE before the resume
+    gate and the same ground truth flows into BOTH QA gates' user
+    prompts so the model can validate numeric claims against it."""
     _, sleeper = recording_sleeper
 
     async def _fetch() -> str | None:
         return "## VERIFIED jobai stats\n- 1126 tests, 100% coverage"
 
-    qa = _SequencedQAClient([_good_qa_json()])
+    # 1 good clears the resume gate, 1 good clears the letter gate.
+    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1428,11 +1444,13 @@ async def test_run_chain_forwards_qa_context_into_assess_call(
         fetch_qa_context=_fetch,
     )
 
-    assert len(qa.calls) == 1
-    user_prompt = qa.calls[0]["user"]
-    assert isinstance(user_prompt, str)
-    assert "USER CONTEXT" in user_prompt
-    assert "1126 tests, 100% coverage" in user_prompt
+    # Both gates graded once; the verified block is in each prompt.
+    assert len(qa.calls) == 2
+    for call in qa.calls:
+        user_prompt = call["user"]
+        assert isinstance(user_prompt, str)
+        assert "USER CONTEXT" in user_prompt
+        assert "1126 tests, 100% coverage" in user_prompt
 
 
 async def test_run_chain_qa_context_fetch_failure_is_non_fatal(
@@ -1450,7 +1468,8 @@ async def test_run_chain_qa_context_fetch_failure_is_non_fatal(
         msg = "context pool unreachable"
         raise RuntimeError(msg)
 
-    qa = _SequencedQAClient([_good_qa_json()])
+    # 1 good clears the resume gate, 1 good clears the letter gate.
+    qa = _SequencedQAClient([_good_qa_json(), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1468,11 +1487,13 @@ async def test_run_chain_qa_context_fetch_failure_is_non_fatal(
         final = get_tailor_run(conn, record.id)
     assert final is not None
     assert final.status is TailorRunStatus.SUCCEEDED
-    # QA still ran -- with no USER CONTEXT block in the prompt.
-    assert len(qa.calls) == 1
-    user_prompt = qa.calls[0]["user"]
-    assert isinstance(user_prompt, str)
-    assert "USER CONTEXT" not in user_prompt
+    # Both gates still ran -- with no USER CONTEXT block in either
+    # prompt (the single pre-gate fetch raised and was swallowed).
+    assert len(qa.calls) == 2
+    for call in qa.calls:
+        user_prompt = call["user"]
+        assert isinstance(user_prompt, str)
+        assert "USER CONTEXT" not in user_prompt
 
 
 async def test_run_chain_qa_retry_letter_kick_exception_keeps_first_pass(
@@ -1506,10 +1527,11 @@ async def test_run_chain_qa_retry_letter_kick_exception_keeps_first_pass(
 
     letter_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
 
-    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
-    # failed retry no longer aborts the loop, so QA is asked again on
-    # the (capped) second attempt. max_qa_attempts=2 bounds it.
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
+    # Resume gate passes (leading good); the letter gate then gets two
+    # fail verdicts. With the v1.27.0 iterate-to-cap behaviour a failed
+    # retry no longer aborts the loop, so the letter QA is asked again
+    # on the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_good_qa_json(), *([_qa_fail_then_pass_responses()[0]] * 2)])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1546,10 +1568,11 @@ async def test_run_chain_qa_retry_poll_cap_keeps_first_pass(
     # (return 'tailoring' forever). Run with max_polls=1 so the retry
     # hits the cap on its very first re-poll.
     letter_client = ScriptedLetterClient(poll_statuses=["succeeded", "tailoring"])
-    # Two fail verdicts: with the v1.27.0 iterate-to-cap behaviour a
-    # failed retry no longer aborts the loop, so QA is asked again on
-    # the (capped) second attempt. max_qa_attempts=2 bounds it.
-    qa = _SequencedQAClient([_qa_fail_then_pass_responses()[0]] * 2)
+    # Resume gate passes (leading good); the letter gate then gets two
+    # fail verdicts. With the v1.27.0 iterate-to-cap behaviour a failed
+    # retry no longer aborts the loop, so the letter QA is asked again
+    # on the (capped) second attempt. max_qa_attempts=2 bounds it.
+    qa = _SequencedQAClient([_good_qa_json(), *([_qa_fail_then_pass_responses()[0]] * 2)])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1611,14 +1634,15 @@ async def test_qa_must_fix_on_resume_triggers_resume_rekick(
     scripted_letter_client: ScriptedLetterClient,
     recording_sleeper: tuple[list[float], Sleeper],
 ) -> None:
-    """When a must-fix issue's summary mentions ``resume``, the
-    orchestrator re-kicks resumeai (not coverletterai) with the QA
-    feedback appended. Fixes the v1.10.0 limitation that auto-fix
-    couldn't repair resume-side hallucinations -- see run 22, where
-    the resume claimed ~38k LOC but the verified context said
-    ~15,700, and the letter-only retry could never close the gap."""
+    """The resume QA gate (gate 1) re-kicks resumeai when its verdict
+    has a must-fix, BEFORE the cover letter is written. Fixes the
+    v1.10.0 limitation that auto-fix couldn't repair resume-side
+    hallucinations -- see run 22, where the resume claimed ~38k LOC
+    but the verified context said ~15,700, and the letter-only retry
+    could never close the gap. The trailing good clears the
+    subsequent letter gate cleanly on its first attempt."""
     _, sleeper = recording_sleeper
-    qa = _SequencedQAClient(_qa_resume_fail_then_pass())
+    qa = _SequencedQAClient([*_qa_resume_fail_then_pass(), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1635,10 +1659,16 @@ async def test_qa_must_fix_on_resume_triggers_resume_rekick(
         final = get_tailor_run(conn, record.id)
     assert final is not None
     assert final.status is TailorRunStatus.SUCCEEDED
+    # Letter gate's verdict lands on qa_status (clean first pass).
     assert final.qa_status is QAStatus.PASS
-    assert final.qa_attempts == 2
-    # The resume was kicked twice (initial + retry); the letter only
-    # once (the must-fix didn't mention the letter so no retry there).
+    assert final.qa_attempts == 1
+    # The resume gate converged: it failed, re-kicked the resume, then
+    # the retry passed -- so the dedicated resume_qa_* columns settle
+    # on PASS (these never touch qa_status, which is the letter gate's).
+    assert final.resume_qa_status is QAStatus.PASS
+    # The resume was kicked twice (initial + resume-gate retry); the
+    # letter only once (the resume gate fixed the resume before the
+    # letter was ever written, and the letter gate passed first try).
     assert len(scripted_resume_client.kick_requests) == 2
     assert len(scripted_letter_client.kick_requests) == 1
     # Retry kick's jd_text carries the QA feedback so the LLM has a
@@ -1672,7 +1702,9 @@ async def test_qa_resume_retry_kick_exception_keeps_first_pass(
 
     resume_client.kick = _kick_then_boom  # type: ignore[assignment,method-assign]
 
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
+    # Resume gate gets 3 fails (cap=3, every retry kick boom -> None ->
+    # keep rs_1); the trailing good then clears the letter gate.
+    qa = _SequencedQAClient([*([_qa_resume_fail_then_pass()[0]] * 3), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1707,7 +1739,9 @@ async def test_qa_resume_retry_poll_cap_keeps_first_pass(
     resume_client = ScriptedResumeClient(
         poll_statuses=["succeeded", "tailoring"],
     )
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
+    # Resume gate gets 3 fails (cap=3, every retry poll hits the cap ->
+    # None -> keep rs_1); the trailing good clears the letter gate.
+    qa = _SequencedQAClient([*([_qa_resume_fail_then_pass()[0]] * 3), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1743,7 +1777,9 @@ async def test_qa_resume_retry_returns_failed_keeps_first_pass(
     # First poll succeeds (initial render); second poll returns failed
     # (retry render). Orchestrator falls back to first-pass id.
     resume_client = ScriptedResumeClient(poll_statuses=["succeeded", "failed"])
-    qa = _SequencedQAClient([_qa_resume_fail_then_pass()[0]] * 3)
+    # Resume gate gets 3 fails (cap=3, every retry render returns
+    # 'failed' -> None -> keep rs_1); trailing good clears letter gate.
+    qa = _SequencedQAClient([*([_qa_resume_fail_then_pass()[0]] * 3), _good_qa_json()])
     with connect(tailor_db_path) as conn:
         record = create_tailor_run(conn, job_id=1)
 
@@ -1762,36 +1798,6 @@ async def test_qa_resume_retry_returns_failed_keeps_first_pass(
     assert final is not None
     assert final.status is TailorRunStatus.SUCCEEDED
     assert final.resume_run_id == "rs_1"
-
-
-async def test_retry_targets_picks_resume_and_letter_independently() -> None:
-    """The keyword scan over must-fix issue text decides which
-    artefact(s) to retry. Resume-only, letter-only, both, and
-    none-mentioned (default to letter) all need to behave."""
-    from jobai.tailor.models import QAAssessment, QAIssue, QAStatus  # noqa: PLC0415
-    from jobai.tailor.orchestrator import _retry_targets  # noqa: PLC0415
-
-    def _asses(*summaries: str) -> QAAssessment:
-        return QAAssessment(
-            status=QAStatus.FAIL,
-            coverage_score=80,
-            consistency_score=50,
-            format_score=90,
-            must_fix_issues=[
-                QAIssue(severity="must_fix", category="consistency", summary=s) for s in summaries
-            ],
-            nice_to_fix_issues=[],
-            summary="...",
-        )
-
-    assert _retry_targets(_asses("Resume cites 38k LOC")) == {"resume"}
-    assert _retry_targets(_asses("Cover letter claims X")) == {"letter"}
-    assert _retry_targets(
-        _asses("Resume cites 38k LOC", "Letter claims something else"),
-    ) == {"resume", "letter"}
-    # Nothing mentions either artefact -> default to letter (v1.10.0
-    # behaviour for must-fix issues that don't name an artefact).
-    assert _retry_targets(_asses("Tone too casual")) == {"letter"}
 
 
 async def test_filename_cache_failure_leaves_row_with_null_filenames(
