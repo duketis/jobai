@@ -213,9 +213,15 @@ async def _run_chain_inner(  # noqa: PLR0912, PLR0915 - linear chain state machi
         raise TailorChainError(msg)
 
     # ---- QA context summary --------------------------------------------
-    # Pulled once per chain so BOTH gates (resume + letter) and every
-    # auto-fix retry see the SAME ground truth. Non-fatal: QA without
-    # ground truth falls back to within-artefact consistency checks.
+    # Pulled once per chain (after the resume kick has persisted its
+    # run id, so a slow context fetch can't delay that) and reused
+    # everywhere downstream: BOTH QA gates, the FIRST-pass letter kick,
+    # and every auto-fix retry (resume + letter) see the SAME ground
+    # truth. The letter -- where the #50 fabrication lived -- gets it on
+    # its first pass; the resume gets the deterministic numeric check on
+    # its retries (jobai's GATE 1 LLM QA covers the first resume pass).
+    # Non-fatal: QA without ground truth falls back to within-artefact
+    # consistency checks.
     qa_context: str | None = None
     if fetch_qa_context is not None:
         try:
@@ -271,7 +277,7 @@ async def _run_chain_inner(  # noqa: PLR0912, PLR0915 - linear chain state machi
         update_status(conn, tailor_run_id, status=TailorRunStatus.LETTER_RUNNING)
 
     letter_run_id = await letter_client.kick(
-        _build_letter_request(payload, resume_run_id=resume_run_id),
+        _build_letter_request(payload, resume_run_id=resume_run_id, verified_context=qa_context),
     )
     with connect(db_path) as conn:
         update_status(
@@ -670,7 +676,9 @@ async def _rekick_resume_with_feedback(
         )
 
     try:
-        new_resume_run_id = await resume_client.kick(_build_resume_request(feedback_payload))
+        new_resume_run_id = await resume_client.kick(
+            _build_resume_request(feedback_payload, verified_context=qa_context),
+        )
     except Exception:  # noqa: BLE001 - retry-kick failure is non-fatal
         _log.warning(
             "tailor_qa_retry_resume_kick_failed",
@@ -757,7 +765,9 @@ async def _rekick_letter_with_feedback(
 
     try:
         new_letter_run_id = await letter_client.kick(
-            _build_letter_request(feedback_payload, resume_run_id=resume_run_id),
+            _build_letter_request(
+                feedback_payload, resume_run_id=resume_run_id, verified_context=qa_context
+            ),
         )
     except Exception:  # noqa: BLE001 - retry-kick failure is non-fatal
         _log.warning(
@@ -977,27 +987,34 @@ class _JDPayload:
 _MIN_USEFUL_JD_TEXT_LEN = 200
 
 
-def _build_resume_request(payload: _JDPayload) -> ResumeaiTailorRequest:
+def _build_resume_request(
+    payload: _JDPayload,
+    *,
+    verified_context: str | None = None,
+) -> ResumeaiTailorRequest:
     """Construct the resumeai request, preferring ``jd_text`` over ``jd_url``."""
     if payload.jd_text:
-        return ResumeaiTailorRequest(jd_text=payload.jd_text)
-    return ResumeaiTailorRequest(jd_url=payload.jd_url)
+        return ResumeaiTailorRequest(jd_text=payload.jd_text, verified_context=verified_context)
+    return ResumeaiTailorRequest(jd_url=payload.jd_url, verified_context=verified_context)
 
 
 def _build_letter_request(
     payload: _JDPayload,
     *,
     resume_run_id: str,
+    verified_context: str | None = None,
 ) -> CoverletteraiTailorRequest:
     """Construct the coverletterai request, preferring ``jd_text`` over ``jd_url``."""
     if payload.jd_text:
         return CoverletteraiTailorRequest(
             jd_text=payload.jd_text,
             resume_run_id=resume_run_id,
+            verified_context=verified_context,
         )
     return CoverletteraiTailorRequest(
         jd_url=payload.jd_url,
         resume_run_id=resume_run_id,
+        verified_context=verified_context,
     )
 
 

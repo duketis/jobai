@@ -620,6 +620,26 @@ def test_build_resume_request_falls_back_to_jd_url() -> None:
     assert letter.jd_text is None
 
 
+def test_build_requests_carry_verified_context_when_supplied() -> None:
+    from jobai.tailor.orchestrator import (  # noqa: PLC0415
+        _build_letter_request,
+        _build_resume_request,
+        _JDPayload,
+    )
+
+    payload = _JDPayload(jd_url="https://example.com/x", jd_text="body")
+    vc = "VERIFIED: jobai 1,126 tests at 100% coverage"
+
+    assert _build_resume_request(payload, verified_context=vc).verified_context == vc
+    assert (
+        _build_letter_request(payload, resume_run_id="rs_1", verified_context=vc).verified_context
+        == vc
+    )
+    # Default stays None so non-jobai callers / older paths are unaffected.
+    assert _build_resume_request(payload).verified_context is None
+    assert _build_letter_request(payload, resume_run_id="rs_1").verified_context is None
+
+
 # ---------------------------------------------------------------------------
 # QA auto-fix loop: re-kick the letter with feedback on must-fix issues
 # ---------------------------------------------------------------------------

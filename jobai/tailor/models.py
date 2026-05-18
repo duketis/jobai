@@ -261,6 +261,7 @@ class ResumeaiTailorRequest(BaseModel):
     jd_url: str | None = None
     jd_text: str | None = None
     model: str | None = None
+    verified_context: str | None = None
 
 
 class CoverletteraiTailorRequest(BaseModel):
@@ -269,12 +270,20 @@ class CoverletteraiTailorRequest(BaseModel):
     Extends the resumeai shape with ``resume_run_id`` so the cover-letter
     pipeline can fetch the matching tailored resume by reference. We
     never use ``resume_payload`` — by-ref keeps the integration thin.
+
+    ``verified_context`` carries jobai's pinned ``verified`` /
+    ``source:local_project`` ground-truth pool. The sibling injects it
+    ahead of the JD on the first pass and uses it as the corpus for the
+    deterministic numeric-claim fact-check, so a hallucinated repo stat
+    is corrected before the artefact ever leaves the sibling rather than
+    only after a downstream QA retry.
     """
 
     jd_url: str | None = None
     jd_text: str | None = None
     model: str | None = None
     resume_run_id: str | None = None
+    verified_context: str | None = None
 
 
 class SiblingRunSnapshot(BaseModel):
