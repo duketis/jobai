@@ -97,6 +97,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tailor_output_dir = Path(settings.tailor_output_dir)
     tailor_pool = TailorPool(max_concurrent=settings.tailor_max_concurrent)
     app.state.tailor_pool = tailor_pool
+    # Tailor chains are in-process asyncio tasks. Any run still
+    # non-terminal at boot was orphaned when the previous process
+    # exited (nothing is left to drive it), so fail it now instead of
+    # leaving it hanging "running" forever in the UI.
+    from jobai.db.connection import connect  # noqa: PLC0415
+    from jobai.tailor.repository import reap_orphaned_runs  # noqa: PLC0415
+
+    with connect(settings.db_path) as _reap_conn:
+        reaped = reap_orphaned_runs(_reap_conn)
+    if reaped:
+        _log.info("tailor_runs_reaped_on_startup", extra={"count": reaped})
     # The context pool lives in resumeai; jobai proxies through so the
     # whole job-hunt workflow (browse -> tailor -> manage context) is
     # behind one URL.

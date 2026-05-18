@@ -173,6 +173,52 @@ def update_status(
     conn.commit()
 
 
+#: Message stamped on the ``error`` column when the startup reaper
+#: fails a run the previous process left mid-flight.
+ORPHAN_ERROR = (
+    "Orphaned by a restart: the worker process that was driving this "
+    "run exited before it finished. Re-tailor to retry."
+)
+
+
+def reap_orphaned_runs(conn: sqlite3.Connection) -> int:
+    """Fail every non-terminal run; return how many were reaped.
+
+    Tailor chains run as in-process asyncio tasks, so any row still in
+    ``pending`` / ``*_running`` / ``qa_running`` at process startup is
+    definitionally orphaned — the only thing that could advance it
+    died with the previous process. Called once from the lifespan on
+    boot so a restart can never leave a run hanging "running" forever
+    (the bug that stranded runs #32/#33/#42/#43).
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tailor_runs'",
+    ).fetchone()
+    if table_exists is None:
+        # Fresh DB before migrations have run — nothing to reap. Keeps
+        # the startup hook safe on a brand-new deployment.
+        return 0
+    now = _now()
+    placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
+    cursor = conn.execute(
+        # ``placeholders`` is "?" literals repeated per status, not
+        # user input; values are still bound.
+        f"UPDATE tailor_runs SET status = ?, error = ?, "  # noqa: S608
+        f"finished_at = ?, updated_at = ? "
+        f"WHERE status NOT IN ({placeholders})",
+        (
+            TailorRunStatus.FAILED.value,
+            ORPHAN_ERROR,
+            now,
+            now,
+            *[s.value for s in TERMINAL_STATUSES],
+        ),
+    )
+    if cursor.rowcount:
+        conn.commit()
+    return int(cursor.rowcount)
+
+
 def set_applied(
     conn: sqlite3.Connection,
     tailor_run_id: int,

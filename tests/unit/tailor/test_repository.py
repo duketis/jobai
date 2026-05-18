@@ -11,9 +11,11 @@ import pytest
 from jobai.db.connection import connect
 from jobai.tailor.models import TailorRunStatus
 from jobai.tailor.repository import (
+    ORPHAN_ERROR,
     create_tailor_run,
     get_tailor_run,
     list_tailor_runs,
+    reap_orphaned_runs,
     update_status,
 )
 
@@ -200,3 +202,65 @@ def test_list_tailor_runs_filters_by_applied(conn: sqlite3.Connection) -> None:
     assert applied_ids == {applied_run.id}
     assert pending_ids == {pending_run.id}
     assert {applied_run.id, pending_run.id}.issubset(all_ids)
+
+
+# ---------------------------------------------------------------------------
+# reap_orphaned_runs — startup zombie cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_reap_orphaned_runs_fails_non_terminal_rows(conn: sqlite3.Connection) -> None:
+    """Every pending / *_running / qa_running row at boot is orphaned
+    (the task that drove it died with the previous process) and must
+    be marked failed with the orphan reason + a finished_at."""
+    pending = create_tailor_run(conn, job_id=1)
+    resume = create_tailor_run(conn, job_id=1)
+    update_status(conn, resume.id, status=TailorRunStatus.RESUME_RUNNING)
+    letter = create_tailor_run(conn, job_id=1)
+    update_status(conn, letter.id, status=TailorRunStatus.LETTER_RUNNING)
+    qa = create_tailor_run(conn, job_id=1)
+    update_status(conn, qa.id, status=TailorRunStatus.QA_RUNNING)
+
+    reaped = reap_orphaned_runs(conn)
+
+    assert reaped == 4
+    for run in (pending, resume, letter, qa):
+        row = get_tailor_run(conn, run.id)
+        assert row is not None
+        assert row.status is TailorRunStatus.FAILED
+        assert row.error == ORPHAN_ERROR
+        assert row.finished_at is not None
+
+
+def test_reap_orphaned_runs_leaves_terminal_rows_untouched(
+    conn: sqlite3.Connection,
+) -> None:
+    done = create_tailor_run(conn, job_id=1)
+    update_status(conn, done.id, status=TailorRunStatus.SUCCEEDED)
+    failed = create_tailor_run(conn, job_id=1)
+    update_status(conn, failed.id, status=TailorRunStatus.FAILED, error="real error")
+
+    reaped = reap_orphaned_runs(conn)
+
+    assert reaped == 0
+    done_after = get_tailor_run(conn, done.id)
+    failed_after = get_tailor_run(conn, failed.id)
+    assert done_after is not None and done_after.status is TailorRunStatus.SUCCEEDED
+    assert failed_after is not None and failed_after.error == "real error"
+
+
+def test_reap_orphaned_runs_is_a_noop_when_nothing_pending(
+    conn: sqlite3.Connection,
+) -> None:
+    """No non-terminal rows → returns 0 and doesn't raise."""
+    assert reap_orphaned_runs(conn) == 0
+
+
+def test_reap_orphaned_runs_safe_on_db_without_table() -> None:
+    """Fresh DB before migrations: the table doesn't exist yet, so the
+    startup hook must return 0 instead of crashing the boot."""
+    bare = sqlite3.connect(":memory:")
+    try:
+        assert reap_orphaned_runs(bare) == 0
+    finally:
+        bare.close()
