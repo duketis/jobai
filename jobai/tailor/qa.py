@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from jobai.tailor.models import QAAssessment, QAIssue, QAStatus
 
@@ -154,6 +154,51 @@ Exact response shape:
 }
 """
 
+#: Resume-only QA gate. Runs BEFORE the cover letter is ever kicked
+#: (v1.28.0), so there is no letter to cross-check — the resume is
+#: graded purely against the JD and the verified USER CONTEXT. Same
+#: output schema; the cross-document CONSISTENCY/FORMAT rules collapse
+#: to within-resume + resume-vs-context checks.
+_RESUME_SYSTEM_PROMPT = """\
+You are the FIRST quality gate for a tailored job application. Only
+the RESUME exists at this point — the cover letter has NOT been
+written yet (it is generated only after this resume passes). You
+receive the structured JSON of the resume and the parsed
+JobRequirements. You DO NOT edit it. You audit the resume ALONE.
+
+What you assess:
+
+1. COVERAGE (0-100): How well does the RESUME hit every must-have in
+   the JD's `requirements.required_skills` / `responsibilities`?
+   Missing must-haves are 'must_fix' coverage issues; missing
+   nice-to-haves are 'nice_to_fix'. (There is no letter to share the
+   load — the resume must carry coverage on its own.)
+
+2. CONSISTENCY (0-100): Is the resume internally consistent, and does
+   every numeric / factual claim about the candidate's OWN projects
+   agree with the `# USER CONTEXT (VERIFIED)` section when provided?
+
+   FABRICATED OPEN-SOURCE STATS — decision rule:
+   - USER CONTEXT provided AND a resume number CONTRADICTS a verified
+     number in it (e.g. resume "705+ tests at 89% coverage" vs
+     context "1126 tests at 100% coverage") -> 'must_fix' consistency.
+     Phrase the summary so an auto-fix prompt can substitute the
+     verified number.
+   - USER CONTEXT provided AND the number is merely ABSENT from it ->
+     at most 'nice_to_fix' (candidate may know more than the context
+     surfaces). NOT must_fix.
+   - NO USER CONTEXT -> no ground truth; do NOT flag numbers on that
+     basis. Within-resume contradictions are still must_fix.
+   Claims about prior client engagements follow normal consistency
+   rules, not the verified-stats rule.
+
+3. FORMAT (0-100): Is the resume well-formed for a 1-page LaTeX
+   render — a coherent header (name + contact), consistent date
+   formatting, no obviously malformed/empty required sections?
+
+Scoring, status, and the OUTPUT FORMAT are EXACTLY as below.
+""" + _SYSTEM_PROMPT[_SYSTEM_PROMPT.index("How to score:") :]
+
 
 class QAClient(Protocol):
     """Wire surface for the QA LLM call.
@@ -279,6 +324,7 @@ async def assess(
     client: QAClient,
     model: str | None = None,
     user_context: str | None = None,
+    stage: Literal["combined", "resume"] = "combined",
 ) -> QAAssessment:
     """Run the QA pass and return a parsed :class:`QAAssessment`.
 
@@ -293,7 +339,7 @@ async def assess(
     and the failed QA explains why we couldn't grade them.
     """
     raw = await client.complete(
-        system=_SYSTEM_PROMPT,
+        system=_RESUME_SYSTEM_PROMPT if stage == "resume" else _SYSTEM_PROMPT,
         user=build_user_prompt(
             jd=jd,
             resume_tailored=resume_tailored,
