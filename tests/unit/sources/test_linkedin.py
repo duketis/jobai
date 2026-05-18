@@ -1,7 +1,9 @@
 """Tests for the LinkedIn (guest mode) source.
 
-Driven against a real fixture cut from a live LinkedIn guest search
-results page (3 representative ``base-card`` entries).
+Driven against a real fixture cut from a live LinkedIn guest *chunk*
+response (``/jobs-guest/jobs/api/seeMoreJobPostings/search``) — the
+10-card fragment that backs LinkedIn's infinite scroll, captured
+2026-05-18.
 """
 
 from __future__ import annotations
@@ -19,14 +21,25 @@ from jobai.sources.linkedin import (
     build_query,
 )
 
-_FIXTURE = (Path(__file__).parent / "fixtures" / "linkedin_python_au.html").read_text(
+_FIXTURE = (Path(__file__).parent / "fixtures" / "linkedin_guest_chunk_au.html").read_text(
     encoding="utf-8"
 )
 _QUERY = "keywords=python&location=Australia"
-_URL = f"https://www.linkedin.com/jobs/search?{_QUERY}"
+_URL = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?{_QUERY}"
 
-# Real ids from the captured fixture
-_FIXTURE_IDS = {"4137058028", "4409734067", "4410548782"}
+# All 10 real ids from the captured guest-chunk fixture.
+_FIXTURE_IDS = {
+    "4413516164",
+    "4410065863",
+    "4412993611",
+    "4404447541",
+    "4402232473",
+    "4404708070",
+    "4389990354",
+    "4389091507",
+    "4412610645",
+    "4415008040",
+}
 
 
 def _only_first_page(request: httpx.Request) -> httpx.Response:
@@ -54,7 +67,9 @@ def test_build_query_url_encodes_inputs() -> None:
 
 async def test_discover_yields_one_job_per_card() -> None:
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=_only_first_page)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=_only_first_page)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY).discover(fetcher)]
 
@@ -63,12 +78,14 @@ async def test_discover_yields_one_job_per_card() -> None:
 
 async def test_discover_maps_core_fields() -> None:
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=_only_first_page)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=_only_first_page)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY).discover(fetcher)]
 
     by_id = {j.source_external_id: j for j in jobs}
-    one = by_id["4137058028"]
+    one = by_id["4413516164"]
     assert one.title  # whatever LinkedIn surfaced; non-empty
     assert one.company  # non-empty
     # LinkedIn returns regional hosts (au.linkedin.com for AU searches).
@@ -79,7 +96,9 @@ async def test_discover_maps_core_fields() -> None:
 async def test_discover_canonicalises_apply_url() -> None:
     """Tracking params (``refId``, ``trackingId``, ``position``) stripped."""
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=_only_first_page)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=_only_first_page)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY).discover(fetcher)]
 
@@ -119,13 +138,13 @@ async def test_discover_raises_on_non_2xx() -> None:
 
 
 async def test_discover_walks_multiple_pages_and_dedups() -> None:
-    """LinkedIn paginates via ``&start=N`` (offset, 25 per page)."""
+    """LinkedIn paginates via ``&start=N`` (offset, 10 per page)."""
 
     def page_for(request: httpx.Request) -> httpx.Response:
         start = int(request.url.params.get("start", "0"))
         if start == 0:
             return httpx.Response(200, text=_FIXTURE)
-        if start == 25:
+        if start == 10:
             # One new card; rest are dups of page-0 ids
             return httpx.Response(
                 200,
@@ -140,11 +159,13 @@ async def test_discover_walks_multiple_pages_and_dedups() -> None:
                     "</ul></body></html>"
                 ),
             )
-        # Pages from start=50 onward serve nothing → walk terminates
+        # Pages from start=20 onward serve nothing → walk terminates
         return httpx.Response(200, text="<html><body></body></html>")
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=page_for)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=page_for)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY, max_pages=4).discover(fetcher)]
 
@@ -170,7 +191,9 @@ async def test_discover_stops_silently_on_mid_walk_failure() -> None:
         return httpx.Response(500, text="server-side")
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=page_for)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=page_for)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY, max_pages=5).discover(fetcher)]
     # Page 0's fixture jobs are preserved despite the mid-walk failure.
@@ -195,7 +218,9 @@ async def test_discover_walks_to_max_pages_when_every_page_has_new_cards() -> No
         return httpx.Response(200, text=body)
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as router:
-        router.get(host="www.linkedin.com", path="/jobs/search").mock(side_effect=page_for)
+        router.get(
+            host="www.linkedin.com", path="/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        ).mock(side_effect=page_for)
         async with HttpFetcher() as fetcher:
             jobs = [j async for j in LinkedInSource(account=_QUERY, max_pages=2).discover(fetcher)]
     assert len(jobs) == 2

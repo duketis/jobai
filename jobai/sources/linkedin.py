@@ -1,19 +1,26 @@
 """LinkedIn (guest mode) source.
 
 LinkedIn fingerprints aggressively. Logged-in scraping violates the
-ToS; the *guest* search-results page is publicly accessible and is
-what we target here. The ``/jobs/search`` endpoint returns an HTML
-page with semantic markup the parser walks via :mod:`selectolax`.
+ToS; the *guest* surface is publicly accessible and is what we target
+here. We hit the guest **chunk** endpoint that backs LinkedIn's
+infinite scroll (``/jobs-guest/jobs/api/seeMoreJobPostings/search``),
+not the ``/jobs/search`` HTML page — calibration showed the page
+intermittently serves a sign-in wall while the chunk endpoint
+reliably returns a clean 10-card fragment per request with identical
+card markup the parser walks via :mod:`selectolax`.
 
 The account encodes the search query: a string of the form
 ``"keywords=python&location=Australia"`` (URL-encoded). It plugs
 straight into the public guest URL.
 
-Description bodies are not on the listing page — only title, company,
-location, and apply URL. Filling in descriptions would mean a per-job
-detail fetch (one extra round trip per result), which we defer to a
-later phase: the agent layer can summarise from title + company alone
-when description is null.
+Listing cards carry only title, company, location, and apply URL —
+no description body. Descriptions are filled in separately by the
+scheduled description backfill (``RECIPES["linkedin"]`` in
+:mod:`jobai.pipeline.description_backfill`), which fetches each job's
+guest detail page on the stealth tier. Coverage is limited at
+*discovery* (the ~1,000-results-per-query guest ceiling), not at
+content — so breadth scales with the number of distinct query slugs
+in ``companies.yaml``.
 """
 
 from __future__ import annotations
@@ -29,18 +36,31 @@ from jobai.fetcher.base import Fetcher
 from jobai.sources.base import BaseSource, NormalizedJob
 
 _BASE_URL = "https://www.linkedin.com"
-_SEARCH_PATH = "/jobs/search"
+#: The guest *chunk* endpoint that backs LinkedIn's infinite-scroll —
+#: not the ``/jobs/search`` HTML page. Calibrated live (2026-05-18):
+#: ``/jobs/search`` intermittently serves a sign-in wall / a short
+#: card list, whereas this endpoint returns a clean 10-card fragment
+#: per request, paginates correctly via ``start`` (zero overlap
+#: between ``start=0`` and ``start=25``), and walks all the way to the
+#: ~1,000-result-per-query ceiling (``start=1000`` → empty). The card
+#: markup is byte-identical to the HTML page (same ``base-card`` /
+#: ``data-entity-urn`` / ``base-search-card__*`` selectors), so the
+#: parser below is unchanged.
+_SEARCH_PATH = "/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
-#: Cap on pages walked per scrape cycle. LinkedIn returns ~25 cards
-#: per page. The ``page_yielded == 0`` early-exit short-circuits when
-#: LinkedIn stops serving new cards (the guest-mode tail caps around
-#: 1,000 results per query), so a high cap walks to that natural
-#: ceiling instead of stopping after only 100.
-DEFAULT_MAX_PAGES = 40
+#: Cap on pages walked per scrape cycle. The chunk endpoint returns
+#: 10 distinct postings per request and the guest tail caps at ~1,000
+#: results per query, so ~100 pages reaches the natural ceiling; 110
+#: leaves headroom. The ``page_yielded == 0`` early-exit short-circuits
+#: the moment LinkedIn stops serving new cards, so the high cap costs
+#: nothing on thinner queries.
+DEFAULT_MAX_PAGES = 110
 
 #: LinkedIn's offset-style pagination — ``start`` is a 0-indexed
 #: position into the result set, advancing by ``_PAGE_SIZE`` per page.
-_PAGE_SIZE = 25
+#: Calibrated to 10: the chunk endpoint yields exactly 10 distinct
+#: postings per request, so a larger step would skip results.
+_PAGE_SIZE = 10
 
 #: Match the integer job id LinkedIn embeds in `data-entity-urn` and
 #: in the per-card detail URL (``/jobs/view/<id>``). Used as the
