@@ -1,3 +1,8 @@
+// Test-only helpers: a non-component factory (makeQueryClient) sits
+// next to a component (WithQueryClient) on purpose so tests have one
+// import. React Fast Refresh never applies to test utilities, so the
+// only-export-components constraint is irrelevant here.
+/* eslint-disable react-refresh/only-export-components */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 

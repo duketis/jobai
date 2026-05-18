@@ -38,9 +38,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [revealToken, setRevealToken] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Hydrate the draft from the server view whenever the modal opens.
+  // Hydrate the editable draft form from the server view each time
+  // the modal opens. Deliberate external(server)→local(form) seed:
+  // the draft is then user-editable, so it can't just render from
+  // ``data`` — it needs a one-shot copy on open.
   useEffect(() => {
     if (open && data) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional one-shot server→draft hydration on modal open
       setDraft({
         agent_backend: data.agent_backend,
         anthropic_model: data.anthropic_model,

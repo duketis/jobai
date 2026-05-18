@@ -79,7 +79,10 @@ function postedSinceLabel(value: string): string {
 }
 
 /** Param keys the page understands; everything else stays untouched
- * (e.g. the chat dock's ``?chat=NN`` rides along). */
+ * (e.g. the chat dock's ``?chat=NN`` rides along). Single source of
+ * truth for the ``FilterKey`` type — consumed via
+ * ``(typeof FILTER_KEYS)[number]`` at :func:`setFilter`. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- value backs the FilterKey type below; not referenced at runtime by design
 const FILTER_KEYS = [
   "q",
   "remote",
@@ -121,8 +124,15 @@ export function JobsListPage() {
   const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
 
   const [searchInput, setSearchInput] = useState(urlSearch);
-  // Reflect URL changes (the agent or another tab) back into the visible input.
+  // Reflect URL changes (the agent's tool calls, or another tab) back
+  // into the editable search box. This is a deliberate external→local
+  // mirror: the URL is the source of truth (invariant: the agent's
+  // search_jobs writes ?q=… and the box must follow), but the box is
+  // also editable and debounces back to the URL, so it genuinely needs
+  // a local copy that re-syncs on external URL change — not derivable
+  // with a key/render-time prop.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional URL→input sync (see comment above); refactor would break the agent↔URL loop
     setSearchInput(urlSearch);
   }, [urlSearch]);
 

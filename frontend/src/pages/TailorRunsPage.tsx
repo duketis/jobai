@@ -101,7 +101,10 @@ export function TailorRunsPage() {
     },
   });
 
-  const items = query.data?.items ?? [];
+  const items = useMemo(
+    () => query.data?.items ?? [],
+    [query.data],
+  );
   const inFlightCount = useMemo(
     () => items.filter((r) => !TERMINAL.has(r.status)).length,
     [items],

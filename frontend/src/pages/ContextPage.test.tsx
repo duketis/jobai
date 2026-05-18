@@ -442,7 +442,8 @@ describe("ContextPage", () => {
         });
       }
       if (url.endsWith("/api/context/snippet")) {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        // Deliberately a non-Error string to exercise the
+        // raw-transport-failure path (no lint rule active for this).
         throw "raw transport blew up"; // string, NOT Error
       }
       throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
