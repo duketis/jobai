@@ -361,6 +361,144 @@ linkedin:
     display_name: LinkedIn — Temporary (Australia)
     default_tier: 3
     cadence_seconds: 3600
+  # Big-metro x experience-level cross. The unfiltered city
+  # slugs above cap at ~1,000 per city, but Sydney/Melbourne/
+  # Brisbane/Perth/Adelaide each have far more than that — so
+  # partitioning each by the 6 (near-disjoint) experience
+  # bands multiplies real coverage where the overflow actually
+  # is. Smaller capitals/regionals stay single-slug (their
+  # totals fit under the cap, so a cross would just re-fetch).
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=1
+    display_name: LinkedIn — Sydney Internship
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=2
+    display_name: LinkedIn — Sydney Entry
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=3
+    display_name: LinkedIn — Sydney Associate
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=4
+    display_name: LinkedIn — Sydney Mid-Senior
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=5
+    display_name: LinkedIn — Sydney Director
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Sydney%2C%20New%20South%20Wales%2C%20Australia&f_E=6
+    display_name: LinkedIn — Sydney Executive
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=1
+    display_name: LinkedIn — Melbourne Internship
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=2
+    display_name: LinkedIn — Melbourne Entry
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=3
+    display_name: LinkedIn — Melbourne Associate
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=4
+    display_name: LinkedIn — Melbourne Mid-Senior
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=5
+    display_name: LinkedIn — Melbourne Director
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Melbourne%2C%20Victoria%2C%20Australia&f_E=6
+    display_name: LinkedIn — Melbourne Executive
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=1
+    display_name: LinkedIn — Brisbane Internship
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=2
+    display_name: LinkedIn — Brisbane Entry
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=3
+    display_name: LinkedIn — Brisbane Associate
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=4
+    display_name: LinkedIn — Brisbane Mid-Senior
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=5
+    display_name: LinkedIn — Brisbane Director
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Brisbane%2C%20Queensland%2C%20Australia&f_E=6
+    display_name: LinkedIn — Brisbane Executive
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=1
+    display_name: LinkedIn — Perth Internship
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=2
+    display_name: LinkedIn — Perth Entry
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=3
+    display_name: LinkedIn — Perth Associate
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=4
+    display_name: LinkedIn — Perth Mid-Senior
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=5
+    display_name: LinkedIn — Perth Director
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Perth%2C%20Western%20Australia%2C%20Australia&f_E=6
+    display_name: LinkedIn — Perth Executive
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=1
+    display_name: LinkedIn — Adelaide Internship
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=2
+    display_name: LinkedIn — Adelaide Entry
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=3
+    display_name: LinkedIn — Adelaide Associate
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=4
+    display_name: LinkedIn — Adelaide Mid-Senior
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=5
+    display_name: LinkedIn — Adelaide Director
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Adelaide%2C%20South%20Australia%2C%20Australia&f_E=6
+    display_name: LinkedIn — Adelaide Executive
+    default_tier: 3
+    cadence_seconds: 3600
+  # Deeper national recency tiers. Past-week / past-month each
+  # surface their own ~1,000 freshest that the unfiltered broad
+  # query has already pushed past the cap.
+  - account: location=Australia&f_TPR=r604800
+    display_name: LinkedIn — Last 7d (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
+  - account: location=Australia&f_TPR=r2592000
+    display_name: LinkedIn — Last 30d (Australia)
+    default_tier: 3
+    cadence_seconds: 3600
 
 # Indeed serves a JS-heavy SPA but embeds an SSR data island. Browser
 # tier (2) is enough to render the island; promotes to stealth on 403.
